@@ -73,6 +73,63 @@ public sealed class SoulseekCandidateScoringTest : IDisposable
         return new SoulseekRepository(configuration, NullLogger<SoulseekRepository>.Instance);
     }
 
+    [Theory]
+    [InlineData("MP3_320", 192, false)]
+    [InlineData("MP3_320", 256, false)]
+    [InlineData("MP3_320", 320, true)]
+    [InlineData("MP3_256", 192, false)]
+    [InlineData("MP3_256", 256, true)]
+    [InlineData("MP3_192", 160, false)]
+    [InlineData("MP3_192", 192, true)]
+    [InlineData("MP3_128", 128, true)]
+    public async Task RequestedBitrateIsEnforcedEvenWhenCanonicalTiersCollide(string requested, int bitrate, bool accepted)
+    {
+        var scorer = CreateScorer();
+        var candidate = Assert.Single(await scorer.ScoreAsync(Target,
+            [Good(filename: "Boards of Canada - Roygbiv.mp3", bitrate: bitrate) with { IsVariableBitrate = true }],
+            SoulseekSearchMode.Automated, requiredQualityCode: requested));
+        Assert.Equal(accepted, candidate.Accepted);
+        if (!accepted) Assert.Equal("below_requested_quality", candidate.RejectedBecause);
+    }
+
+    [Fact]
+    public async Task AllowedUnknownQualityCanPassAutomationButNeverAnExplicitLosslessRung()
+    {
+        var scorer = CreateScorer(new SoulseekDownloadSettings { AllowUnknownQuality = true });
+        EnableOnlySoulseekQualities("UNKNOWN");
+        var raw = Good(filename: "Boards of Canada - Roygbiv.m4a", bitrate: 256);
+        var allowed = Assert.Single(await scorer.ScoreAsync(Target, [raw], SoulseekSearchMode.Automated));
+        Assert.True(allowed.Accepted, allowed.RejectedBecause);
+        Assert.Equal(0.55, allowed.Score);
+        Assert.True(Assert.Single(await scorer.ScoreAsync(Target, [raw], SoulseekSearchMode.Automated,
+            requiredQualityCode: "UNKNOWN")).Accepted);
+        var constrained = Assert.Single(await scorer.ScoreAsync(Target, [raw], SoulseekSearchMode.Automated, requiredQualityCode: "FLAC"));
+        Assert.False(constrained.Accepted);
+        Assert.Equal("below_requested_quality", constrained.RejectedBecause);
+    }
+
+    [Fact]
+    public async Task TransferPolicyReadsChangesAfterTheSearchWithoutInventingQueueFacts()
+    {
+        _settings.Update(new SoulseekDownloadSettings { RequireFreeUploadSlot = true, MinimumPeerUploadSpeedBytesPerSecond = 1000 });
+        var repository = CreateRepository();
+        var policy = new SoulseekPeerPolicyService(_settings, repository, NullLogger<SoulseekPeerPolicyService>.Instance);
+        Assert.True((await policy.EvaluateBeforeTransferAsync("peer")).Accepted);
+        await repository.RecordPeerFailureAsync("peer", "stalled", TimeSpan.FromMinutes(10));
+        Assert.Equal("peer_in_cooldown", (await policy.EvaluateBeforeTransferAsync("PEER")).Reason);
+        _settings.Update(new SoulseekDownloadSettings { BlockedUsers = ["peer"] });
+        Assert.Equal("blocked_user", (await policy.EvaluateBeforeTransferAsync("peer")).Reason);
+    }
+
+    [Fact]
+    public void PathologicalWildcardDoesNotAbortSearchScoringOrBypassTheBlocklist()
+    {
+        var pattern = string.Concat(Enumerable.Repeat("*a", 30)) + "b";
+        var settings = new SoulseekDownloadSettings { BlockedFilenamePatterns = [pattern] };
+        Assert.True(SoulseekPeerPolicyService.IsBlockedFilename(new string('a', 10000) + "b.flac", settings));
+        Assert.False(SoulseekPeerPolicyService.IsBlockedFilename(new string('a', 10000) + "c.flac", settings));
+    }
+
     private SoulseekResultScoringService CreateScorer(SoulseekDownloadSettings? settings = null)
         => CreateScorer(settings, new AlwaysAllowPeerPolicy());
 
@@ -749,8 +806,15 @@ public sealed class SoulseekCandidateScoringTest : IDisposable
         Assert.Null(scorer.SelectBest(candidates));
     }
 
+    /// <summary>
+    ///     Eligible copies of the same quality follow slskd's upload-speed order.
+    /// </summary>
+    /// <remarks>
+    ///     Matching and quality eligibility run before selection. Within that accepted quality,
+    ///     the fastest peer wins; the quality choice itself remains score-based as before.
+    /// </remarks>
     [Fact]
-    public void SelectBest_PrefersAdvertisedSpeedBeforeMatchScore()
+    public void SelectBest_PrefersAdvertisedSpeedWithinTheSelectedQuality()
     {
         var scorer = CreateScorer();
         var slowerHigherScore = Accepted("slow", uploadSpeed: 100_000, score: 0.99, queue: 0);
@@ -760,17 +824,37 @@ public sealed class SoulseekCandidateScoringTest : IDisposable
     }
 
     [Fact]
-    public void SelectBest_UsesScoreThenQueueAndStableInputOrderWhenSpeedsTie()
+    public void PeerSpeedDoesNotChangeTheSelectedQuality()
     {
         var scorer = CreateScorer();
-        var unknown = Accepted("unknown", uploadSpeed: 0, score: 0.99, queue: 0);
-        var lowerScore = Accepted("lower-score", uploadSpeed: 1_000_000, score: 0.80, queue: 0);
-        var busy = Accepted("busy", uploadSpeed: 1_000_000, score: 0.90, queue: 3);
-        var first = Accepted("first", uploadSpeed: 1_000_000, score: 0.90, queue: 1);
-        var same = Accepted("same", uploadSpeed: 1_000_000, score: 0.90, queue: 1);
+        var preferredQuality = Accepted("flac", 100_000, 0.99, 0);
+        var otherQuality = Accepted("mp3", int.MaxValue, 0.80, 0) with { Quality = "MP3_320", CanonicalRank = 40 };
+        Assert.Equal("flac", scorer.SelectBest([otherQuality, preferredQuality])?.Username);
+    }
 
-        Assert.Equal("first", scorer.SelectBest([unknown, lowerScore, busy, first, same])?.Username);
-        Assert.Equal("unknown", scorer.SelectBest([unknown])?.Username);
+    [Fact]
+    public async Task LiveRankingUsesSpeedWithinEachQuality()
+    {
+        var scorer = CreateScorer();
+        var ranked = await scorer.ScoreAsync(Target,
+            [Good(username: "slow", uploadSpeed: 2_000_000), Good(username: "fast", uploadSpeed: 8_000_000)], SoulseekSearchMode.Manual);
+        Assert.Equal(new[] { "fast", "slow" }, ranked.Select(candidate => candidate.Username));
+    }
+
+    [Fact]
+    public void SelectBest_BreaksScoreTiesWithAdvertisedSpeedThenQueue()
+    {
+        var scorer = CreateScorer();
+        // Same score everywhere, so the next keys decide: rank is already equalised by the helper, which also
+        // sets filename confidence to the score, so advertised speed, then queue length, run out the tie.
+        var slower = Accepted("slower", uploadSpeed: 100_000, score: 0.90, queue: 7);
+        var faster = Accepted("faster", uploadSpeed: 5_000_000, score: 0.90, queue: 7);
+
+        Assert.Equal("faster", scorer.SelectBest([slower, faster])?.Username);
+
+        var equalSpeedShortQueue = Accepted("short-queue", uploadSpeed: 1_000_000, score: 0.90, queue: 1);
+        var equalSpeedLongQueue = Accepted("long-queue", uploadSpeed: 1_000_000, score: 0.90, queue: 3);
+        Assert.Equal("short-queue", scorer.SelectBest([equalSpeedLongQueue, equalSpeedShortQueue])?.Username);
     }
 
     [Fact]
@@ -940,6 +1024,9 @@ public sealed class SoulseekCandidateScoringTest : IDisposable
 
         public bool IsBlockedFilename(string? filename) => false;
 
+        public Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SoulseekPeerDecision(true));
+
         public Task RecordFailureAsync(string username, string reason, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -972,6 +1059,9 @@ public sealed class SoulseekCandidateScoringTest : IDisposable
             => Task.FromResult(new SoulseekPeerDecision(true));
 
         public bool IsBlockedFilename(string? filename) => false;
+
+        public Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SoulseekPeerDecision(true));
 
         public Task RecordFailureAsync(string username, string reason, CancellationToken cancellationToken = default)
             => Task.CompletedTask;

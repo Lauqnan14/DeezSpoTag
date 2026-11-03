@@ -2,6 +2,7 @@ using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Soulseek;
 using DeezSpoTag.Services.Download.Shared;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Soulseek;
@@ -68,14 +69,8 @@ public static class SoulseekServiceExtensions
         services.AddSingleton<ISoulseekShareService, SoulseekShareService>();
 
         // Housekeeping rides the existing queue loop through the generic maintenance hook, so no per-engine
-        // background service is introduced.
-        services.AddSingleton<IQueueMaintenanceTask>(sp => new SoulseekMaintenanceTask(
-            sp.GetRequiredService<ISoulseekCredentialProvider>(),
-            sp.GetRequiredService<ISoulseekPeerPolicyService>(),
-            sp.GetRequiredService<ISoulseekSearchService>(),
-            sp.GetRequiredService<ISoulseekTransferService>(),
-            sp.GetRequiredService<SoulseekSettingsService>(),
-            sp.GetRequiredService<ILogger<SoulseekMaintenanceTask>>()));
+        // background service is introduced. Deduplicate this implementation without suppressing other engines.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IQueueMaintenanceTask, SoulseekMaintenanceTask>());
 
         return services;
     }

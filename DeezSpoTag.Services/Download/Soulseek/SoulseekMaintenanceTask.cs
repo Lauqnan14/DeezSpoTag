@@ -87,9 +87,11 @@ public sealed class SoulseekMaintenanceTask : IQueueMaintenanceTask
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Housekeeping is best effort. An error here must never stop the queue loop from running downloads.
-            if (_logger.IsEnabled(LogLevel.Debug))
+            // Failure is not quiet though: retention that stops pruning is where stale rows and cooldowns
+            // pile up, and a persistent database problem shows up here first.
+            if (_logger.IsEnabled(LogLevel.Warning))
             {
-                _logger.LogDebug(ex, "Soulseek housekeeping failed.");
+                _logger.LogWarning(ex, "Soulseek housekeeping failed.");
             }
         }
         finally

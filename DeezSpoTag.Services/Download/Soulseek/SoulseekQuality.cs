@@ -1,3 +1,4 @@
+using System.Globalization;
 using DeezSpoTag.Services.Download;
 
 namespace DeezSpoTag.Services.Download.Soulseek;
@@ -48,17 +49,21 @@ public sealed record SoulseekQualityInfo(
 public static class SoulseekQuality
 {
     /// <summary>Lossless extension -> whether it is FLAC or another lossless container.</summary>
+    /// <remarks>
+    ///     <c>.m4a</c> is deliberately absent. The container carries ALAC (lossless) and AAC (lossy), and
+    ///     so <see cref="Normalize"/> keeps it unknown without evidence of the actual codec.
+    /// </remarks>
     private static readonly HashSet<string> LosslessExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".flac", ".alac", ".wav", ".wave", ".aif", ".aiff", ".aifc", ".ape", ".wv", ".m4a", ".tak", ".tta", ".alac"
+        ".flac", ".alac", ".wav", ".wave", ".aif", ".aiff", ".aifc", ".ape", ".wv", ".tak", ".tta", ".alac"
     };
 
     private static readonly HashSet<string> FlacExtensions = new(StringComparer.OrdinalIgnoreCase) { ".flac" };
     private static readonly HashSet<string> Mp3Extensions = new(StringComparer.OrdinalIgnoreCase) { ".mp3", ".mp2" };
 
-    private const int Mp3HighBitrateThresholdKbps = 256;
-    private const int Mp3MediumBitrateThresholdKbps = 192;
-    private const int Mp3LowBitrateThresholdKbps = 160;
+    private const int Mp3HighBitrateThresholdKbps = 320;
+    private const int Mp3MediumBitrateThresholdKbps = 256;
+    private const int Mp3LowBitrateThresholdKbps = 192;
     private const int Mp3AcceptableBitrateThresholdKbps = 128;
     private const int HiResBitDepth = 24;
 
@@ -71,6 +76,26 @@ public static class SoulseekQuality
     ///     would classify a lossless file as something else and downgrade its quality tier.
     /// </remarks>
     private const string LosslessCode = "LOSSLESS";
+
+    /// <summary>The extension shared by ALAC and AAC, which slskd's facts cannot reliably distinguish.</summary>
+    private const string AacM4aExtension = ".m4a";
+
+    /// <summary>
+    ///     The bitrate floor a lossy request implies, or <see langword="null"/> when the code is not a lossy
+    ///     bitrate band.
+    /// </summary>
+    /// <remarks>
+    ///     MP3_256 and MP3_192 share the mp3_320 tier for ranking, so a tier's canonical rank alone cannot
+    ///     express them. The advertised bitrate is the real bar for a lossy request.
+    /// </remarks>
+    public static int? LossyBitrateFloor(string? code) => NormalizeCode(code) switch
+    {
+        "MP3_320" => 320,
+        "MP3_256" => 256,
+        "MP3_192" => 192,
+        "MP3_128" => 128,
+        _ => null
+    };
 
     private const string UnknownQualityLabel = "Unknown quality";
 
@@ -124,6 +149,13 @@ public static class SoulseekQuality
         var isLossless = normalizedExtension is not null && LosslessExtensions.Contains(normalizedExtension);
 
         if (normalizedExtension is null)
+        {
+            return Unknown();
+        }
+
+        // Neither bitrate nor PCM depth proves the codec inside M4A. Until the adapter has codec evidence,
+        // keep it unknown, including high-bitrate and unreported-bitrate files. Delivery verifies real audio.
+        if (string.Equals(normalizedExtension, AacM4aExtension, StringComparison.OrdinalIgnoreCase))
         {
             return Unknown();
         }
@@ -285,7 +317,9 @@ public static class SoulseekQuality
     private static string BuildLosslessLabel(string code, int? bitDepth, int? sampleRateHz)
     {
         var depth = bitDepth.HasValue ? $"{bitDepth.Value}-bit" : null;
-        var rate = sampleRateHz.HasValue ? $"{sampleRateHz.Value / 1000.0:0.###}kHz".Replace('.', ',') : null;
+        var rate = sampleRateHz.HasValue
+            ? (sampleRateHz.Value / 1000.0).ToString("0.###", CultureInfo.InvariantCulture) + "kHz"
+            : null;
         var facts = new[] { depth, rate }.Where(part => !string.IsNullOrEmpty(part)).ToArray();
 
         if (facts.Length == 0)

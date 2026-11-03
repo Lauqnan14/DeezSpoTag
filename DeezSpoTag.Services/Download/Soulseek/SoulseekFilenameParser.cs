@@ -118,13 +118,14 @@ public static partial class SoulseekFilenameParser
     [GeneratedRegex(@"^\s*(?<track>\d{1,3})", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 200)]
     private static partial Regex LeadingTrackNumber();
 
-    [GeneratedRegex(@"\s*[\(\[]\s*(?<duration>\d{1,2}):(?<seconds>\d{2})(?:\.\d+)?\s*[\)\]]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 200)]
+    [GeneratedRegex(@"\s*[\(\[]\s*(?<duration>\d{1,3}):(?<seconds>\d{2})(?::\d{2})?(?:\.\d+)?\s*[\)\]]",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 200)]
     private static partial Regex DurationMarker();
 
     [GeneratedRegex(@"\s*[\(\[]\s*(?<rest>[^\(\)\[\]]*?)[\)\]]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 200)]
     private static partial Regex BracketedSegment();
 
-    [GeneratedRegex(@"(?:\d{4})?\s*[\(\[]?\s*\b(?<year>(?:19|20)\d{2})\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 200)]
+    [GeneratedRegex(@"\s*(?:\(\s*(?:19|20)\d{2}\s*\)|\[\s*(?:19|20)\d{2}\s*\])", RegexOptions.CultureInvariant, 200)]
     private static partial Regex YearMarker();
 
     /// <summary>
@@ -174,8 +175,11 @@ public static partial class SoulseekFilenameParser
             noiseReasons.Add("excessive_bracketing");
         }
 
-        // A bare hash is what a peer uploads when it has no real name for the file.
-        if (stem.Length >= 8 && stem.All(character => Uri.IsHexDigit(character)))
+        // Treat only conventional digest lengths as hash-like. Short hex words and all-numeric titles
+        // are not evidence of a hash and must retain their identity for the shared matcher.
+        if (stem.Length is 16 or 32 or 40 or 64
+            && stem.Any(character => char.IsLetter(character))
+            && stem.All(character => Uri.IsHexDigit(character)))
         {
             noiseReasons.Add("hash_filename");
             isJunk = true;
@@ -192,10 +196,11 @@ public static partial class SoulseekFilenameParser
             trackNumber = parsedTrack;
         }
 
-        working = YearMarker().Replace(working, " ");
-
         var split = SplitName(working);
-        var title = Clean(split.Title);
+        // Strip explicit release-year annotations only after recovering the title. A bare year is identity
+        // (Prince - 1999), and even a bracketed year must survive when it is the whole title.
+        var yearStripped = Clean(YearMarker().Replace(split.Title, " "));
+        var title = yearStripped.Length == 0 ? Clean(split.Title) : yearStripped;
         var artist = Clean(split.Artist);
         var album = Clean(split.Album);
 
@@ -287,7 +292,8 @@ public static partial class SoulseekFilenameParser
         // is left null rather than guessed, and the shared validator decides whether that is acceptable for
         // the current mode.
         var albumMatch = BracketedSegment().Match(normalized);
-        if (albumMatch.Success && !IsVersionMarker(albumMatch.Groups["rest"].Value))
+        if (albumMatch.Success && !IsVersionMarker(albumMatch.Groups["rest"].Value)
+            && !YearMarker().IsMatch(albumMatch.Value))
         {
             var album = albumMatch.Groups["rest"].Value.Trim();
             var title = normalized.Remove(albumMatch.Index, albumMatch.Length).Trim();

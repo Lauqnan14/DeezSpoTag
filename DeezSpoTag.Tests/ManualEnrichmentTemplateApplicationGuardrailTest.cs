@@ -7,6 +7,21 @@ namespace DeezSpoTag.Tests;
 public sealed class ManualEnrichmentTemplateApplicationGuardrailTest
 {
     [Fact]
+    public void ExternalEnrichmentPreparesFingerprintAndProviderMatchesBeforeOneTaggingPass()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.RunOrchestration.cs");
+        var passes = ExtractMethod(source, "private async Task ExecutePlatformPassesAsync");
+        Assert.Contains("PrepareExternalFileEnrichmentAsync", passes, StringComparison.Ordinal);
+        Assert.True(passes.IndexOf("PrepareExternalFileEnrichmentAsync", StringComparison.Ordinal)
+            < passes.IndexOf("ExecutePlainPlatformPassAsync", StringComparison.Ordinal));
+        var prepare = ExtractMethod(source, "private async Task PrepareExternalFileEnrichmentAsync");
+        Assert.True(prepare.IndexOf("TryApplyShazam", StringComparison.Ordinal)
+            < prepare.IndexOf("for (var platformIndex", StringComparison.Ordinal));
+        Assert.Contains("ExternalMatchResults", prepare, StringComparison.Ordinal);
+        Assert.Contains("SelectExternalRelease", prepare, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ManualStart_PassesActiveProfileFolderStructureToRuntimeConfig()
     {
         var controllerSource = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs");
@@ -30,7 +45,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTest
         Assert.Contains("OrganizeSidecarsIntoTemplateFolders: true", source, StringComparison.Ordinal);
         Assert.Contains("MaterializeToTemplatePath: true", source, StringComparison.Ordinal);
         Assert.Contains("ForceShazamFingerprint = plan.ForceShazamFingerprint", source, StringComparison.Ordinal);
-        Assert.Contains("ManualForceFingerprintKey", source, StringComparison.Ordinal);
+        Assert.Contains("ForceShazamFingerprint: true", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ManualShazamBootstrapTags", source, StringComparison.Ordinal);
         Assert.DoesNotContain("manual enrichment Shazam bootstrap", source, StringComparison.Ordinal);
         Assert.Contains("stageRoot[\"organizeSidecarsIntoTemplateFolders\"] = true", source, StringComparison.Ordinal);

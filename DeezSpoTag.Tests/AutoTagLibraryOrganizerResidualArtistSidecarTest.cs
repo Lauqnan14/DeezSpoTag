@@ -52,6 +52,48 @@ public sealed class AutoTagLibraryOrganizerResidualArtistSidecarTest : IDisposab
             shazamRecognition);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FinalTagsApplyTheSavedAlbumAndAudioTemplatesTogether(bool sourceFoldersAreProvisional)
+    {
+        var staging = Path.Join(_tempRoot, "staging");
+        var oldAlbum = Path.Join(staging, "Artist", "Provisional Album");
+        Directory.CreateDirectory(oldAlbum);
+        var audio = Path.Join(oldAlbum, "old.wav");
+        DeliveredAudioQualityGuardTest.WriteWave(audio, 16);
+        using (var file = TagLib.File.Create(audio))
+        {
+            file.Tag.Title = "Final Title"; file.Tag.Performers = ["Artist"];
+            file.Tag.AlbumArtists = ["Artist"]; file.Tag.Album = "Final Album";
+            file.Tag.Year = 1997; file.Tag.Track = 7; file.Tag.TrackCount = 12; file.Save();
+        }
+        await File.WriteAllTextAsync(Path.ChangeExtension(audio, ".lrc"), "lyrics");
+        var options = new AutoTagOrganizerOptions
+        {
+            BatchScopedFilesOnly = true, MoveMisplacedFiles = true, RenameFilesToTemplate = true,
+            SourceFoldersAreProvisional = sourceFoldersAreProvisional, OnlyMoveWhenTagged = true,
+            CreateArtistFolderOverride = true, ArtistNameTemplateOverride = "%artist%",
+            CreateAlbumFolderOverride = true, AlbumNameTemplateOverride = "%year% - %album%",
+            TracknameTemplateOverride = "%tracknumber% - %title%"
+        };
+        var report = await _organizer.OrganizeFilesWithReportAsync(staging, [audio], options, null, default);
+        var expected = Path.Join(staging, "Artist", "1997 - Final Album", "07 - Final Title.wav");
+        if (!sourceFoldersAreProvisional)
+        {
+            Assert.True(File.Exists(audio));
+            Assert.False(File.Exists(expected));
+            Assert.True(File.Exists(Path.ChangeExtension(audio, ".lrc")));
+            return;
+        }
+        Assert.True(File.Exists(expected), string.Join(Environment.NewLine, report.Entries));
+        Assert.True(File.Exists(Path.ChangeExtension(expected, ".lrc")));
+        Assert.False(File.Exists(audio));
+        using var result = TagLib.File.Create(expected);
+        Assert.Equal("Final Album", result.Tag.Album);
+        Assert.Equal("Final Title", result.Tag.Title);
+    }
+
     [Fact]
     public async Task OrganizePathAsync_MovesResidualArtistArtworkAndDeletesOldArtistFolder()
     {

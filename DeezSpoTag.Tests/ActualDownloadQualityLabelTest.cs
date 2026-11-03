@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Soulseek;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -78,6 +79,43 @@ public sealed class ActualDownloadQualityLabelTest
         {
             File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void ApplyTo_KeepsDeliveredQualityWhenTheFileCannotBeInspected()
+    {
+        var payload = new SoulseekQueueItem
+        {
+            Quality = "Quality unverified",
+            DeliveredQuality = "CD Lossless (16-bit/44.1kHz)",
+            RequestedQuality = "FLAC"
+        };
+        var method = typeof(QualityCatalog).Assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.ActualDownloadQualityLabel",
+            throwOnError: true)!
+            .GetMethod("ApplyTo", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        method.Invoke(null, [payload, Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.missing")]);
+
+        Assert.Equal("CD Lossless (16-bit/44.1kHz)", payload.Quality);
+    }
+
+    [Fact]
+    public void ApplyTo_KeepsRequestedQualityWhenNothingWasDeliveredOrInspected()
+    {
+        var payload = new SoulseekQueueItem
+        {
+            Quality = "",
+            RequestedQuality = "FLAC"
+        };
+        var method = typeof(QualityCatalog).Assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.ActualDownloadQualityLabel",
+            throwOnError: true)!
+            .GetMethod("ApplyTo", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        method.Invoke(null, [payload, Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.missing")]);
+
+        Assert.Equal("FLAC", payload.Quality);
     }
 
     private static MethodInfo GetFormatterMethod(string name)

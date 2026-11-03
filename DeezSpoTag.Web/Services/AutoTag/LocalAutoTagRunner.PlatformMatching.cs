@@ -170,61 +170,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return null;
     }
 
-    private async Task ApplyCentralIdentityForManualEnrichmentAsync(
-        AutoTagAudioInfo info,
-        AutoTagRunnerConfig config,
-        Action<string> logCallback,
-        CancellationToken token)
-    {
-        var resolution = await _trackIdentityResolver.ResolveAsync(
-            new TrackIdentityResolutionRequest(
-                SourcePlatform: ShazamPlatform,
-                SourceUrl: AutoTagTagValueReader.ReadFirstTagValue(info, "URL", WwwAudioFileTag),
-                Title: info.Title,
-                Artist: info.Artists.FirstOrDefault() ?? info.Artist,
-                Album: info.Album,
-                Isrc: info.Isrc,
-                DurationMs: info.DurationSeconds is > 0 ? info.DurationSeconds.Value * 1000 : null,
-                TargetPlatforms: ["spotify", "deezer", "apple", "qobuz", "tidal", "amazon"],
-                PreferredReleaseType: config.ManualReleasePreference),
-            token);
-
-        info.Title = FirstNonEmpty(resolution.Title, info.Title) ?? info.Title;
-        info.Artist = FirstNonEmpty(resolution.Artist, info.Artist) ?? info.Artist;
-        info.Album = FirstNonEmpty(resolution.Album, info.Album);
-        info.Isrc = FirstNonEmpty(resolution.Isrc, info.Isrc);
-        var spotifyUrl = FirstNonEmpty(
-            NormalizeSpotifyTrackUrl(resolution.SpotifyUrl),
-            NormalizeSpotifyTrackUrl(AutoTagTagValueReader.ReadFirstTagValue(info, "SHAZAM_SPOTIFY_URL")),
-            NormalizeSpotifyTrackUrl(resolution.SpotifyId));
-        var spotifyId = FirstNonEmpty(resolution.SpotifyId, ExtractSpotifyTrackIdFromTags(info.Tags));
-        AddResolvedIdentityIfMissing(info, SpotifyTrackIdTag, spotifyId);
-        AddResolvedIdentityIfMissing(info, SpotifyUrlTag, spotifyUrl);
-        AddResolvedIdentityIfMissing(info, DeezerTrackIdTag, resolution.DeezerId);
-        AddResolvedIdentityIfMissing(info, "DEEZER_URL", resolution.DeezerUrl);
-        AddResolvedIdentityIfMissing(info, "ITUNES_TRACK_ID", resolution.AppleId);
-        AddResolvedIdentityIfMissing(info, "APPLE_MUSIC_TRACK_ID", resolution.AppleId);
-        AddResolvedIdentityIfMissing(info, "APPLE_MUSIC_URL", resolution.AppleUrl);
-        AddResolvedIdentityIfMissing(info, "QOBUZ_TRACK_ID", resolution.QobuzId);
-        AddResolvedIdentityIfMissing(info, "TIDAL_TRACK_ID", resolution.TidalId);
-        AddResolvedIdentityIfMissing(info, "AMAZON_TRACK_ID", resolution.AmazonId);
-        logCallback(
-            $"onetagger_autotag: central identity resolved spotify={HasValue(resolution.SpotifyId)}, deezer={HasValue(resolution.DeezerId)}, apple={HasValue(resolution.AppleId)}, qobuz={HasValue(resolution.QobuzId)}, tidal={HasValue(resolution.TidalId)}, amazon={HasValue(resolution.AmazonId)}");
-    }
-
-    private static void AddResolvedIdentityIfMissing(AutoTagAudioInfo info, string key, string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)
-            || !string.IsNullOrWhiteSpace(AutoTagTagValueReader.ReadFirstTagValue(info, key)))
-        {
-            return;
-        }
-
-        info.Tags[key] = [value.Trim()];
-    }
-
-    private static string HasValue(string? value) => string.IsNullOrWhiteSpace(value) ? "no" : "yes";
-
     private static bool HasTrustworthyEmbeddedIdentity(AutoTagAudioInfo source, string filePath)
         => source.HasEmbeddedTitle
             && source.HasEmbeddedArtist
@@ -251,6 +196,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagFileRunContext context,
         AutoTagAudioInfo info)
     {
+        if (context.Plan.PreparedExternalFiles.Contains(context.FileIndex)
+            && context.Plan.ExternalMatchResults.TryGetValue((context.FileIndex, context.Platform), out var prepared))
+        {
+            if (context.Plan.ExternalMatchFailures.TryGetValue((context.FileIndex, context.Platform), out var failure))
+            {
+                context.MatchFailureOutcome = failure.Outcome;
+                context.MatchFailureMessage = failure.Message;
+            }
+            return prepared;
+        }
         var useMatchCache = CanUseMatchCache(info);
         var matchCacheKey = useMatchCache
             ? BuildMatchCacheKey(context.Platform, info, context.Plan.Config, context.Plan.Settings, context.Plan.MatchingConfig)
@@ -380,6 +335,20 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return (capturedIdentity, isValid);
     }
 
+    private static void ConfirmPreparedReleaseIdentities(
+        AutoTagFileRunContext context, IReadOnlyList<(string Platform, AutoTagMatchResult Match)> verified)
+    {
+        if (!context.Plan.FrozenManualReleases.TryGetValue(context.FileIndex, out var selected)) return;
+        foreach (var candidate in verified)
+        {
+            if (!AlbumsReferToSameRelease(selected.Album, candidate.Match.Track.Album)) continue;
+            var native = candidate.Match.ProviderIdentity ?? CaptureProviderIdentity(candidate.Platform, candidate.Match);
+            var releaseId = native.ValueFor(ProviderIdentityField.ReleaseId);
+            if (releaseId is null || IsPlatformReleaseIdShapeValid(candidate.Platform, releaseId))
+                context.Plan.RecordConfirmedProviderIdentity(context.FileIndex, native);
+        }
+    }
+
     private async Task ApplyResolvedMatchAsync(
         AutoTagFileRunContext context,
         AutoTagAudioInfo info,
@@ -408,7 +377,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        if (isManualEnrichment
+        if (isManualEnrichment && !context.Plan.MatchingConfig.PreferAvailableRelease
             && !AutoTagReleaseCategory.MatchesPreference(
                 match.Track.ReleaseType,
                 match.Track.TrackTotal,
@@ -707,6 +676,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
+        return EvaluateVerifiedRecordingMismatchGuard(info, match, matchingConfig);
+    }
+
+    private static string? EvaluateVerifiedRecordingMismatchGuard(
+        AutoTagAudioInfo info, AutoTagMatchResult match, AutoTagMatchingConfig matchingConfig,
+        bool requireRecordingComparison = false)
+    {
         var incomingFullTitle = OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version);
         if (TrackTitleMatcher.HasVersionDrift(info.Title, incomingFullTitle))
         {
@@ -743,12 +719,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return "match rejected by quality guard (artist mismatch)";
         }
 
-        if (IsAuthoritativeIdMatch(match.MatchStrategy))
+        if (!requireRecordingComparison && IsAuthoritativeIdMatch(match.MatchStrategy))
         {
             return null;
         }
 
-        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
+        if (!requireRecordingComparison && HasMatchingIsrc(info.Isrc, match.Track.Isrc))
         {
             return null;
         }
@@ -1072,6 +1048,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("strictness=").Append(matchingConfig.Strictness.ToString("0.###", CultureInfo.InvariantCulture)).Append(';');
         builder.Append("multiple=").Append(matchingConfig.MultipleMatches).Append(';');
         builder.Append("preferredRelease=").Append(NormalizeCacheToken(matchingConfig.PreferredReleaseType)).Append(';');
+        builder.Append("preferAvailableRelease=").Append(matchingConfig.PreferAvailableRelease).Append(';');
         builder.Append("matchById=").Append(config.MatchById).Append(';');
         builder.Append("enableLyrics=").Append(ShouldRequestAnyLyrics(config, settings)).Append(';');
         builder.Append("lyricsSyncedToggle=").Append(settings.SyncedLyrics).Append(';');

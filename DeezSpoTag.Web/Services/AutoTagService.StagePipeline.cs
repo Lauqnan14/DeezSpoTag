@@ -363,7 +363,9 @@ public partial class AutoTagService
             AppendLog(job, $"enrichment skipped: {reason}");
         }
 
-        var shouldRunEnhancement = ShouldRunEnhancementForIntent(runIntent);
+        // Metadata enhancement belongs to library runs. External-file enrichment still
+        // owns its template organization, sidecars and final move in post-processing.
+        var shouldRunEnhancement = IsEnhancementRunIntent(runIntent);
         var enhancementSkipReason = "gap-fill tags not configured";
         if (shouldRunEnhancement
             && TryBuildEnhancementStage(

@@ -228,6 +228,10 @@ if [[ "$MODE" == "changed" ]]; then
       DeezSpoTag.Services/Library/*|DeezSpoTag.Web/Services/Library*|DeezSpoTag.Web/Controllers/Api/Library*)
         add_tests_matching '^Library' ;;
       *Playlist*Sync*|*Playlist*Write*|*Playlist*Target*) add_tests_matching '(PlaylistSync|PlaylistMembership|PlaylistRemoval|PlaylistProvisioning|PlaylistPlatform|PlaylistTarget|PlaylistMetadata|PlaylistBatching)' ;;
+      DeezSpoTag.Web/Controllers/Api/PlatformAuthApiController.cs)
+        add_tests_matching '^(SoulseekConnectionService|SlskdClientContract)Test$' ;;
+      DeezSpoTag.Web/wwwroot/js/soulseek.js)
+        add_tests_matching '^SoulseekUiGuardrailTest$' ;;
       *Soulseek*|*Slskd*) add_tests_matching '^Soulseek' ;;
       *Spotify*) add_tests_matching '^Spotify' ;;
       *Lyrics*|*lyrics*) add_tests_matching '(Lyrics|Lrc|Ttml)' ;;

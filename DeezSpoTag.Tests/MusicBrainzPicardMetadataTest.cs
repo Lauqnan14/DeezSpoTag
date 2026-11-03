@@ -253,7 +253,9 @@ public sealed class MusicBrainzPicardMetadataTest
             }
 
             var offset = QueryInt(request.RequestUri, "offset");
-            Assert.Contains("release-events", request.RequestUri.Query, StringComparison.Ordinal);
+            // Release events are returned with releases; requesting them as an inc yields HTTP 400.
+            Assert.DoesNotContain("release-events", request.RequestUri.Query, StringComparison.Ordinal);
+            Assert.Contains("release-groups", request.RequestUri.Query, StringComparison.Ordinal);
             Assert.Contains("limit=100", request.RequestUri.Query, StringComparison.Ordinal);
             var releases = new List<Release>();
             for (var index = 0; index < 100; index++)

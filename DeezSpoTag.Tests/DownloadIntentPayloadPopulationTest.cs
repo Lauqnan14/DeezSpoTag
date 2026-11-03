@@ -21,6 +21,25 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadIntentPayloadPopulationTest
 {
+    [Fact]
+    public void ShazamOriginSurvivesPayloadPopulationAndRetryWithoutChangingTheCatalogSource()
+    {
+        var intent = new DownloadIntent { SourceService = "deezer", SourceUrl = "https://www.deezer.com/track/123" };
+        var origin = typeof(DownloadIntent).GetProperty("DownloadOrigin");
+        Assert.NotNull(origin);
+        origin.SetValue(intent, "shazam");
+        var payload = new DeezerQueueItem();
+        InvokePopulateStandardQueuePayload(payload, intent, 180);
+        var payloadOrigin = typeof(EngineQueueItemBase).GetProperty("DownloadOrigin");
+        Assert.NotNull(payloadOrigin);
+        Assert.Equal("shazam", payloadOrigin.GetValue(payload));
+        Assert.Equal("deezer", payload.SourceService);
+        var queued = ((DownloadQueueItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(DownloadQueueItem))) with { Engine = "deezer", PayloadJson = System.Text.Json.JsonSerializer.Serialize(payload) };
+        var restored = (DownloadIntent)typeof(DownloadIntentService).GetMethod("BuildIntentFromQueueItem", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [queued])!;
+        Assert.Equal("shazam", origin.GetValue(restored));
+        Assert.Equal(payload.SourceUrl, restored.SourceUrl);
+    }
+
     [Theory]
     [InlineData(0, "pending")]
     [InlineData(4, "resolved")]

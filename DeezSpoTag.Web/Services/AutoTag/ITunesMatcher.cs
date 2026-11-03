@@ -11,12 +11,13 @@ public sealed class ItunesMatcher
     public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, ItunesMatchConfig itunesConfig, CancellationToken cancellationToken)
     {
         var authoritativeLookupMiss = false;
+        ItunesTrackInfo? availableIdRelease = null;
         if (itunesConfig.MatchById)
         {
             var existingTrackId = AutoTagIdentityTags.ReadAppleTrackId(info);
             if (long.TryParse(existingTrackId, out var numericTrackId) && numericTrackId > 0)
             {
-                var lookup = await _client.LookupTrackAsync(existingTrackId, itunesConfig.Country, cancellationToken);
+                var lookup = await _client.LookupTrackAsync(existingTrackId, itunesConfig.Country, cancellationToken, required: config.PreferAvailableRelease);
                 var lookupTrack = lookup?.ToTrackInfo(itunesConfig);
                 if (lookupTrack != null
                     && AutoTagReleaseCategory.MatchesPreference(
@@ -32,26 +33,25 @@ public sealed class ItunesMatcher
                     };
                 }
 
-                authoritativeLookupMiss = true;
+                if (config.PreferAvailableRelease) availableIdRelease = lookupTrack;
+                authoritativeLookupMiss = lookupTrack is null;
             }
         }
 
         var query = $"{info.Artist} {OneTaggerMatching.CleanTitle(info.Title)}";
-        var results = await _client.SearchAsync(query, itunesConfig.Country, itunesConfig.SearchLimit, cancellationToken);
+        var results = await _client.SearchAsync(query, itunesConfig.Country, itunesConfig.SearchLimit, cancellationToken, required: config.PreferAvailableRelease);
         if (results?.Results == null || results.Results.Count == 0)
         {
-            return null;
+            return availableIdRelease is null ? null : new AutoTagMatchResult
+            { Accuracy = 1, Track = ToAutoTagTrack(availableIdRelease), MatchStrategy = "id" };
         }
 
         var candidates = results.Results
             .Select(r => r.ToTrackInfo(itunesConfig))
             .Where(r => r != null)
             .Select(r => r!)
-            .Where(track => AutoTagReleaseCategory.MatchesPreference(
-                track.ReleaseType,
-                track.TrackTotal,
-                config.PreferredReleaseType))
             .ToList();
+        if (availableIdRelease is not null) candidates.Add(availableIdRelease);
         if (candidates.Count == 0)
         {
             return null;
@@ -69,18 +69,16 @@ public sealed class ItunesMatcher
             }
         }
 
-        var match = AutoTagMatchSelection.BuildMatchResult(
-            info,
-            candidates,
-            config,
+        var selected = AutoTagMatchSelection.MatchPreferredTrack(
+            info, candidates, config,
             new OneTaggerMatching.TrackSelectors<ItunesTrackInfo>(
-                track => track.Title,
-                _ => null,
-                track => track.Artists,
-                track => track.Duration,
-                track => track.ReleaseDate),
-            ToAutoTagTrack,
-            matchArtist: true);
+                track => track.Title, _ => null, track => track.Artists,
+                track => track.Duration, track => track.ReleaseDate),
+            track => track.ReleaseType, track => track.TrackTotal);
+        var match = selected is null ? null : new AutoTagMatchResult
+        {
+            Accuracy = selected.Accuracy, Track = ToAutoTagTrack(selected.Track)
+        };
         if (match != null)
         {
             match.MatchStrategy = authoritativeLookupMiss ? "text_fallback" : "text";

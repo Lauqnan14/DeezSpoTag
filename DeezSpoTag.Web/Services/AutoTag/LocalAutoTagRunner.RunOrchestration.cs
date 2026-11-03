@@ -129,7 +129,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             MultipleMatches = config.MultipleMatches,
             PreferredReleaseType = IsManualEnrichment(config)
                 ? config.ManualReleasePreference
-                : null
+                : null,
+            PreferAvailableRelease = IsManualEnrichment(config)
         };
         var settings = LoadRuntimeSettings(config.Technical, config);
         settings.DownloadLocation = targetPath;
@@ -210,6 +211,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         while (true)
         {
             var passFileCount = plan.FileCount;
+            if (IsManualEnrichment(plan.Config))
+            {
+                await PrepareExternalFileEnrichmentAsync(plan, jobMatchCache, statusCallback, logCallback, token);
+                OrganizeExternalFileBatchBeforeTagging(plan, jobMatchCache, statusCallback,
+                    0, passFileCount, logCallback, token);
+            }
             if (IsLibraryWideEnhancementBatchingEnabled(plan.Config))
             {
                 await ExecuteLibraryWideEnhancementBatchesAsync(
@@ -339,7 +346,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // a partial set of tags.
             if (firstPlatformIndex == 0)
             {
-                await OrganizeExternalFileBatchBeforeTaggingAsync(
+                OrganizeExternalFileBatchBeforeTagging(
                     plan,
                     jobMatchCache,
                     statusCallback,
@@ -426,7 +433,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool IsLibraryWideEnhancementBatchingEnabled(AutoTagRunnerConfig config)
-        => (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
+        => !IsManualEnrichment(config) && (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
 
     /// <summary>
     /// Two-wave enhancement order: wave 1 = files flagged missing core metadata by the
@@ -479,32 +486,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         int batchSize)
         => EnhancementBatchPlanner.BuildRanges(files, fileCount, batchSize);
 
-    /// <summary>
-    ///     Identifies every file in a batch and organizes the album groups, before any platform writes tags.
-    /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         This is the boundary that makes an album arrive in one folder. It walks the enabled platforms
-    ///         in their configured order per file and stops at the first match that passes the same acceptance
-    ///         guards the tagging path applies - release preference, provider reliability, global mismatch and
-    ///         edition conflict - then groups the accepted files by the album identity they established and
-    ///         moves each group into one shared root, applying the folder and file templates to the whole
-    ///         group at once.
-    ///     </para>
-    ///     <para>
-    ///         No tag is written here. A file that no platform can identify is simply left alone: it stays
-    ///         where it is, and the ordinary tagging pass reaches it and decides whether to review it. That
-    ///         keeps this a pure organization step and leaves every existing failure path exactly where it
-    ///         was.
-    ///     </para>
-    ///     <para>
-    ///         The match found here is not discarded. It is stored in the job match cache keyed by the same
-    ///         platform and audio info the tagging pass will use, so re-reaching this file on its own tagging
-    ///         platform costs no network call - the lookup is reused rather than repeated, and the confirmed
-    ///         provider identity it established is preserved.
-    ///     </para>
-    /// </remarks>
-    private async Task OrganizeExternalFileBatchBeforeTaggingAsync(
+    /// <summary>Organizes the already-verified release groups before tag application, without new lookups.</summary>
+    private void OrganizeExternalFileBatchBeforeTagging(
         AutoTagRunPlan plan,
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
@@ -537,14 +520,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 continue;
             }
 
-            var accepted = await TryRecognizeFileBeforeTaggingAsync(
-                plan,
-                jobMatchCache,
-                statusCallback,
-                fileIndex,
-                path,
-                logCallback,
-                token);
+            var accepted = GetPreparedExternalRelease(plan, fileIndex, token);
 
             if (accepted is not null)
             {
@@ -631,96 +607,171 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             $"onetagger_autotag: organized album group of {group.Count} file(s) into {sharedRoot} before tagging ({moved} moved)");
     }
 
-    /// <summary>
-    ///     Walks the enabled platforms for one file and returns its first accepted match, or null.
-    /// </summary>
-    /// <remarks>
-    ///     "Accepted" means the guards actually passed, not that a provider returned something. A candidate
-    ///     that the release preference, the provider reliability guard, the global mismatch guard or the
-    ///     edition check rejects is not an identity, and treating it as one would organize the file into a
-    ///     folder the tagging pass then refuses.
-    /// </remarks>
-    private async Task<(AutoTagAudioInfo Info, AutoTagTrack Track)?> TryRecognizeFileBeforeTaggingAsync(
-        AutoTagRunPlan plan,
-        JobMatchCacheState jobMatchCache,
-        Action<TaggingStatusWrap> statusCallback,
-        int fileIndex,
-        string filePath,
-        Action<string> logCallback,
-        CancellationToken token)
+    /// <summary>Fingerprints external audio and resolves providers once, in platform-major order.</summary>
+    private async Task PrepareExternalFileEnrichmentAsync(
+        AutoTagRunPlan plan, JobMatchCacheState jobMatchCache,
+        Action<TaggingStatusWrap> statusCallback, Action<string> logCallback, CancellationToken token)
     {
-        var validationInfo = BuildAudioInfo(
-            filePath,
-            plan.TargetPath,
-            plan.Config.ParseFilename,
-            plan.Config.TracknameTemplate,
-            plan.Config.TitleRegex);
+        var pending = Enumerable.Range(0, plan.FileCount)
+            .Where(index => !plan.PreparedExternalFiles.Contains(index)
+                && !plan.PreSkippedFiles.Contains(plan.Files[index])
+                && !plan.ReviewedFiles.Contains(plan.Files[index])).ToList();
+        if (pending.Count == 0) return;
 
-        foreach (var platform in plan.EffectivePlatforms)
+        // Every audio file is fingerprinted before any catalog lookup or tag write.
+        foreach (var index in pending)
         {
             token.ThrowIfCancellationRequested();
-            if (IsPlatformUnavailable(jobMatchCache, platform) || IsLyricsOnlyPlatform(platform))
+            var file = plan.Files[index];
+            var original = BuildAudioInfo(file, plan.TargetPath, plan.Config.ParseFilename,
+                plan.Config.TracknameTemplate, plan.Config.TitleRegex);
+            plan.OriginalManualInfo[index] = CloneAudioInfo(original);
+            var working = CloneAudioInfo(original);
+            statusCallback(new TaggingStatusWrap
             {
-                continue;
+                Platform = ShazamPlatform, Progress = 0, PlatformIndex = 0, PlatformCount = plan.PlatformCount,
+                FileIndex = index, FileCount = plan.FileCount, NextPlatformIndex = 0, NextFileIndex = 0,
+                Status = new TaggingStatus
+                {
+                    Status = "processing", Path = file, Message = "Fingerprinting audio",
+                    RecognitionStrategy = "fingerprint", UsedShazam = false
+                }
+            });
+            logCallback($"onetagger_autotag: fingerprinting {index + 1}/{plan.FileCount}: {Path.GetFileName(file)}");
+            var recognition = TryApplyShazam(file, working, plan.Config, true, true, plan.ShazamCache, logCallback, token);
+            if (recognition.IsFatal) throw new AutoTagRunPausedException(recognition.Error ?? "Shazam is unavailable.");
+            statusCallback(new TaggingStatusWrap
+            {
+                Platform = ShazamPlatform, Progress = 0, PlatformIndex = 0, PlatformCount = plan.PlatformCount,
+                FileIndex = index, FileCount = plan.FileCount, NextPlatformIndex = 0, NextFileIndex = 0,
+                Status = new TaggingStatus
+                {
+                    Status = "processing", Path = file,
+                    Message = recognition.UsedShazam ? "Audio fingerprint identified" : "No audio fingerprint match",
+                    RecognitionStrategy = "fingerprint", UsedShazam = recognition.UsedShazam,
+                    Outcome = recognition.UsedShazam ? "fingerprint_identified" : "fingerprint_no_match"
+                }
+            });
+            if (recognition.UsedShazam) plan.ShazamIdentifiedFiles.Add(index);
+            else logCallback($"onetagger_autotag: fingerprint found no recording for {Path.GetFileName(file)}; provider matches still require recording verification");
+            if (recognition.UsedShazam && HasTrustworthyEmbeddedIdentity(original, file))
+            {
+                var fingerprintMatch = new AutoTagMatchResult
+                {
+                    Track = new AutoTagTrack { Title = working.Title, Artists = working.Artists.ToList() }
+                };
+                var conflict = EvaluateGlobalMismatchGuard(original, fingerprintMatch, plan.MatchingConfig);
+                if (!string.IsNullOrWhiteSpace(conflict))
+                {
+                    plan.ReviewedFiles.Add(file);
+                    plan.PreparedExternalFiles.Add(index);
+                    logCallback($"onetagger_autotag: fingerprint conflicts with embedded identity for {Path.GetFileName(file)}: {conflict}; file preserved for review");
+                    statusCallback(new TaggingStatusWrap
+                    {
+                        Platform = ShazamPlatform, Progress = 0, FileIndex = index, FileCount = plan.FileCount,
+                        NextPlatformIndex = 0, NextFileIndex = 0,
+                        Status = new TaggingStatus { Status = "review", Path = file,
+                            Message = "Audio fingerprint conflicts with the file's existing identity.",
+                            Outcome = "fingerprint_conflict", RecognitionStrategy = "fingerprint", UsedShazam = true }
+                    });
+                    continue;
+                }
             }
-
-            var context = new AutoTagFileRunContext
-            {
-                Plan = plan,
-                JobMatchCache = jobMatchCache,
-                Platform = platform,
-                PlatformIndex = Math.Max(0, plan.EffectivePlatforms.IndexOf(platform)),
-                FileIndex = fileIndex,
-                File = filePath,
-                Progress = 0,
-                NextPlatformIndex = 0,
-                NextFileIndex = fileIndex + 1,
-                StatusCallback = statusCallback,
-                LogCallback = logCallback,
-                Token = token
-            };
-
-            var info = CloneAudioInfo(validationInfo);
-            if (TryApplyShazam(
-                    filePath,
-                    info,
-                    plan.Config,
-                    plan.EnableShazamFallback,
-                    plan.ForceShazamMatch,
-                    plan.ShazamCache,
-                    logCallback,
-                    token) is { IsFatal: true } fatal)
-            {
-                logCallback($"onetagger_autotag: shazam unavailable during pre-tag recognition: {fatal.Error}");
-                continue;
-            }
-
-            var match = await ResolvePlatformMatchAsync(context, PrepareProviderMatchInfo(context, info));
-            if (match is null)
-            {
-                continue;
-            }
-
-            if (!IsAcceptableFirstMatch(context, validationInfo, match))
-            {
-                continue;
-            }
-
-            // Establish the album identity now, while every track of the group is still a candidate, so the
-            // folder decision below sees the whole release rather than one file at a time.
-            var (capturedIdentity, hasAuthoritativeResult) = ResolveCapturedIdentity(context, match);
-            match.ProviderIdentity = capturedIdentity;
-            ApplyAlbumIdentityConsensus(
-                context,
-                validationInfo,
-                match.Track,
-                capturedIdentity,
-                hasAuthoritativeProviderResult: hasAuthoritativeResult);
-
-            return (info, match.Track);
+            RestoreTrustedCoreIdentity(original, working, file);
+            plan.ResolvedManualInfo[index] = CloneAudioInfo(working);
         }
 
-        return null;
+        // Provider-major acquisition happens once. Tagging and organization consume these results,
+        // including misses and failures, rather than running a second set of lookups.
+        pending.RemoveAll(index => plan.ReviewedFiles.Contains(plan.Files[index]));
+        var verified = pending.ToDictionary(index => index,
+            _ => new List<(string Platform, AutoTagMatchResult Match)>());
+        for (var platformIndex = 0; platformIndex < plan.PlatformCount; platformIndex++)
+        {
+            var platform = plan.EffectivePlatforms[platformIndex];
+            if (IsLyricsOnlyPlatform(platform) || platform == "genre-intelligence") continue;
+            logCallback($"onetagger_autotag: resolving {platform} for {pending.Count} fingerprinted file(s)");
+            foreach (var index in pending)
+            {
+                token.ThrowIfCancellationRequested();
+                var context = new AutoTagFileRunContext
+                {
+                    Plan = plan, JobMatchCache = jobMatchCache, Platform = platform,
+                    PlatformIndex = platformIndex, FileIndex = index, File = plan.Files[index], Progress = 0,
+                    NextPlatformIndex = platformIndex, NextFileIndex = index,
+                    StatusCallback = statusCallback, LogCallback = logCallback, Token = token
+                };
+                var original = plan.OriginalManualInfo[index];
+                var info = platform == ShazamPlatform && IsTrustedSourceIdentity(original, context.File, plan.Config)
+                    ? CloneAudioInfo(original) : CloneAudioInfo(plan.ResolvedManualInfo[index]);
+                var match = await ResolvePlatformMatchAsync(context, PrepareProviderMatchInfo(context, info));
+                var validation = HasTrustworthyEmbeddedIdentity(original, context.File)
+                    ? original : plan.ResolvedManualInfo[index];
+                if (match is not null && !IsAcceptableFirstMatch(context, validation, match)) match = null;
+                plan.ExternalMatchResults[(index, platform)] = match;
+                plan.ExternalMatchFailures[(index, platform)] = (context.MatchFailureOutcome, context.MatchFailureMessage);
+                if (match is not null) verified[index].Add((platform, match));
+            }
+        }
+        foreach (var index in pending)
+        {
+            var selected = SelectExternalRelease(verified[index].Select(item => item.Match).ToList(),
+                plan.Config.ManualReleasePreference);
+            if (selected is not null)
+            {
+                var preferredFound = AutoTagReleaseCategory.MatchesPreference(selected.Track.ReleaseType,
+                    selected.Track.TrackTotal, plan.Config.ManualReleasePreference);
+                var incompleteAvailability = plan.ExternalMatchFailures.Any(item => item.Key.FileIndex == index
+                    && item.Value.Outcome is "provider_error" or "provider_timeout" or "provider_unavailable" or "not_configured");
+                if (!preferredFound && incompleteAvailability)
+                {
+                    logCallback($"onetagger_autotag: release selection unresolved for {Path.GetFileName(plan.Files[index])}: a provider failed; absence of the preferred release is not established");
+                    plan.ReviewedFiles.Add(plan.Files[index]);
+                    statusCallback(new TaggingStatusWrap
+                    {
+                        Platform = ShazamPlatform, Progress = 0, FileIndex = index, FileCount = plan.FileCount,
+                        NextPlatformIndex = 0, NextFileIndex = 0,
+                        Status = new TaggingStatus { Status = "review", Path = plan.Files[index],
+                            Message = "Release selection could not be verified because a provider failed.",
+                            Outcome = "provider_error", UsedShazam = plan.ShazamIdentifiedFiles.Contains(index) }
+                    });
+                    plan.PreparedExternalFiles.Add(index);
+                    continue;
+                }
+                var source = verified[index].First(item => ReferenceEquals(item.Match, selected));
+                var selectionContext = new AutoTagFileRunContext
+                {
+                    Plan = plan, JobMatchCache = jobMatchCache, Platform = source.Platform,
+                    PlatformIndex = plan.EffectivePlatforms.IndexOf(source.Platform), FileIndex = index,
+                    File = plan.Files[index], Progress = 0, NextPlatformIndex = 0, NextFileIndex = index,
+                    StatusCallback = statusCallback, LogCallback = logCallback, Token = token
+                };
+                var (identity, authoritative) = ResolveCapturedIdentity(selectionContext, selected);
+                selected.ProviderIdentity = identity;
+                ApplyAlbumIdentityConsensus(selectionContext, plan.OriginalManualInfo[index], selected.Track,
+                    identity, hasAuthoritativeProviderResult: authoritative);
+                plan.ExternalReleaseMatches[index] = source;
+                plan.FrozenManualReleases[index] = ManualReleaseIdentity.FromTrack(selected.Track);
+                ConfirmPreparedReleaseIdentities(selectionContext, verified[index]);
+                logCallback($"onetagger_autotag: selected {selected.Track.ReleaseType ?? "unclassified"} release '{selected.Track.Album}' for {Path.GetFileName(plan.Files[index])} via {source.Platform}; preferred {plan.Config.ManualReleasePreference}");
+            }
+            plan.PreparedExternalFiles.Add(index);
+        }
+    }
+
+    internal static AutoTagMatchResult? SelectExternalRelease(IReadOnlyList<AutoTagMatchResult> verified, string? preference)
+        => verified.FirstOrDefault(match => AutoTagReleaseCategory.MatchesPreference(
+                match.Track.ReleaseType, match.Track.TrackTotal, preference))
+            ?? verified.FirstOrDefault(match => AutoTagReleaseCategory.Resolve(match.Track.ReleaseType, match.Track.TrackTotal) is not null)
+            ?? verified.FirstOrDefault();
+
+    private (AutoTagAudioInfo Info, AutoTagTrack Track)? GetPreparedExternalRelease(
+        AutoTagRunPlan plan, int fileIndex, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!plan.ExternalReleaseMatches.TryGetValue(fileIndex, out var selected)) return null;
+        // The verified release, not a new per-file search, supplies the organization metadata.
+        return (CloneAudioInfo(plan.ResolvedManualInfo[fileIndex]), selected.Match.Track);
     }
 
     /// <summary>
@@ -742,7 +793,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return false;
         }
 
-        if (!AutoTagReleaseCategory.MatchesPreference(
+        if (!context.Plan.MatchingConfig.PreferAvailableRelease
+            && !AutoTagReleaseCategory.MatchesPreference(
                 match.Track.ReleaseType,
                 match.Track.TrackTotal,
                 context.Plan.Config.ManualReleasePreference))
@@ -750,13 +802,21 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return false;
         }
 
+        if (context.Plan.MatchingConfig.PreferAvailableRelease
+            && HasDurationMismatch(validationInfo.DurationSeconds, match.Track.Duration,
+                context.Plan.MatchingConfig.MaxDurationDifferenceSeconds))
+        {
+            // An ID or shared ISRC cannot make a different-length recording eligible.
+            return false;
+        }
+
         var validationBasis = validationInfo;
-        if (!string.IsNullOrWhiteSpace(EvaluateGlobalMismatchGuard(
-                validationBasis,
-                match,
-                context.Plan.MatchingConfig,
-                context.File,
-                treatSourceAsUntrusted: !HasTrustworthyEmbeddedIdentity(validationBasis, context.File))))
+        var mismatch = context.Plan.ShazamIdentifiedFiles.Contains(context.FileIndex)
+            ? EvaluateVerifiedRecordingMismatchGuard(validationBasis, match, context.Plan.MatchingConfig,
+                requireRecordingComparison: true)
+            : EvaluateGlobalMismatchGuard(validationBasis, match, context.Plan.MatchingConfig, context.File,
+                treatSourceAsUntrusted: !HasTrustworthyEmbeddedIdentity(validationBasis, context.File));
+        if (!string.IsNullOrWhiteSpace(mismatch))
         {
             return false;
         }
@@ -837,8 +897,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.ShazamIdentifiedFiles.Contains(context.FileIndex),
                 null,
                 false);
-        var usedShazamForStatus = shazamResult.UsedShazam
-            || string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
+        var usedShazamForStatus = shazamResult.UsedShazam;
 
         if (shazamResult.IsFatal)
         {
@@ -856,19 +915,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             context.LogCallback(
                 $"onetagger_autotag: shazam could not identify {Path.GetFileName(context.File)}; continuing with {context.Platform}");
-        }
-
-        if (isManualEnrichment && firstManualPass)
-        {
-            context.Plan.OriginalManualInfo[context.FileIndex] = CloneAudioInfo(validationInfo);
-            RestoreTrustedCoreIdentity(validationInfo, info, context.File);
-            await ApplyCentralIdentityForManualEnrichmentAsync(info, context.Plan.Config, context.LogCallback, context.Token);
-            RestoreTrustedCoreIdentity(validationInfo, info, context.File);
-            context.Plan.ResolvedManualInfo[context.FileIndex] = CloneAudioInfo(info);
-            if (shazamResult.UsedShazam)
-            {
-                context.Plan.ShazamIdentifiedFiles.Add(context.FileIndex);
-            }
         }
 
         var identityIsTrusted = IsTrustedSourceIdentity(validationInfo, context.File, context.Plan.Config);
@@ -1204,6 +1250,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
             if (changed)
             {
+                var transitions = root["materializedPathTransitions"] is JsonObject recorded
+                    ? recorded.ToDictionary(pair => pair.Key, pair => pair.Value!.GetValue<string>(), StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                DeezSpoTag.Services.Download.Queue.FinalDestinationTracker.RecordPathTransition(transitions, previousPath, materializedPath);
+                root["materializedPathTransitions"] = JsonSerializer.SerializeToNode(transitions);
                 IOFile.WriteAllText(configPath, root.ToJsonString(CaseInsensitiveJsonOptions), new UTF8Encoding(false));
             }
         }

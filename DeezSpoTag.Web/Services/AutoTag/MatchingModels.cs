@@ -27,6 +27,8 @@ public sealed class AutoTagMatchingConfig
     public double Strictness { get; set; } = 0.7;
     public MultipleMatchesSort MultipleMatches { get; set; } = MultipleMatchesSort.Default;
     public string? PreferredReleaseType { get; set; }
+    // External-file enrichment chooses among real releases; ordinary matching stays strict.
+    public bool PreferAvailableRelease { get; set; }
 }
 
 public sealed class AutoTagMatchResult

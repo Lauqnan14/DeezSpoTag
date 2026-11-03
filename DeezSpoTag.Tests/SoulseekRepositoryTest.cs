@@ -224,7 +224,10 @@ public sealed class SoulseekRepositoryTest : IDisposable
         var searchId = Guid.NewGuid();
         await repository.RecordSearchStartedAsync(searchId, "a", SoulseekSearchMode.Manual, null, TestContext());
 
-        // A cutoff in the future means the recorded search is older than it, so it goes.
+        // Even a future cutoff must not remove a running search.
+        Assert.Equal(0, await repository.DeleteSearchesOlderThanAsync(DateTimeOffset.UtcNow.AddHours(1), TestContext()));
+        await repository.RecordSearchFailedAsync(searchId, 2, 1, "test_failure", "Search failed.", TestContext());
+        // A failed search is terminal despite having neither completion nor timeout set.
         Assert.Equal(1, await repository.DeleteSearchesOlderThanAsync(DateTimeOffset.UtcNow.AddHours(1), TestContext()));
         Assert.Null(await repository.GetSearchAsync(searchId, TestContext()));
 
@@ -232,6 +235,23 @@ public sealed class SoulseekRepositoryTest : IDisposable
         await repository.RecordSearchStartedAsync(searchId, "a", SoulseekSearchMode.Manual, null, TestContext());
         Assert.Equal(0, await repository.DeleteSearchesOlderThanAsync(DateTimeOffset.UtcNow.AddHours(-1), TestContext()));
         Assert.NotNull(await repository.GetSearchAsync(searchId, TestContext()));
+    }
+
+    [Fact]
+    public async Task ReobservedSearchCannotKeepItsPreviousTerminalFlagAndBePrunedWhileRunning()
+    {
+        var repository = CreateRepository();
+        var id = Guid.NewGuid();
+        await repository.RecordSearchStartedAsync(id, "query", SoulseekSearchMode.Manual, null);
+        await repository.RecordSearchFailedAsync(id, 42, 3, "response_retrieval_failed", "Failed.");
+        await repository.RecordSearchStartedAsync(id, "query", SoulseekSearchMode.Manual, null);
+        var running = await repository.GetSearchAsync(id);
+        Assert.Null(running!.EndedAtUtc);
+        Assert.Null(running.ErrorCode);
+        Assert.False(running.Completed);
+        Assert.False(running.TimedOut);
+        Assert.Equal(0, await repository.DeleteSearchesOlderThanAsync(DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.NotNull(await repository.GetSearchAsync(id));
     }
 
     [Fact]
@@ -245,6 +265,7 @@ public sealed class SoulseekRepositoryTest : IDisposable
         var newer = Guid.NewGuid();
 
         await repository.RecordSearchStartedAsync(older, "older", SoulseekSearchMode.Manual, "queue-cutoff", TestContext());
+        await repository.RecordSearchFailedAsync(older, 0, 0, "test_failure", "Search failed.", TestContext());
         await Task.Delay(1100);
         await repository.RecordSearchStartedAsync(newer, "newer", SoulseekSearchMode.Manual, "queue-cutoff", TestContext());
 
@@ -295,6 +316,25 @@ public sealed class SoulseekRepositoryTest : IDisposable
         Assert.True(stored[0].Accepted);
         Assert.False(stored[1].Accepted);
         Assert.Equal("quality_not_allowed", stored[1].RejectedBecause);
+    }
+
+    [Fact]
+    public async Task SavedCandidatesKeepQualityGroupsAndOrderEligiblePeersBySpeed()
+    {
+        var repository = CreateRepository();
+        var searchId = Guid.NewGuid();
+        await repository.RecordSearchStartedAsync(searchId, "a", SoulseekSearchMode.Manual, "queue-priority", TestContext());
+        var slow = Candidate("slow", "slow.flac", 0.99, true);
+        var fast = Candidate("fast", "fast.flac", 0.80, true);
+        var mp3 = Candidate("mp3", "other.mp3", 0.70, true) with { Quality = "MP3_320", CanonicalRank = 40 };
+        var rejected = Candidate("rejected", "rejected.flac", 0.75, false, "blocked_user");
+        fast = fast with { Raw = fast.Raw with { PeerUploadSpeed = 8_000_000 } };
+        slow = slow with { Raw = slow.Raw with { PeerUploadSpeed = 2_000_000 } };
+        rejected = rejected with { Raw = rejected.Raw with { PeerUploadSpeed = int.MaxValue } };
+        mp3 = mp3 with { Raw = mp3.Raw with { PeerUploadSpeed = int.MaxValue } };
+        await repository.ReplaceCandidatesAsync(searchId, [slow, fast, mp3, rejected], TestContext());
+        var stored = await repository.GetCandidatesAsync(searchId, TestContext());
+        Assert.Equal(new[] { "fast", "slow", "rejected", "mp3" }, stored.Select(candidate => candidate.Username));
     }
 
     [Fact]
@@ -453,6 +493,59 @@ public sealed class SoulseekRepositoryTest : IDisposable
         var remaining = await repository.GetPeersInCooldownAsync(TestContext());
         Assert.Single(remaining);
         Assert.Equal("live", remaining[0].Username);
+        var expired = await repository.GetPeerStatAsync("expired", TestContext());
+        Assert.NotNull(expired);
+        Assert.Equal(1, expired.FailureCount);
+        Assert.Null(expired.CooldownExpiresUtc);
+        Assert.Equal(0, await repository.DeleteExpiredCooldownsAsync(TestContext()));
+    }
+
+    [Fact]
+    public async Task CandidateReplacementFailureRollsBackDeletionAndAllInserts()
+    {
+        var repository = CreateRepository();
+        var id = Guid.NewGuid();
+        await repository.RecordSearchStartedAsync(id, "query", SoulseekSearchMode.Manual, null);
+        await repository.ReplaceCandidatesAsync(id, [Candidate("peer", "original.flac", 90, true)]);
+        await using var db = new SqliteConnection($"Data Source={_dbPath}");
+        await db.OpenAsync();
+        await using var trigger = new SqliteCommand("CREATE TRIGGER fail_candidate BEFORE INSERT ON soulseek_candidate WHEN NEW.filename = 'fail.flac' BEGIN SELECT RAISE(ABORT, 'test failure'); END;", db);
+        await trigger.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<SqliteException>(() => repository.ReplaceCandidatesAsync(id,
+            [Candidate("peer", "first.flac", 80, true), Candidate("peer", "fail.flac", 70, true)]));
+        Assert.Equal("original.flac", Assert.Single(await CreateRepository().GetCandidatesAsync(id)).Filename);
+        await repository.RecordSearchFailedAsync(id, 1, 1, "test_failure", "Failed.");
+        Assert.Equal(1, await repository.DeleteSearchesOlderThanAsync(DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Empty(await repository.GetCandidatesAsync(id));
+    }
+
+    [Fact]
+    public async Task AnonymousTransferCannotOverwriteAnotherTransfer()
+    {
+        var repository = CreateRepository();
+        var status = Status(Guid.NewGuid(), "queued", false) with { TransferId = null };
+        await Assert.ThrowsAsync<ArgumentException>(() => repository.UpsertTransferAsync(status, "queue", null, false));
+        await Assert.ThrowsAsync<ArgumentException>(() => repository.UpsertTransferAsync(status with { TransferId = Guid.Empty }, "queue", null, false));
+        Assert.Null(await repository.GetTransferAsync(Guid.Empty));
+    }
+
+    [Fact]
+    public async Task ScanClaimsRejectConcurrentStartsAndRecoverExpiredOwners()
+    {
+        var first = CreateRepository();
+        var oldStart = DateTimeOffset.UtcNow - SoulseekRepository.ShareScanLease - TimeSpan.FromMinutes(1);
+        Assert.True(await first.RecordShareScanStartedAsync(startedAtUtc: oldStart));
+        var state = await CreateRepository().GetShareScanStateAsync();
+        Assert.False(state!.IsRunning);
+        Assert.NotNull(state.Error);
+        var current = DateTimeOffset.UtcNow;
+        Assert.True(await first.RecordShareScanStartedAsync(startedAtUtc: current));
+        Assert.False(await CreateRepository().RecordShareScanStartedAsync());
+        // A late completion from the expired request cannot finish the new request.
+        await first.RecordShareScanCompletedAsync(0, 0, "Old request failed.", expectedStartedAtUtc: oldStart);
+        Assert.True((await first.GetShareScanStateAsync())!.IsRunning);
+        await first.RecordShareScanCompletedAsync(3, 1234, null, expectedStartedAtUtc: current);
+        Assert.False((await first.GetShareScanStateAsync())!.IsRunning);
     }
 
     [Fact]
@@ -500,6 +593,28 @@ public sealed class SoulseekRepositoryTest : IDisposable
         await repository.AttachSourceClaimsAsync(owner, transferId);
         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.AttachSourceClaimsAsync(owner, Guid.NewGuid()));
         Assert.Equal(transferId, Assert.Single(await repository.GetSourceClaimsForQueueAsync("queue")).TransferId);
+    }
+
+    [Fact]
+    public async Task ConcurrentAttachmentsHaveOneWinnerAndNeverSplitTheClaimSet()
+    {
+        var first = CreateRepository();
+        var second = CreateRepository();
+        var owner = Guid.NewGuid();
+        Assert.True(await first.TryClaimSourcePathsAsync(owner, "attach-race", "peer", "file.flac",
+            [NewTempPath("one.flac"), NewTempPath("two.flac")]));
+        await second.GetSourceClaimsForQueueAsync("attach-race");
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        async Task<bool> Attach(SoulseekRepository repository, Guid id)
+        {
+            try { await repository.AttachSourceClaimsAsync(owner, id); return true; }
+            catch (InvalidOperationException) { return false; }
+        }
+        var winners = await Task.WhenAll(Task.Run(() => Attach(first, ids[0])), Task.Run(() => Attach(second, ids[1])));
+        Assert.Single(winners.Where(won => won));
+        var claims = await first.GetSourceClaimsForQueueAsync("attach-race");
+        Assert.Equal(2, claims.Count);
+        Assert.All(claims, claim => Assert.Equal(ids[winners[0] ? 0 : 1], claim.TransferId));
     }
 
     [Fact]

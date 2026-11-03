@@ -13,6 +13,155 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekStagedSidecarDeliveryTest
 {
+    [Fact]
+    public async System.Threading.Tasks.Task ShazamSoulseekSkipsCatalogPrefetchBeforeAudioAcquisition()
+    {
+        var helper = typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor).Assembly.GetType("DeezSpoTag.Services.Download.Shared.EngineQueueProcessorHelper")!;
+        var contextType = helper.GetNestedType("QueueWorkContext`1",System.Reflection.BindingFlags.NonPublic)!
+            .MakeGenericType(typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem));
+        var work = Activator.CreateInstance(contextType)!;
+        contextType.GetProperty("Payload")!.SetValue(work,new DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem {DownloadOrigin="shazam"});
+        // A provider-prefetch context must not be read at all for this origin. Its uninitialized fields
+        // deliberately fail if the download tries to prepare catalogue artwork or lyrics.
+        var context = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+            typeof(DeezSpoTag.Services.Download.Shared.EngineAudioPostDownloadHelper.EngineTrackContext));
+        var method = helper.GetMethod("QueuePrefetchIfNeededAsync",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem));
+        await (System.Threading.Tasks.Task)method.Invoke(null,[work,context])!;
+    }
+
+    [Theory]
+    [InlineData("jpg", true, false)]
+    [InlineData("jpg", true, true)]
+    [InlineData("jpg,png", true, false)]
+    [InlineData("jpg", false, false)]
+    public async System.Threading.Tasks.Task AcceptedPeerArtworkUsesSharedEncodingAndEmbeddingWithoutChangingAudioIdentity(string formats, bool saveArtwork, bool damaged)
+    {
+        var root = Path.Join(Path.GetTempPath(),"peer-cover-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+        try {
+            var audio = Path.Join(root,"song.wav"); DeliveredAudioQualityGuardTest.WriteWave(audio,16);
+            var samplesBefore = ReadWaveSamples(audio);
+            var cover = Path.Join(root,"Front Cover.png");
+            using(var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(8,8))
+                SixLabors.ImageSharp.ImageExtensions.SaveAsPng(image,cover);
+            if(damaged) File.WriteAllText(cover,"Not an image");
+            var downloader = System.Reflection.DispatchProxy.Create<DeezSpoTag.Services.Download.Soulseek.ISoulseekDownloadService,SidecarProxy>();
+            ((SidecarProxy)(object)downloader).Handler = (method,arguments) => {
+                Assert.Equal("PromoteAcceptedAudioAsync",method.Name);return System.Threading.Tasks.Task.FromResult(audio);
+            };
+            var type = typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor);
+            var processor = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
+            type.GetField("_downloader",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.SetValue(processor,downloader);
+            type.GetField("_logger",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.SetValue(processor,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor>.Instance);
+            var payload = new DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem {DownloadOrigin="shazam",Album="Album",Artist="Artist",SoulseekPeerArtworkPath=cover};
+            var settings = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings {SaveArtwork=saveArtwork,LocalArtworkFormat=formats,LocalArtworkSize=2,EmbeddedArtworkSize=4,EmbedMaxQualityCover=false,
+                Soulseek=new(){UsePeerArtwork=true},Tags=new(){Cover=true}};
+            var method = type.GetMethod("AcceptAcquiredAudioAsync",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            Assert.Equal(audio,await (System.Threading.Tasks.Task<string>)method.Invoke(processor,[payload,audio,settings,System.Threading.CancellationToken.None])!);
+            if(damaged) {
+                Assert.Equal(samplesBefore,ReadWaveSamples(audio));
+                Assert.False(File.Exists(Path.Join(root,"cover.jpg")));
+                return;
+            }
+            if (saveArtwork) {
+                foreach(var format in formats.Split(',')) {
+                    using var sidecar = SixLabors.ImageSharp.Image.Load(Path.Join(root,"cover."+format)); Assert.Equal(2,sidecar.Width);
+                }
+            } else {
+                Assert.Equal(string.Empty,payload.SoulseekPeerArtworkPath);
+                Assert.False(File.Exists(Path.Join(root,"cover.jpg")));
+            }
+            using var tagged = TagLib.File.Create(audio); var picture=Assert.Single(tagged.Tag.Pictures);
+            Assert.Equal(TagLib.PictureType.FrontCover,picture.Type);
+            using var embedded=SixLabors.ImageSharp.Image.Load(picture.Data.Data);Assert.Equal(4,embedded.Width);
+            Assert.False(File.Exists(cover));
+            Assert.Equal(samplesBefore,ReadWaveSamples(audio));
+        } finally {Directory.Delete(root,true);}
+    }
+
+    [Theory]
+    [InlineData("shazam", true, true, 1, false)]
+    [InlineData("shazam", true, true, 1, true)]
+    [InlineData("library", true, true, 0, false)]
+    [InlineData("shazam", false, false, 0, false)]
+    public async System.Threading.Tasks.Task PeerSidecarAcquisitionDiscoversAndNormalizesOnlyEnabledShazamAssets(
+        string origin, bool artwork, bool lyrics, int expectedFetches, bool existingLyrics)
+    {
+        var root = Path.Join(Path.GetTempPath(), "peer-sidecars-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fetches = 0;
+            var search = System.Reflection.DispatchProxy.Create<DeezSpoTag.Services.Download.Soulseek.ISoulseekSearchService, SidecarProxy>();
+            ((SidecarProxy)(object)search).Handler = (method, arguments) => {
+                Assert.Equal("BrowseAsync", method.Name);
+                Assert.Equal("Album", arguments![1]);
+                System.Collections.Generic.IReadOnlyList<DeezSpoTag.Integrations.Soulseek.SlskdDirectory> listing = [new() {
+                    Directory = "Album", Files = [new() {Filename="front cover.png"}, new() {Filename="back.jpg"},
+                        new() {Filename="11 Song.lrc"}, new() {Filename="12 Other.lrc"}] }];
+                return System.Threading.Tasks.Task.FromResult(listing);
+            };
+            var transfer = System.Reflection.DispatchProxy.Create<DeezSpoTag.Services.Download.Soulseek.ISoulseekTransferService, SidecarProxy>();
+            ((SidecarProxy)(object)transfer).Handler = (method, arguments) => {
+                Assert.Equal("FetchSidecarsAsync", method.Name); fetches++;
+                var selected = Assert.IsAssignableFrom<System.Collections.Generic.IReadOnlyList<string>>(arguments![1]);
+                Assert.Equal(new[] {"Album/front cover.png", "Album/11 Song.lrc"}, selected);
+                var output = Assert.IsType<string>(arguments[2]);
+                var cover = Path.Join(output, "front cover.png");
+                using (var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(8,8))
+                    SixLabors.ImageSharp.ImageExtensions.SaveAsPng(image, cover);
+                var words = Path.Join(output, "11 Song.lrc"); File.WriteAllText(words,"[00:01.00]Peer words");
+                System.Collections.Generic.IReadOnlyDictionary<string,string> result = new System.Collections.Generic.Dictionary<string,string> {
+                    ["Album/front cover.png"]=cover, ["Album/11 Song.lrc"]=words };
+                return System.Threading.Tasks.Task.FromResult(result);
+            };
+            var type = typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor);
+            var processor = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
+            type.GetField("_search",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(processor,search);
+            type.GetField("_sidecars",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(processor,transfer);
+            type.GetField("_logger",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(processor,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor>.Instance);
+            var payload = new DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem { DownloadOrigin=origin,
+                Artist="Artist", Title="Song", Album="Album", SoulseekUsername="peer", FilePath=Path.Join(root,"Artist - Song.flac") };
+            var settings = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings { SaveArtwork=true, SaveLyrics=true,
+                Soulseek=new() {UsePeerArtwork=artwork,UsePeerLyrics=lyrics} };
+            if(existingLyrics) File.WriteAllText(Path.Join(root,"Artist - Song.lrc"),"Existing user lyrics");
+            var method = type.GetMethod("TakePeerSidecarsAsync",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+            await (System.Threading.Tasks.Task)method.Invoke(processor,[payload,
+                new DeezSpoTag.Services.Download.Soulseek.SoulseekCompletedFile("peer","Album/11 Song.flac",payload.FilePath,100),
+                settings,System.Threading.CancellationToken.None])!;
+            Assert.Equal(expectedFetches,fetches);
+            if(expectedFetches>0) {
+                Assert.Equal(Path.Join(root,"front cover.png"),payload.SoulseekPeerArtworkPath);
+                Assert.True(File.Exists(payload.SoulseekPeerArtworkPath));
+                Assert.Equal(Path.Join(root,"Artist - Song.lrc"),payload.SoulseekPeerLyricsPath);
+                Assert.Equal(existingLyrics ? "Existing user lyrics" : "[00:01.00]Peer words",File.ReadAllText(payload.SoulseekPeerLyricsPath));
+            }
+        }
+        finally {Directory.Delete(root,recursive:true);}
+    }
+
+    private static byte[] ReadWaveSamples(string path)
+    {
+        using var reader = new BinaryReader(File.OpenRead(path));
+        reader.BaseStream.Position = 12;
+        while (reader.BaseStream.Position + 8 <= reader.BaseStream.Length)
+        {
+            var kind = System.Text.Encoding.ASCII.GetString(reader.ReadBytes(4));
+            var length = reader.ReadInt32();
+            if (kind == "data") return reader.ReadBytes(length);
+            reader.BaseStream.Position += length + (length % 2);
+        }
+        throw new InvalidDataException("WAV sample data missing.");
+    }
+
+    public class SidecarProxy : System.Reflection.DispatchProxy
+    {
+        public Func<System.Reflection.MethodInfo,object?[]?,object?> Handler {get;set;} = null!;
+        protected override object? Invoke(System.Reflection.MethodInfo? method,object?[]? arguments) => Handler(method!,arguments);
+    }
+
     /// <summary>
     ///     Forcing the profile's lyrics must not switch album artwork off.
     /// </summary>

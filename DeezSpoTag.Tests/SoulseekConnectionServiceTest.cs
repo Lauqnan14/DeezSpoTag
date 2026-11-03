@@ -24,6 +24,52 @@ namespace DeezSpoTag.Tests;
 public sealed class SoulseekConnectionServiceTest
 {
     [Fact]
+    public async Task ExplicitConnectResetsAnUnresponsiveSessionButEligibilityNeverReconnects()
+    {
+        var client = new StubClient
+        {
+            Failure = new SlskdApiException(503, "server_unresponsive", SlskdClient.ServerUnresponsiveMessage),
+            ConnectResult = new SlskdServerState { IsConnected = true, IsLoggedIn = true }
+        };
+        var service = new SoulseekConnectionService(client, new StubCredentialProvider(Credentials()), NullLogger<SoulseekConnectionService>.Instance);
+        Assert.False((await service.GetEligibilityAsync()).IsUsable);
+        Assert.Equal(0, client.DisconnectCalls);
+        Assert.Equal(0, client.ConnectCalls);
+        Assert.True((await service.EnsureAvailableAsync()).IsUsable);
+        Assert.Equal(1, client.DisconnectCalls);
+        Assert.Equal(1, client.ConnectCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoginProbeAlsoRequiresTheServerToAnswer(bool stalled)
+    {
+        var service = new DeezSpoTag.Web.Services.SoulseekConnectionService(new HealthHttpFactory(stalled),
+            NullLogger<DeezSpoTag.Web.Services.SoulseekConnectionService>.Instance);
+        var result = await service.CheckAsync(new DeezSpoTag.Web.Services.SoulseekAuth { BaseUrl = "http://localhost:5030", ApiKey = "key" }, CancellationToken.None);
+        Assert.Equal(!stalled, result.Connected);
+        Assert.Equal(stalled ? "server_unresponsive" : "connected", result.Status);
+    }
+
+    private sealed class HealthHttpFactory(bool stalled) : System.Net.Http.IHttpClientFactory
+    {
+        public System.Net.Http.HttpClient CreateClient(string name) => new(new HealthHttpHandler(stalled));
+    }
+
+    private sealed class HealthHttpHandler(bool stalled) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var status = request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal);
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(status && stalled ? System.Net.HttpStatusCode.InternalServerError : System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent(status ? "{\"presence\":\"Online\"}" : "{\"isConnected\":true,\"isLoggedIn\":true,\"username\":\"listener\"}")
+            });
+        }
+    }
+
+    [Fact]
     public async Task GetStatusAsync_ReportsNotConfiguredWhenNoCredentialsAreStored()
     {
         var service = new SoulseekConnectionService(new StubClient(), new StubCredentialProvider(null), NullLogger<SoulseekConnectionService>.Instance);
@@ -466,6 +512,7 @@ public sealed class SoulseekConnectionServiceTest
         public int ServerStateCalls { get; private set; }
 
         public int ConnectCalls { get; private set; }
+        public int DisconnectCalls { get; private set; }
 
         /// <summary>
         ///     Runs once, after the answer to a status question has been decided. Lets a test invalidate
@@ -512,7 +559,13 @@ public sealed class SoulseekConnectionServiceTest
         }
 
         public Task DisconnectAsync(SlskdCredentials credentials, string? message = null, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DisconnectCalls++;
+            Failure = null;
+            State = new();
+            return Task.CompletedTask;
+        }
 
         public Task<SlskdSearch> StartSearchAsync(SlskdCredentials credentials, SlskdSearchRequest request, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();

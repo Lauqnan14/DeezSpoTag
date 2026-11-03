@@ -31,6 +31,7 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
 
     private readonly ISoulseekDownloadService _downloader;
     private readonly ISoulseekTransferService _sidecars;
+    private readonly ISoulseekSearchService? _search;
     private readonly ISoulseekRealtimePublisher _realtime;
     private readonly DownloadQueueRepository? _queueRepository;
     private readonly IHostApplicationLifetime? _hostLifetime;
@@ -44,10 +45,12 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
         ISoulseekRealtimePublisher? realtime = null,
         ISoulseekTransferService? sidecars = null,
         DownloadQueueRepository? queueRepository = null,
-        IHostApplicationLifetime? hostLifetime = null)
+        IHostApplicationLifetime? hostLifetime = null,
+        ISoulseekSearchService? search = null)
         : base(EngineName, commonDependencies)
     {
         _downloader = downloader;
+        _search = search;
 
         // Optional so a host that registers the engine without the Soulseek transport still resolves it, and
         // simply takes no sidecars rather than failing the download.
@@ -73,19 +76,22 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
             cancellationToken);
     }
 
-    private EngineQueueProcessorHelper.ProcessorCallbacks<SoulseekQueueItem> BuildCallbacks(DownloadQueueItem item) =>
-        new(
+    private EngineQueueProcessorHelper.ProcessorCallbacks<SoulseekQueueItem> BuildCallbacks(DownloadQueueItem item)
+    {
+        DeezSpoTagSettings? effectiveSettings = null;
+        return new(
             ResolveSoulseekSourceId,
-            BuildRequest,
+            (payload, settings) => { effectiveSettings = settings; return BuildRequest(payload, settings); },
             ApplyRequestContext,
             DownloadAsync,
             null,
             _ => $"Download start: {item.QueueUuid} engine=soulseek",
             payload => payload.Title,
             static payload => payload.ToQueuePayload(),
-            AcceptAcquiredAudioAsync,
+            (payload, path, token) => AcceptAcquiredAudioAsync(payload, path, effectiveSettings, token),
             RejectAcquiredAudioAsync,
             CompleteAudioOnlyAsync);
+    }
 
     /// <summary>
     ///     Ends a Soulseek download once the audio is verified, handing the file to the enrichment stage.
@@ -178,7 +184,7 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
         // The shared pipeline persists the expected staging path on the payload before calling us, so that is
         // where the finished file must appear. Without it the transfer cannot be verified, and an unverifiable
         // download must not be allowed to look successful.
-        var expectedPath = ResolveExpectedPath(payload, soulseekRequest);
+        var expectedPath = ResolveExpectedPath(payload);
         payload.Status = SoulseekDownloadStatus.Downloading;
 
         _realtime.PublishDownloadUpdate(new SoulseekDownloadProgress(
@@ -197,13 +203,25 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // The download failed. Report it so the activity view does not sit on a silent stalled row.
+            // The panel message is fixed text: an exception message can carry a credential, a local path or
+            // half a stack trace, and the page renders whatever arrives here. The logged exception has it all.
+            if (_logger.IsEnabled(LogLevel.Error))
+            {
+                _logger.LogError(
+                    ex,
+                    "Soulseek download for queue item {ItemId} failed at stage {Stage}.",
+                    payload.Id,
+                    payload.Status);
+            }
+
             _realtime.PublishDownloadUpdate(new SoulseekDownloadProgress(
                 payload.Id,
                 payload.SoulseekUsername,
                 payload.SoulseekRemotePath,
                 SoulseekDownloadStage.Failed,
-                Error: ex.Message));
-            _realtime.PublishImportUpdate(new SoulseekImportUpdate(payload.Id, "failed", Error: ex.Message));
+                Error: "The download failed. Check the server log for the cause."));
+            _realtime.PublishImportUpdate(new SoulseekImportUpdate(payload.Id, "failed",
+                Error: "The download failed. Check the server log for the cause."));
             throw;
         }
 
@@ -226,7 +244,7 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
         // The peer's own cover and lyrics are taken here, while the download is still in the engine's hands,
         // and recorded on the payload as local paths. Fetching them later would mean the artwork step had to
         // reach back into slskd, by which time the peer may have moved the files.
-        await TakePeerSidecarsAsync(payload, completed, cancellationToken).ConfigureAwait(false);
+        await TakePeerSidecarsAsync(payload, completed, settings, cancellationToken).ConfigureAwait(false);
 
         // The file is verified, but it is not imported yet: tagging, the final destination and enrichment all
         // happen in the shared post-download pipeline. That hand-off is what this event reports.
@@ -244,8 +262,48 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
         return completed.LocalPath;
     }
 
-    private Task<string> AcceptAcquiredAudioAsync(SoulseekQueueItem payload, string acquiredPath, CancellationToken cancellationToken)
-        => _downloader.PromoteAcceptedAudioAsync(payload, acquiredPath, cancellationToken);
+    private async Task<string> AcceptAcquiredAudioAsync(
+        SoulseekQueueItem payload, string acquiredPath, DeezSpoTagSettings? settings, CancellationToken cancellationToken)
+    {
+        var promoted = await _downloader.PromoteAcceptedAudioAsync(payload, acquiredPath, cancellationToken);
+        if (SoulseekSidecarPolicy.UsesPeerSidecars(payload) && settings?.Soulseek?.UsePeerArtwork == true
+            && File.Exists(payload.SoulseekPeerArtworkPath))
+        {
+            // Apply only peer artwork, after ownership and audio-quality verification. Enrichment
+            // continues to use its existing preservation/overwrite rules.
+            try
+            {
+                var source = payload.SoulseekPeerArtworkPath;
+                var prepared = await ArtworkAssetProcessor.PrepareAsync(new ArtworkAssetRequest(
+                    await File.ReadAllBytesAsync(source, cancellationToken), settings.LocalArtworkFormat,
+                    settings.LocalArtworkSize, settings.EmbeddedArtworkSize, settings.EmbedMaxQualityCover,
+                    settings.JpegImageQuality, Path.GetExtension(promoted)), cancellationToken);
+                if (settings.Tags?.Cover == true) EmbeddedArtworkWriter.WriteAndVerify(promoted, prepared.Embedded);
+                var savedSidecars = new HashSet<string>(StringComparer.Ordinal);
+                if (settings.SaveArtwork)
+                {
+                    var name = PathTemplateGenerator.GenerateAlbumName(settings.CoverImageTemplate,
+                        new DeezSpoTag.Core.Models.Album(payload.Album) { MainArtist = new DeezSpoTag.Core.Models.Artist(payload.Artist) }, settings, null);
+                    foreach (var variant in prepared.Sidecars.Values)
+                    {
+                        var destination = Path.Join(Path.GetDirectoryName(promoted)!, name + "." + variant.Extension);
+                        await File.WriteAllBytesAsync(destination, variant.Bytes, cancellationToken);
+                        payload.SoulseekPeerArtworkPath = destination;
+                        savedSidecars.Add(destination);
+                    }
+                }
+                else payload.SoulseekPeerArtworkPath = string.Empty;
+                if (!savedSidecars.Contains(source) && File.Exists(source)) File.Delete(source);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException
+                && (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex)
+                    || ex is SixLabors.ImageSharp.ImageFormatException))
+            {
+                _logger.LogWarning(ex, "Could not apply Soulseek peer artwork for {QueueUuid}; retaining verified audio.", payload.Id);
+            }
+        }
+        return promoted;
+    }
 
     /// <summary>
     ///     Fetches the cover and lyrics the reader chose from the peer's own folder, and records where they
@@ -259,39 +317,48 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
     private async Task TakePeerSidecarsAsync(
         SoulseekQueueItem payload,
         SoulseekCompletedFile completed,
+        DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
-        if (payload.SoulseekSidecarRemotePaths is not { Count: > 0 }
-            || string.IsNullOrWhiteSpace(payload.SoulseekUsername))
-        {
+        if (!SoulseekSidecarPolicy.UsesPeerSidecars(payload)
+            || string.IsNullOrWhiteSpace(payload.SoulseekUsername) || _search is null)
             return;
-        }
+        var peer = settings.Soulseek ?? new SoulseekDownloadSettings();
+        var artwork = peer.UsePeerArtwork && (settings.SaveArtwork || settings.Tags?.Cover == true);
+        var lyrics = peer.UsePeerLyrics && (settings.SaveLyrics || settings.Tags?.Lyrics == true || settings.Tags?.SyncedLyrics == true);
+        if (!artwork && !lyrics) return;
 
         try
         {
-            var fetched = await _sidecars
-                .FetchSidecarsAsync(
-                    payload.SoulseekUsername,
-                    payload.SoulseekSidecarRemotePaths,
-                    Path.GetDirectoryName(completed.LocalPath) ?? completed.LocalPath,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            var directory = SoulseekRemotePath.GetDirectory(completed.Filename);
+            var listing = await _search.BrowseAsync(completed.Username, directory, cancellationToken).ConfigureAwait(false);
+            var paths = listing.SelectMany(entry => entry.Files
+                .Where(file => !file.IsLocked)
+                .Select(file => SoulseekBrowseFilePolicy.Evaluate(completed.Username, file, peer, Array.Empty<string>(), entry.Directory).Filename));
+            payload.SoulseekSidecarRemotePaths = SoulseekSidecarPolicy.SelectForTrack(
+                completed.Filename, payload.Title, payload.Artist, paths, artwork, lyrics).ToList();
+            if (payload.SoulseekSidecarRemotePaths.Count == 0) return;
 
-            foreach (var entry in fetched)
+            var audioPath = ResolveExpectedPath(payload);
+            var extension = Path.GetExtension(completed.LocalPath);
+            if (!string.Equals(Path.GetExtension(audioPath), extension, StringComparison.OrdinalIgnoreCase)) audioPath += extension;
+            var output = Path.GetDirectoryName(audioPath)!;
+            var fetched = await _sidecars.FetchSidecarsAsync(completed.Username,
+                payload.SoulseekSidecarRemotePaths, output, cancellationToken).ConfigureAwait(false);
+            foreach (var remote in payload.SoulseekSidecarRemotePaths)
             {
-                var role = SoulseekSidecarPolicy.Classify(entry.Key);
-                switch (role)
+                if (!fetched.TryGetValue(remote, out var local) || !File.Exists(local)) continue;
+                var role = SoulseekSidecarPolicy.Classify(remote);
+                if (role == SoulseekSidecarPolicy.Cover)
                 {
-                    case SoulseekSidecarPolicy.Cover when string.IsNullOrWhiteSpace(payload.SoulseekPeerArtworkPath):
-                        payload.SoulseekPeerArtworkPath = entry.Value;
-                        break;
-
-                    // A cue sheet counts as lyrics: its lyric block is the same content an .lrc would hold,
-                    // and a folder is far likelier to ship one than an .lrc.
-                    case SoulseekSidecarPolicy.Lyrics or SoulseekSidecarPolicy.CueSheet
-                        when string.IsNullOrWhiteSpace(payload.SoulseekPeerLyricsPath):
-                        payload.SoulseekPeerLyricsPath = entry.Value;
-                        break;
+                    payload.SoulseekPeerArtworkPath = local;
+                }
+                else if (role == SoulseekSidecarPolicy.Lyrics)
+                {
+                    var destination = Path.ChangeExtension(audioPath, Path.GetExtension(local));
+                    // Enrichment owns overwrite/upgrade decisions. Acquisition never replaces existing lyrics.
+                    if (!File.Exists(destination)) File.Move(local, destination, overwrite: false);
+                    payload.SoulseekPeerLyricsPath = destination;
                 }
             }
 
@@ -327,7 +394,7 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
     private Task RejectAcquiredAudioAsync(SoulseekQueueItem payload, string rejectedPath, CancellationToken cancellationToken)
         => _downloader.DeleteRejectedStagingAudio(payload, rejectedPath, cancellationToken);
 
-    private static string ResolveExpectedPath(SoulseekQueueItem payload, SoulseekDownloadRequest request)
+    private static string ResolveExpectedPath(SoulseekQueueItem payload)
     {
         // QueueHelperUtils.PersistExpectedStagingPathAsync writes the path template's output here before the
         // download step runs.
@@ -336,12 +403,12 @@ public sealed class SoulseekEngineProcessor : QueueEngineProcessorBase
             return DownloadPathResolver.ResolveIoPath(payload.FilePath);
         }
 
-        if (!string.IsNullOrWhiteSpace(request.OutputDir) && !string.IsNullOrWhiteSpace(request.FilenameFormat))
-        {
-            return Path.Join(request.OutputDir, request.FilenameFormat);
-        }
-
+        // The earlier fallback joined the raw OutputDir and FilenameFormat, but the format still carries its
+        // tokens at this point, so the "path" it produced is not the path the pipeline will actually use.
+        // Verification against it would fail in ways that look like a transfer problem rather than the
+        // missing staging write it is. Refusal says so directly.
         throw new InvalidOperationException(
-            "Soulseek could not determine where the finished file should be written, so the download cannot be verified.");
+            "Soulseek could not determine where the finished file should be written: no expected staging path " +
+            "was recorded for this download, so it cannot be verified.");
     }
 }

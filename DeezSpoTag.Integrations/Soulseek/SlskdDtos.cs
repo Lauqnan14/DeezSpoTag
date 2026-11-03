@@ -219,11 +219,17 @@ public sealed record SlskdTransferStateInfo
     public bool IsFailed { get; init; }
 
     /// <summary>Gets a short label describing the state, for diagnostics and API responses.</summary>
-    public string Label { get; init; } = "none";
+    public string Label { get; init; } = "unknown";
 
     /// <summary>
     ///     Decodes slskd's numeric transfer state bit field.
     /// </summary>
+    /// <remarks>
+    ///     A raw value of zero means slskd reported no state flags at all. That is not "queued": queued is a
+    ///     specific bit (2), and treating silence as queue membership is how a transfer that never appeared
+    ///     looked like one that was patiently waiting. An unknown state waits for the observation to decide,
+    ///     with a label that says so.
+    /// </remarks>
     public static SlskdTransferStateInfo Decode(long raw)
     {
         var terminal = (raw & Completed) == Completed;
@@ -231,7 +237,7 @@ public sealed record SlskdTransferStateInfo
         var failed = terminal && !succeeded;
         var inProgress = (raw & Initializing) == Initializing || (raw & InProgress) == InProgress;
         var queued = !terminal && !inProgress
-            && ((raw & Queued) == Queued || (raw & Requested) == Requested || raw == 0);
+            && ((raw & Queued) == Queued || (raw & Requested) == Requested);
 
         return new SlskdTransferStateInfo
         {
@@ -286,32 +292,7 @@ public sealed record SlskdTransferStateInfo
 
         if (terminal)
         {
-            if ((raw & Cancelled) == Cancelled)
-            {
-                return "cancelled";
-            }
-
-            if ((raw & Aborted) == Aborted)
-            {
-                return "aborted";
-            }
-
-            if ((raw & Rejected) == Rejected)
-            {
-                return "rejected";
-            }
-
-            if ((raw & TimedOut) == TimedOut)
-            {
-                return "timed_out";
-            }
-
-            if ((raw & Errored) == Errored)
-            {
-                return "errored";
-            }
-
-            return "completed_unknown";
+            return DescribeTerminalState(raw);
         }
 
         if (inProgress)
@@ -334,8 +315,41 @@ public sealed record SlskdTransferStateInfo
             return "queued";
         }
 
-        return "none";
+        // Everything else - a raw of zero, or bits this decoder does not recognise - is not claimed as any
+        // known state. "unknown" is honest, and keeps the observation loop from treating silence as patience.
+        return "unknown";
     }
+
+    private static string DescribeTerminalState(long raw)
+    {
+        if ((raw & Cancelled) == Cancelled)
+        {
+            return "cancelled";
+        }
+
+        if ((raw & Aborted) == Aborted)
+        {
+            return "aborted";
+        }
+
+        if ((raw & Rejected) == Rejected)
+        {
+            return "rejected";
+        }
+
+        if ((raw & TimedOut) == TimedOut)
+        {
+            return "timed_out";
+        }
+
+        if ((raw & Errored) == Errored)
+        {
+            return "errored";
+        }
+
+        return "completed_unknown";
+    }
+
 }
 
 /// <summary>A download (or upload) transfer tracked by slskd.</summary>

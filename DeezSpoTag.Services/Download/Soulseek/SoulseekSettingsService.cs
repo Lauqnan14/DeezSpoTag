@@ -49,6 +49,10 @@ public sealed class SoulseekSettingsService
     public IReadOnlyList<string> GetEnabledQualityCodes()
         => DownloadSourceOrder.ResolveEnabledSoulseekQualities(_settingsService.LoadSettings());
 
+    /// <summary>Qualities the Soulseek search tab may show for an explicit search.</summary>
+    public IReadOnlyList<string> GetBrowserQualityCodes()
+        => DownloadSourceOrder.ResolveSoulseekBrowserQualities(_settingsService.LoadSettings());
+
     /// <summary>
     ///     Overlays a partial update onto the persisted Soulseek settings.
     /// </summary>

@@ -637,13 +637,68 @@ public sealed class SoulseekApiController : ControllerBase
             return BadRequest(new { error = "A title is required to queue a Soulseek download." });
         }
 
-        var gate = await RequireEligibilityAsync(cancellationToken).ConfigureAwait(false);
-        if (gate is not null)
+        var pinned = !string.IsNullOrWhiteSpace(request.Username) && !string.IsNullOrWhiteSpace(request.RemotePath);
+        var peerFieldsInvalid = new[] { request.Username, request.RemotePath }
+            .Any(value => value is not null && value.Any(char.IsControl));
+        var peerFieldsTooLong = (request.Username?.Length ?? 0) > 256 || (request.RemotePath?.Length ?? 0) > 2048;
+        if (peerFieldsInvalid || peerFieldsTooLong)
         {
-            return gate;
+            // The username and remote path are carried into queue payload and replayed verbatim against the
+            // peer at transfer time. Control characters or an absurd length in either field would ride along
+            // and fail there, unreadable as anything but a peer problem - so they are refused here as the
+            // malformed request they are.
+            return BadRequest(new { error = "The peer username and remote path must be plain text within normal length." });
         }
 
-        var pinned = !string.IsNullOrWhiteSpace(request.Username) && !string.IsNullOrWhiteSpace(request.RemotePath);
+        if (string.IsNullOrWhiteSpace(request.Username) != string.IsNullOrWhiteSpace(request.RemotePath))
+        {
+            return BadRequest(new { error = "Both peer username and remote path are required for an exact file selection." });
+        }
+
+        var gate = await RequireEligibilityAsync(cancellationToken).ConfigureAwait(false);
+        if (gate is not null) return gate;
+
+        if (pinned)
+        {
+            var username = request.Username!.Trim();
+            var path = SoulseekRemotePath.Normalize(request.RemotePath);
+            var directory = SoulseekRemotePath.GetDirectory(path);
+            if (directory.Length == 0 || path.Split('/').Any(segment => segment is "." or "..")
+                || request.RemoteSizeBytes is < 0)
+            {
+                return BadRequest(new { error = "Select a file inside a peer directory with a valid size." });
+            }
+
+            IReadOnlyList<SlskdDirectory> listing;
+            try
+            {
+                listing = await _search.BrowseAsync(username, directory, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SlskdApiException)
+            {
+                return StatusCode(502, new { error = "The selected peer directory could not be read." });
+            }
+            catch (SoulseekUnavailableException)
+            {
+                return StatusCode(503, new { error = "Soulseek is unavailable. Reconnect before queueing the file." });
+            }
+
+            var settings = _settings.GetSettings();
+            var qualities = DownloadSourceOrder.ResolveEnabledSoulseekQualities(_appSettings.LoadSettings());
+            var canonical = listing.SelectMany(entry => entry.Files.Select(file =>
+                    SoulseekBrowseFilePolicy.Evaluate(username, file, settings, qualities, entry.Directory)))
+                .FirstOrDefault(file => SoulseekRemotePath.IsDirectChildOf(file.Filename, directory)
+                    && string.Equals(SoulseekRemotePath.Normalize(file.Filename), path, StringComparison.OrdinalIgnoreCase));
+            if (canonical is null)
+                return Conflict(new { error = "The peer no longer offers the selected file.", reasonCode = "file_no_longer_available" });
+            if (!canonical.Eligible)
+                return UnprocessableEntity(new { error = "The selected file is not eligible under the current Soulseek settings.", reasonCode = canonical.RejectedBecause });
+            if (request.RemoteSizeBytes is > 0 && canonical.Size > 0 && request.RemoteSizeBytes != canonical.Size)
+                return Conflict(new { error = "The peer now reports a different file size.", reasonCode = "remote_size_changed" });
+
+            request = request with { Username = username, RemotePath = canonical.Filename, RemoteSizeBytes = canonical.Size };
+        }
+
         var intent = BuildQueueDownloadIntent(request);
         var artist = intent.Artist;
         var album = intent.Album;
@@ -1186,9 +1241,17 @@ public sealed class SoulseekApiController : ControllerBase
             ? options.ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        var appSettings = _appSettings.LoadSettings();
+        // Keep the ladder call: an enabled Soulseek source still renders exactly the rungs it will download.
+        // An explicit search made while the engine is excluded from that ladder still needs groups, or the
+        // file count is the only thing the tab can draw.
+        var enabled = DownloadSourceOrder.ResolveEnabledSoulseekQualities(appSettings);
+        var browserQualities = enabled.Count > 0
+            ? enabled
+            : DownloadSourceOrder.ResolveSoulseekBrowserQualities(appSettings);
         return DownloadSourceOrder
             .ResolveDisplayQualityGroups(
-                DownloadSourceOrder.ResolveEnabledSoulseekQualities(_appSettings.LoadSettings()),
+                browserQualities,
                 _settings.GetSettings().AllowUnknownQuality)
             .Select(code => new
             {
@@ -1225,6 +1288,7 @@ public sealed class SoulseekApiController : ControllerBase
     ///     than an approximation that could drift from it.
     /// </remarks>
     [HttpPost("templates/preview")]
+    [EnableRateLimiting("SensitiveWrites")]
     public IActionResult PreviewTemplate(
         [FromBody] SoulseekTemplatePreviewRequest request,
         [FromServices] DeezSpoTagSettingsService settingsService)

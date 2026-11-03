@@ -95,6 +95,45 @@ public sealed class DownloadStagingFileOwnershipTest
     }
 
     [Fact]
+    public void ResolveOwnedStagingAudioFiles_AcceptsAcquiredSoulseekFileWhoseRemotePathHasAnAudioExtension()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-owned-extless-{Guid.NewGuid():N}");
+        var audioPath = Path.Combine(tempRoot, "2 Pac", "California Love");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        File.WriteAllText(audioPath, "flac");
+
+        try
+        {
+            var acquired = CreateItem(JsonSerializer.Serialize(new
+            {
+                AudioAcquired = true,
+                filePath = audioPath,
+                SoulseekRemotePath = @"FLAC\Compilations\California Love.flac"
+            })) with { Engine = "soulseek" };
+            var notAudio = CreateItem(JsonSerializer.Serialize(new
+            {
+                AudioAcquired = true,
+                filePath = audioPath,
+                SoulseekRemotePath = @"notes\cover.jpg"
+            })) with { Engine = "soulseek", QueueUuid = "not-audio" };
+            var missing = CreateItem(JsonSerializer.Serialize(new
+            {
+                AudioAcquired = true,
+                filePath = Path.Combine(tempRoot, "gone"),
+                SoulseekRemotePath = "gone.flac"
+            })) with { Engine = "soulseek", QueueUuid = "missing" };
+
+            Assert.Equal([audioPath], DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(acquired, tempRoot));
+            Assert.Empty(DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(notAudio, tempRoot));
+            Assert.Empty(DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(missing, tempRoot));
+        }
+        finally
+        {
+            TryDelete(tempRoot);
+        }
+    }
+
+    [Fact]
     public void HasAcquiredAudio_ReadsPayloadFlag()
     {
         var withFlag = CreateItem("""{"AudioAcquired":true,"filePath":"/tmp/track.flac"}""");

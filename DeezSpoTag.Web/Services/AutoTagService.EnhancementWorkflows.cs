@@ -1,3 +1,5 @@
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
@@ -515,10 +517,41 @@ public partial class AutoTagService
         SaveJob(job);
     }
 
-    private static string? BuildLyricsCoverUrl(string? coverPath)
-        => string.IsNullOrWhiteSpace(coverPath)
-            ? null
-            : $"/api/library/image?path={Uri.EscapeDataString(coverPath)}&size=240";
+    private string? BuildLyricsCoverUrl(string? coverPath)
+    {
+        if (string.IsNullOrWhiteSpace(coverPath) || string.IsNullOrWhiteSpace(_runtimeConfigDir) || !File.Exists(coverPath)) return null;
+        try
+        {
+            byte[]? bytes;
+            if (new[] { ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif" }
+                .Contains(Path.GetExtension(coverPath), StringComparer.OrdinalIgnoreCase))
+                bytes = File.ReadAllBytes(coverPath);
+            else
+            {
+                using var audio = TagLib.File.Create(coverPath);
+                bytes = audio.Tag.Pictures?.FirstOrDefault(picture => picture.Type == TagLib.PictureType.FrontCover)?.Data?.Data
+                    ?? audio.Tag.Pictures?.FirstOrDefault()?.Data?.Data;
+            }
+            if (bytes is not { Length: > 0 }) return null;
+            // History outlives staging paths. Reuse the existing image cache and authorized image endpoint.
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+            var cached = Path.Join(Path.GetDirectoryName(Path.GetDirectoryName(_runtimeConfigDir)!)!, "library-thumbs", "autotag-" + hash + ".jpg");
+            if (!File.Exists(cached))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(cached)!);
+                using var image = Image.Load(bytes);
+                image.Mutate(operation => operation.Resize(new ResizeOptions { Mode = ResizeMode.Max, Size = new Size(240, 240) }));
+                image.SaveAsJpeg(cached);
+            }
+            return $"/api/library/image?path={Uri.EscapeDataString(cached)}&size=240";
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex)
+            || ex is SixLabors.ImageSharp.ImageFormatException)
+        {
+            _logger?.LogDebug(ex, "Could not cache the sidecar history thumbnail.");
+            return null;
+        }
+    }
 
     private void RecordEnhancementItemStatus(
         AutoTagJob job,
@@ -574,7 +607,7 @@ public partial class AutoTagService
                     SourceTitle = FirstNonEmpty(lyrics?.Title, sourceTitle),
                     SourceArtist = FirstNonEmpty(lyrics?.ArtistName, sourceArtist),
                     LyricsTrackId = lyrics?.TrackId ?? trackId,
-                    LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath ?? coverPath),
+                    LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath ?? coverPath ?? path),
                     LyricsBadges = MergeSidecarBadges(lyrics?.TimingBadges, lyricsBadges),
                     ArtworkBadges = MergeSidecarBadges(artworkBadges, null)
                 }
@@ -1811,6 +1844,11 @@ public partial class AutoTagService
             _runLyrics = runLyrics;
         }
 
+        /// <summary>
+        /// Assigns this file's sidecar work: album artwork is fetched by the first file to claim
+        /// the album key, and a file fetches its own lyrics when its track id or tagged identity
+        /// was resolvable. Ownership is per pass, so a rerun reclaims instead of inheriting.
+        /// </summary>
         /// <param name="filePath">The file whose album may own the artwork.</param>
         /// <param name="trackId">
         ///     The library track, or 0 for a staged file. A staged file has no library row, and refusing

@@ -52,6 +52,10 @@ public static class SoulseekShareConfiguration
             var entry = new StringBuilder();
             if (!string.IsNullOrWhiteSpace(share.Alias))
             {
+                if (share.Alias.IndexOfAny(['[', ']']) >= 0)
+                {
+                    throw new SoulseekShareConfigurationException("A share alias cannot contain '[' or ']'.");
+                }
                 entry.Append('[').Append(share.Alias).Append(']');
             }
 
@@ -122,12 +126,15 @@ public static class SoulseekShareConfiguration
         }
 
         var desiredPaths = desired
-            .Select(share => NormalizePath(share.LocalPath))
+            .Select(share => ComparisonPath(share.LocalPath))
             .Where(path => path.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
 
         var missing = desired
-            .Where(share => !actual.Any(entry => string.Equals(NormalizePath(entry.LocalPath ?? string.Empty), NormalizePath(share.LocalPath), StringComparison.Ordinal)))
+            .Where(share => !actual.Any(entry => string.Equals(
+                ComparisonPath(entry.LocalPath),
+                ComparisonPath(share.LocalPath),
+                StringComparison.Ordinal)))
             .ToList();
 
         // A path slskd serves that no enabled folder accounts for: local content exposed to the Soulseek
@@ -135,7 +142,7 @@ public static class SoulseekShareConfiguration
         var unexpected = actual
             .Where(share => !share.IsExcluded)
             .Where(share => !string.IsNullOrWhiteSpace(share.LocalPath))
-            .Where(share => !desiredPaths.Contains(NormalizePath(share.LocalPath!)))
+            .Where(share => !desiredPaths.Contains(ComparisonPath(share.LocalPath)))
             .ToList();
 
         diagnostics.Add(new SoulseekShareDiagnostic(
@@ -145,13 +152,8 @@ public static class SoulseekShareConfiguration
                 ? $"{desired.Count} folder(s) are enabled for Soulseek sharing."
                 : "No folder is enabled for Soulseek sharing."));
 
-        if (skipped.Count > 0)
-        {
-            diagnostics.Add(new SoulseekShareDiagnostic(
-                "folders_skipped",
-                SoulseekShareDiagnosticSeverity.Warning,
-                $"{skipped.Count} enabled folder(s) were skipped: {string.Join(", ", skipped.Select(entry => entry.Reason))}."));
-        }
+        // The skipped folders are reported above, once with their folder id so the panel can point at the
+        // folder itself. A second aggregate entry would repeat the same reasons and double-count the damage.
 
         if (missing.Count > 0)
         {
@@ -179,8 +181,7 @@ public static class SoulseekShareConfiguration
     /// </summary>
     /// <remarks>
     ///     Separators and trailing slashes are normalized so the same folder written one way by the user and
-    ///     another way by slskd compares equal. Case is preserved, because the underlying filesystem may be case
-    ///     sensitive and folding case could hide a real difference.
+    ///     another way by slskd compares equal. Case remains intact; comparison folds it only for Windows paths.
     /// </remarks>
     public static string NormalizePath(string? path)
     {
@@ -196,6 +197,15 @@ public static class SoulseekShareConfiguration
         }
 
         return normalized;
+    }
+
+    private static string ComparisonPath(string? path)
+    {
+        var normalized = NormalizePath(path);
+        var windowsPath = normalized.Length >= 3 && char.IsAsciiLetter(normalized[0])
+            && normalized[1] == ':' && normalized[2] == '/'
+            || normalized.StartsWith("//", StringComparison.Ordinal);
+        return windowsPath || OperatingSystem.IsWindows() ? normalized.ToUpperInvariant() : normalized;
     }
 
     /// <summary>
@@ -389,7 +399,7 @@ public static class SoulseekShareConfiguration
                 continue;
             }
 
-            yield return $"- '{Escape(directory.Trim())}'";
+            yield return $"- '{Escape(directory).Trim()}'";
             any = true;
         }
 
@@ -480,6 +490,8 @@ public static class SoulseekShareConfiguration
             foreach (var filter in (share.ExcludeFilters ?? [])
                          .Where(candidate => !string.IsNullOrWhiteSpace(candidate) && seen.Add(candidate.Trim())))
             {
+                // Validate before Trim so a trailing newline cannot silently change the filter.
+                Escape(filter);
                 filters.Add(filter.Trim());
             }
         }
@@ -487,5 +499,14 @@ public static class SoulseekShareConfiguration
         return filters;
     }
 
-    private static string Escape(string value) => value.Replace("'", "''");
+    private static string Escape(string value)
+    {
+        // Refuse values that the single-line YAML representation cannot preserve. Replacing bytes would
+        // silently point slskd at a different directory (or change the meaning of a filter).
+        if (value.Any(character => char.IsControl(character) || character is '\u2028' or '\u2029'))
+        {
+            throw new SoulseekShareConfigurationException("Share paths, aliases and filters cannot contain control characters or line breaks.");
+        }
+        return value.Replace("'", "''", StringComparison.Ordinal);
+    }
 }

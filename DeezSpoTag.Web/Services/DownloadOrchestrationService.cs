@@ -3207,7 +3207,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     ///         item's recorded category or the reader's saved preference, never guessed here.
     ///     </para>
     /// </remarks>
-    private static string ApplySoulseekOperationShape(string configJson, long destinationFolderId, string mode)
+    private static string ApplySoulseekOperationShape(string configJson, long destinationFolderId, string mode, string destinationRoot)
     {
         try
         {
@@ -3222,12 +3222,21 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             root[AutoTagLiterals.ManualReleasePreferenceKey] = mode;
+            root["moveSuccess"] = true;
+            root["moveSuccessPath"] = Path.GetFullPath(destinationRoot);
+            root["moveFailed"] = false;
+            root.Remove("moveFailedPath");
 
             // Stated explicitly rather than left to the enrichment stage plan. Both are already set by the
             // manual stage builder, and spelling them out here means this operation cannot silently lose
             // album organization if that builder's behaviour changes.
             root["materializeToTemplatePath"] = true;
             root["organizeSidecarsIntoTemplateFolders"] = true;
+
+            // Same enrichment path as every other run. The only distinction is that Shazam must
+            // fingerprint; it must not be skipped because the peer file already has a title and artist.
+            root[AutoTagLiterals.ManualForceFingerprintKey] = true;
+            EnsureSoulseekFingerprintPlatform(root);
 
             return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         }
@@ -3237,43 +3246,37 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    private static void EnsureSoulseekFingerprintPlatform(JsonObject root)
+    {
+        if (root[AutoTagLiterals.PlatformsKey] is not JsonArray platforms)
+        {
+            platforms = new JsonArray();
+            root[AutoTagLiterals.PlatformsKey] = platforms;
+        }
+
+        if (platforms.Any(value => string.Equals(value?.GetValue<string>(), "shazam", StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        platforms.Add("shazam");
+    }
+
     /// <summary>The release mode that means "organise this as an album".</summary>
     internal const string SoulseekAlbumMode = "album";
 
     /// <summary>The release mode that means "organise this as a single".</summary>
     internal const string SoulseekSingleMode = "single";
 
-    /// <summary>
-    ///     The release mode one queued download must be organised for.
-    /// </summary>
-    /// <remarks>
-    ///     Exactly two sources, in order:
-    ///     <list type="number">
-    ///         <item>
-    ///             a valid <c>album</c> or <c>single</c> category recorded for that download, derived from
-    ///             what the peer's folder actually contained;
-    ///         </item>
-    ///         <item>
-    ///             failing that, the manual-enrichment release preference the reader saved for this
-    ///             destination's profile.
-    ///         </item>
-    ///     </list>
-    ///     <para>
-    ///         Null means neither exists, and no mode is invented for it. There is deliberately no fallback:
-    ///         guessing would put a release into a destination the reader never asked for, and the result is
-    ///         a library quietly laid out against their wishes.
-    ///     </para>
-    /// </remarks>
+    /// <summary>Uses the saved release-selection preference, or recorded category when no choice was saved.</summary>
     internal static string? ResolveEffectiveSoulseekMode(string? recordedCategory, string? savedProfilePreference)
     {
-        if (IsValidSoulseekMode(recordedCategory))
-        {
-            return recordedCategory!.Trim().ToLowerInvariant();
-        }
-
-        return IsValidSoulseekMode(savedProfilePreference)
-            ? savedProfilePreference!.Trim().ToLowerInvariant()
-            : null;
+        // This is a selection preference, not a declaration of the audio's release type.
+        // The shared runner keeps the actual verified release when the preferred alternative does not exist.
+        if (IsValidSoulseekMode(savedProfilePreference))
+            return savedProfilePreference!.Trim().ToLowerInvariant();
+        return IsValidSoulseekMode(recordedCategory)
+            ? recordedCategory!.Trim().ToLowerInvariant() : null;
     }
 
     private static bool IsValidSoulseekMode(string? value)
@@ -3334,12 +3337,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     /// <remarks>
     ///     <para>
     ///         Grouped by destination and by each item's own effective mode. Neither key is optional: two
-    ///         destination folders cannot share a run, and a known album alongside a known single cannot
-    ///         either.
+    ///         destination folders cannot share a run. Files sharing a saved preference can share a run
+    ///         while retaining different actual release types.
     ///     </para>
     ///     <para>
-    ///         Each item's mode is resolved from its own category first, so one item's category can never
-    ///         decide another's. Items whose mode cannot be resolved are left out rather than folded into a
+    ///         Each item's mode uses the saved destination preference first and its own category only
+    ///         when no preference exists. Items whose mode cannot be resolved are left out rather than folded into a
     ///         run: they stay untouched in the queue, which keeps them recoverable and still eligible for a
     ///         later pass once the missing choice exists. No new queue state is introduced for that - an item
     ///         simply is not part of any run this pass.
@@ -3472,18 +3475,22 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
-        configJson = ApplySoulseekOperationShape(configJson, destinationFolderId, partition.Mode);
+        if (folder is null || string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: Soulseek enrichment skipped for destination folder {destinationFolderId} (destination path is missing)."));
+            return;
+        }
 
-        var categories = partition.Items
-            .Select(ReadSoulseekReleaseCategory)
-            .Where(category => !string.IsNullOrWhiteSpace(category))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        configJson = ApplySoulseekOperationShape(configJson, destinationFolderId, partition.Mode, folder.RootPath);
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: Soulseek enrichment for destination folder {destinationFolderId} organised as "
-            + $"'{partition.Mode}' ({BasisText(categories.Count)}), covering {partition.Items.Count} download(s)."));
+            $"Automation: Soulseek enrichment for destination folder {destinationFolderId} prefers "
+            + $"'{partition.Mode}', covering {partition.Items.Count} download(s); verified release availability decides each file's actual release."));
 
         var sourceFiles = recovery
             ? ResolveRecordedSourceAudioFilesUnderRoot(partition.Items, downloadRootPath)
@@ -3500,14 +3507,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             sourceFiles,
             AutoTagLiterals.RunIntentSoulseekEnrichment);
     }
-
-    /// <summary>
-    ///     Why a partition's mode was chosen, in words worth putting in a log.
-    /// </summary>
-    private static string BasisText(int knownCategoryCount)
-        => knownCategoryCount == 1
-            ? "from the peer's folder contents"
-            : "from the saved manual enrichment release preference";
 
     private string? BuildProfileConfigForFolder(AutomationProfileContext profileContext, long folderId)
     {

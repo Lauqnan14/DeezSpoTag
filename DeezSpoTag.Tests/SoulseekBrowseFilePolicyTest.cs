@@ -9,6 +9,57 @@ namespace DeezSpoTag.Tests;
 
 public sealed class SoulseekBrowseFilePolicyTest
 {
+    [Theory]
+    [InlineData(true, true, "Album/front cover.jpg|Album/11 Song.lrc|Album/11 Song.ttml")]
+    [InlineData(true, false, "Album/front cover.jpg")]
+    [InlineData(false, true, "Album/11 Song.lrc|Album/11 Song.ttml")]
+    [InlineData(false, false, "")]
+    public void PeerSelectionUsesFrontCoverAndOnlyTheRequestedTracksLyrics(bool artwork, bool lyrics, string expected)
+    {
+        var method = typeof(SoulseekSidecarPolicy).GetMethod("SelectForTrack");
+        Assert.NotNull(method);
+        string[] paths = ["Album/back cover.jpg", "Album/disc.jpg", "Album/booklet.jpg", "Album/cover.jpg",
+            "Album/front cover.jpg", "Album/11 Song.lrc", "Album/11 Song.ttml", "Album/12 Other.lrc",
+            "Album Two/front.jpg", "Album/../front.jpg", "Album/readme.txt", "Album/album.cue"];
+        var selected = Assert.IsAssignableFrom<System.Collections.Generic.IEnumerable<string>>(
+            method.Invoke(null, ["Album/11 Song.flac", "Song", "Artist", paths, artwork, lyrics]));
+        Assert.Equal(expected.Length == 0 ? System.Array.Empty<string>() : expected.Split('|'), selected);
+    }
+
+    [Fact]
+    public void PeerSelectionUnderstandsCompactCoverNamesAndTrackSpecificTextLyrics()
+    {
+        var selected = SoulseekSidecarPolicy.SelectForTrack("Album/01 Song.flac","Song","Artist",
+            ["Album/backcover.jpg","Album/discart.png","Album/frontcover.jpg","Album/Song - Lyrics.txt","Album/Other - Lyrics.txt"],true,true);
+        Assert.Equal(new[]{"Album/frontcover.jpg","Album/Song - Lyrics.txt"},selected);
+    }
+
+    [Fact]
+    public void BackCoverAndOtherTracksLyricsAreNotUsedWhenFrontAndMatchingLyricsAreAbsent()
+    {
+        var method = typeof(SoulseekSidecarPolicy).GetMethod("SelectForTrack");
+        Assert.NotNull(method);
+        var selected = Assert.IsAssignableFrom<System.Collections.Generic.IEnumerable<string>>(
+            method.Invoke(null, ["Album/11 Song.flac", "Song", "Artist", new[] { "Album/back.jpg", "Album/12 Other.lrc" }, true, true]));
+        Assert.Empty(selected);
+    }
+
+    [Theory]
+    [InlineData("shazam", true)]
+    [InlineData("Shazam", true)]
+    [InlineData("", false)]
+    [InlineData("library", false)]
+    public void PeerSidecarsAreRestrictedToShazamInitiatedDownloads(string origin, bool expected)
+    {
+        var item = new SoulseekQueueItem { SourceService = "deezer" };
+        var property = item.GetType().GetProperty("DownloadOrigin");
+        Assert.NotNull(property);
+        property.SetValue(item, origin);
+        var method = typeof(SoulseekSidecarPolicy).GetMethod("UsesPeerSidecars");
+        Assert.NotNull(method);
+        Assert.Equal(expected, method.Invoke(null, [item]));
+    }
+
     [Fact]
     public void RemotePath_NormalizesWindowsAndPosixSeparatorsToOneIdentity()
     {

@@ -244,16 +244,26 @@
 
     /* ---------------------------------------------------------------- connection */
 
+    let connectionRequest = null;
+
     async function loadConnection() {
+        if (connectionRequest) return connectionRequest;
+        connectionRequest = (async () => {
+            try {
+                const connection = await request('/connection?refresh=true');
+                state.connection = connection;
+                renderConnection();
+                return connection;
+            } catch (error) {
+                state.connection = { state: 'unknown', message: error.message, usable: false };
+                renderConnection();
+                return state.connection;
+            }
+        })();
         try {
-            const connection = await request('/connection');
-            state.connection = connection;
-            renderConnection();
-            return connection;
-        } catch (error) {
-            state.connection = { state: 'unknown', message: error.message, usable: false };
-            renderConnection();
-            return state.connection;
+            return await connectionRequest;
+        } finally {
+            connectionRequest = null;
         }
     }
 
@@ -370,6 +380,13 @@
         // unreliable. A search that came back empty is retried, and a POST that never produced an id left
         // state.searchId null, so both still get a fresh attempt.
         if (state.searchId && state.searchTerm === state.title && state.byId.size > 0) {
+            return null;
+        }
+
+        // Await the read-only login check: the tab's arrival check may still be in flight,
+        // or this page may have retained the status from before the user logged in.
+        await loadConnection();
+        if (state.busy || (state.phase === 'searching' && state.searchTerm === state.title)) {
             return null;
         }
 
@@ -1164,7 +1181,7 @@
                     case 'duration':
                         return (Number(b.durationSeconds) || 0) - (Number(a.durationSeconds) || 0);
                     default:
-                        return (Number(b.score) || 0) - (Number(a.score) || 0);
+                        return comparePeerPriority(a, b);
                 }
             });
     }
@@ -1250,13 +1267,10 @@
                 };
             })
             .sort((left, right) => {
-                // A complete copy of the release is a better answer than a partial one, so completeness
-                // leads and match breaks the tie. Peers offering the same album therefore sit together,
-                // which is the comparison the reader is actually making.
-                if (left.eligibleCount !== right.eligibleCount) {
-                    return right.eligibleCount - left.eligibleCount;
-                }
-                return right.bestScore - left.bestScore;
+                // Eligibility still leads. Within this quality, slskd's fastest peer is offered first.
+                return Number(right.eligibleCount > 0) - Number(left.eligibleCount > 0)
+                    || comparePeerPriority(left, right)
+                    || right.eligibleCount - left.eligibleCount;
             });
     }
 
@@ -1296,6 +1310,14 @@
             const counter = byId('soulseek-result-count');
             if (counter) {
                 counter.textContent = '0 results';
+            }
+            // File counts can be non-zero while every candidate belongs to a quality this tab has no group
+            // for. Hiding the empty pane then looks like the files were found and then lost.
+            const empty = byId('soulseek-candidates-empty');
+            if (empty && state.byId.size > 0) {
+                empty.hidden = false;
+                empty.innerHTML = '<h3>Files were reported, but none can be shown</h3>'
+                    + '<p>Peers answered, but every file is outside the Soulseek qualities this search can display. Enable those qualities under Download settings, or allow unknown quality.</p>';
             }
             return;
         }
@@ -1385,10 +1407,24 @@
     /**
      * The candidates the download ladder could actually take, best first.
      */
+    function comparePeerPriority(a, b) {
+        return Number(b.accepted !== false) - Number(a.accepted !== false)
+            || (Number(b.peerUploadSpeed) || 0) - (Number(a.peerUploadSpeed) || 0)
+            || (Number(a.peerQueueLength) || 0) - (Number(b.peerQueueLength) || 0)
+            || (Number(b.score ?? b.bestScore) || 0) - (Number(a.score ?? a.bestScore) || 0);
+    }
+
     function acceptedRanking() {
-        return Array.from(state.byId.values())
+        const byQuality = new Map();
+        const candidates = Array.from(state.byId.values())
             .filter((candidate) => candidate.accepted !== false && isCandidateEnabled(candidate))
             .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
+        for (const candidate of candidates) {
+            const code = groupCodeOf(candidate);
+            if (!byQuality.has(code)) byQuality.set(code, []);
+            byQuality.get(code).push(candidate);
+        }
+        return Array.from(byQuality.values()).flatMap(peers => peers.sort(comparePeerPriority));
     }
 
     /**
@@ -3280,8 +3316,7 @@
             global.bootstrap.Tab.getOrCreateInstance(tab).show();
         }
 
-        // The backend owns the fresh probe and reconnect attempt. A cached browser status must not prevent
-        // the request that can restore the Soulseek session.
+        // runSearch awaits a fresh status check; it never reconnects or logs the user in.
         void runSearch();
     }
 
@@ -3297,9 +3332,8 @@
      * </para>
      *
      * <para>
-     *     The connection is checked first, unlike in searchCurrentTerm. A background request must not be
-     *     fired when the app already knows it will be refused; the click on the tab still forces the
-     *     backend probe that can restore the Soulseek session.
+     *     A fresh read-only connection check prevents a previous logged-out browser status from
+     *     blocking background work after login. Neither search path reconnects the session.
      * </para>
      */
     async function searchInBackground(term) {
@@ -3308,7 +3342,7 @@
             return;
         }
 
-        const connection = state.connection || await loadConnection();
+        const connection = await loadConnection();
         if (connection && connection.usable !== true) {
             return;
         }

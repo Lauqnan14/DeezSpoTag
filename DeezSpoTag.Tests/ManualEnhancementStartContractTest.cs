@@ -321,8 +321,9 @@ public sealed class ManualEnhancementStartContractTest
         Assert.Contains("id=\"autotag-move-success-library\"", view, StringComparison.Ordinal);
         Assert.Contains("name=\"manualReleasePreference\" value=\"album\"", view, StringComparison.Ordinal);
         Assert.Contains("name=\"manualReleasePreference\" value=\"single\"", view, StringComparison.Ordinal);
-        Assert.Contains("name=\"manualRecognitionMethod\" value=\"id-first\"", view, StringComparison.Ordinal);
-        Assert.Contains("name=\"manualRecognitionMethod\" value=\"fingerprint\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("name=\"manualRecognitionMethod\"", view, StringComparison.Ordinal);
+        Assert.Contains("Audio fingerprinting is required for every file.", view, StringComparison.Ordinal);
+        Assert.Contains("const forceFingerprint = true;", startFunction, StringComparison.Ordinal);
         Assert.DoesNotContain("autotag-move-failed", view, StringComparison.Ordinal);
     }
 
@@ -359,7 +360,7 @@ public sealed class ManualEnhancementStartContractTest
 
         Assert.Contains("Manual enrichment requires exactly one enabled music library destination.", controller, StringComparison.Ordinal);
         Assert.Contains("GetPipelineOwnedPayloadPathsAsync", controller, StringComparison.Ordinal);
-        Assert.Contains("configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40", controller, StringComparison.Ordinal);
+        Assert.Contains("configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 0", controller, StringComparison.Ordinal);
         Assert.Contains("RunIntent: AutoTagLiterals.RunIntentManualEnrichment", controller, StringComparison.Ordinal);
         Assert.Contains("ProfileId: selectedProfile.Id", controller, StringComparison.Ordinal);
         Assert.Contains("organizerOptions.BatchScopedFilesOnly = true", service, StringComparison.Ordinal);
@@ -409,12 +410,13 @@ public sealed class ManualEnhancementStartContractTest
     }
 
     [Fact]
-    public void ManualEnrichment_CentralIdentityResolutionStaysConfinedToTheManualPass()
+    public void ManualEnrichment_UsesPreparedMatchesInsteadOfASecondCentralLookup()
     {
         var orchestration = PartialSourceReader.ReadTypeSource(
             "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.RunOrchestration.cs");
-        Assert.Contains("isManualEnrichment && firstManualPass", orchestration, StringComparison.Ordinal);
-        Assert.Contains("ApplyCentralIdentityForManualEnrichmentAsync(", orchestration, StringComparison.Ordinal);
+        Assert.Contains("if (IsManualEnrichment(plan.Config))", orchestration, StringComparison.Ordinal);
+        Assert.Contains("PrepareExternalFileEnrichmentAsync(", orchestration, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyCentralIdentityForManualEnrichmentAsync(", orchestration, StringComparison.Ordinal);
         Assert.Contains("RestoreTrustedCoreIdentity(", orchestration, StringComparison.Ordinal);
     }
 }

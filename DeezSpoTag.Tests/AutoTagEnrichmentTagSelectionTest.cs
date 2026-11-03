@@ -16,6 +16,87 @@ namespace DeezSpoTag.Tests;
 public sealed class AutoTagEnrichmentTagSelectionTest
 {
     [Theory]
+    [InlineData("soulseek_enrichment", true, "enrichment")]
+    [InlineData("soulseek_enrichment", false, "enrichment")]
+    [InlineData("manual_enrichment", true, "enrichment")]
+    [InlineData("download_enrichment", true, "enrichment")]
+    [InlineData("default", true, "enrichment")]
+    [InlineData("enhancement_only", true, "enhancement")]
+    [InlineData("enhancement_only", false, "enhancement")]
+    [InlineData("enhancement_recent_downloads", true, "enhancement")]
+    [InlineData("artist_alias_merge", true, "enhancement")]
+    public async System.Threading.Tasks.Task ProductionStagePlannerSeparatesStagingEnrichmentFromLibraryEnhancement(
+        string intent, bool genreIntelligence, string expectedStage)
+    {
+        var directory = Path.Join(Path.GetTempPath(), "stage-separation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var serviceType = typeof(AutoTagService);
+            var service = (AutoTagService)RuntimeHelpers.GetUninitializedObject(serviceType);
+            void Set(string name, object value) => serviceType.GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, value);
+            Set("_runtimeConfigDir", directory);
+            Set("_logger", Microsoft.Extensions.Logging.Abstractions.NullLogger<AutoTagService>.Instance);
+            var job = new AutoTagJob { Id = "stage-test", RunIntent = intent };
+            var saves = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>();
+            saves[job.Id] = DateTimeOffset.UtcNow;
+            Set("_lastJobFullSaveUtc", saves);
+            var metadata = new AutoTagMetadataService(null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<AutoTagMetadataService>.Instance);
+            typeof(AutoTagMetadataService).GetField("_cachedJson", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(metadata,
+                "[{\"id\":\"shazam\",\"supportedTags\":[\"title\",\"artist\",\"album\"],\"requiresAuth\":false},{\"id\":\"itunes\",\"supportedTags\":[\"title\",\"artist\",\"album\"],\"requiresAuth\":false}]");
+            typeof(AutoTagMetadataService).GetField("_cacheExpiresAt", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(metadata, DateTimeOffset.UtcNow.AddHours(1));
+            Set("_metadataService", metadata);
+            var root = new JsonObject
+            {
+                ["platforms"] = new JsonArray("shazam", "itunes"),
+                ["tags"] = new JsonArray("title", "artist", "album"),
+                ["gapFillTags"] = new JsonArray("title", "artist", "album"),
+                ["genreIntelligence"] = new JsonObject { ["enabled"] = genreIntelligence },
+                ["enhancement"] = new JsonObject { ["gapFilling"] = new JsonObject { ["enabled"] = true } },
+                ["manualReleasePreference"] = "album", ["manualDestinationFolderId"] = 7,
+                ["targetFiles"] = new JsonArray(Path.Join(directory, "track.flac"))
+            };
+            var path = Path.Join(directory, "config.json");
+            File.WriteAllText(path, root.ToJsonString());
+            var task = (System.Threading.Tasks.Task)serviceType.GetMethod(
+                "BuildStageConfigsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(service, new object[] { job, path })!;
+            await task;
+            var result = (IEnumerable)task.GetType().GetProperty("Result")!.GetValue(task)!;
+            var stage = Assert.Single(result.Cast<object>());
+            Assert.Equal(expectedStage, stage.GetType().GetProperty("Name")!.GetValue(stage));
+            var actualConfig = JsonNode.Parse(File.ReadAllText((string)stage.GetType().GetProperty("ConfigPath")!.GetValue(stage)!))!;
+            Assert.Equal(genreIntelligence, actualConfig["genreIntelligence"]!["enabled"]!.GetValue<bool>());
+            if (intent is "soulseek_enrichment" or "manual_enrichment")
+            {
+                Assert.True(actualConfig["forceShazam"]!.GetValue<bool>());
+                Assert.False(actualConfig["custom"]!["shazam"]!["id_first"]!.GetValue<bool>());
+                Assert.True(actualConfig["materializeToTemplatePath"]!.GetValue<bool>());
+                Assert.True(actualConfig["organizeSidecarsIntoTemplateFolders"]!.GetValue<bool>());
+                var integrated = serviceType.GetMethod("ShouldRunIntegratedWorkflowsForIntent", BindingFlags.NonPublic | BindingFlags.Static)!;
+                Assert.True((bool)integrated.Invoke(null, new object[] { intent })!);
+            }
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExternalEnrichmentPlanAlwaysRequiresAudioFingerprinting(bool savedForceFingerprint)
+    {
+        var root = new JsonObject
+        {
+            ["tags"] = new JsonArray("title", "artist"),
+            ["manualForceFingerprint"] = savedForceFingerprint
+        };
+        var method = typeof(AutoTagService).GetMethod("BuildManualEnrichmentStagePlan", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var plan = method.Invoke(null, new object[] { root, new[] { "itunes", "spotify" } })!;
+        Assert.True((bool)plan.GetType().GetProperty("ForceShazamFingerprint")!.GetValue(plan)!);
+        var platforms = Assert.IsType<List<string>>(plan.GetType().GetProperty("Platforms")!.GetValue(plan));
+        Assert.Equal(new[] { "shazam", "itunes", "spotify" }, platforms);
+    }
+
+    [Theory]
     [InlineData("apple", false, false)]
     [InlineData("itunes", false, false)]
     [InlineData("spotify", true, false)]

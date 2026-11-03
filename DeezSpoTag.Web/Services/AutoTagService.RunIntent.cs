@@ -162,8 +162,8 @@ public partial class AutoTagService
     /// enrichment's just-moved files get the sidecar lookup with their library track
     /// identity. Download enrichment is excluded: its sidecars are produced by the
     /// download prefetch and no sidecar lookup runs there.
-    /// The gap-fill STAGE keeps using <see cref="ShouldRunEnhancementForIntent"/>,
-    /// which also excludes manual enrichment (manual runs tag via the enrichment stage).
+    /// The metadata gap-fill STAGE uses <see cref="IsEnhancementRunIntent"/>,
+    /// independently of the organization and sidecar workflow gates.
     /// </summary>
     private static bool ShouldRunIntegratedWorkflowsForIntent(string? runIntent)
     {

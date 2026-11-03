@@ -10,6 +10,7 @@ using DeezSpoTag.Integrations.Soulseek;
 using DeezSpoTag.Services.Download.Soulseek;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -79,6 +80,129 @@ public sealed class SoulseekSearchServiceTest : IDisposable
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Queue"] = $"Data Source={_dbPath}" })
                 .Build(),
             NullLogger<SoulseekRepository>.Instance);
+
+    [Fact]
+    public async Task ResponsesArrivingAfterTheOriginalFiveSecondWindowAreScoredAndPersisted()
+    {
+        var client = new LateResponsesSlskdClient(TimeSpan.FromSeconds(6));
+        var outcome = await CreateService(CreateSettings(30), client).SearchAsync(Target(), SoulseekSearchMode.Automated);
+        Assert.False(outcome.Failed);
+        Assert.Single(outcome.Candidates);
+        Assert.Single(await CreateRepository().GetCandidatesAsync(outcome.SearchId));
+    }
+
+    [Fact]
+    public async Task EmptyResponsesDespiteObservedFilesRemainAFailureWithRealCounts()
+    {
+        var client = new LifecycleClient();
+        await Assert.ThrowsAsync<SoulseekUnavailableException>(() =>
+            CreateService(CreateSettings(30), client).SearchAsync(Target(), SoulseekSearchMode.Automated));
+        var record = await CreateRepository().GetSearchAsync(client.LastSearchId);
+        Assert.Equal(SoulseekSearchService.ResponseRetrievalFailedCode, record!.ErrorCode);
+        Assert.Equal(42, record!.FileCount);
+        Assert.Equal(3, record.ResponseCount);
+        Assert.Equal(1, client.Starts);
+        Assert.Equal(0, client.Deletes);
+    }
+
+    [Fact]
+    public async Task VanishedSearchRecordsTerminalFailureRatherThanEmptySuccess()
+    {
+        var client = new LifecycleClient { Vanish = true };
+        var id = Guid.NewGuid();
+        await Assert.ThrowsAsync<SoulseekUnavailableException>(() => CreateService(CreateSettings(30), client)
+            .ObserveAsync(Target(), id, "artist title", SoulseekSearchMode.Manual, null, CancellationToken.None));
+        var record = await CreateRepository().GetSearchAsync(id);
+        Assert.Equal(SoulseekSearchService.SearchObservationFailedCode, record!.ErrorCode);
+        Assert.NotNull(record.EndedAtUtc);
+        Assert.False(record.Completed);
+        Assert.False(SoulseekSearchService.ActiveSearches.ContainsKey(id));
+    }
+
+    [Fact]
+    public async Task CancellationRecordsTerminalStateAndClearsEveryLiveRegistry()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var client = new LifecycleClient { OnPoll = () => cancellation.Cancel() };
+        var id = Guid.NewGuid();
+        var realtime = new RecordingSearchPublisher();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => CreateService(CreateSettings(30), client, new StubScoringService(), realtime)
+            .ObserveAsync(Target(), id, "artist title", SoulseekSearchMode.Manual, null, cancellation.Token));
+        var record = await CreateRepository().GetSearchAsync(id);
+        Assert.Equal(SoulseekSearchService.SearchCancelledCode, record!.ErrorCode);
+        Assert.NotNull(record.EndedAtUtc);
+        Assert.Equal(SoulseekSearchStage.Cancelled, Assert.Single(realtime.Progresses.Where(progress => progress.Final)).Stage);
+        Assert.False(SoulseekSearchService.ActiveSearches.ContainsKey(id));
+        Assert.False(SoulseekSearchService.LiveResults.ContainsKey(id));
+        Assert.False(SoulseekSearchService.LiveCounts.ContainsKey(id));
+        Assert.Equal(1, client.Deletes);
+    }
+
+    [Fact]
+    public async Task FailedInitialPersistenceDoesNotLeakStaticSearchState()
+    {
+        await CreateRepository().GetShareScanStateAsync();
+        await using var db = new SqliteConnection($"Data Source={_dbPath}");
+        await db.OpenAsync();
+        await using var trigger = new SqliteCommand("CREATE TRIGGER fail_search BEFORE INSERT ON soulseek_search BEGIN SELECT RAISE(ABORT, 'test failure'); END;", db);
+        await trigger.ExecuteNonQueryAsync();
+        var id = Guid.NewGuid();
+        await Assert.ThrowsAsync<SqliteException>(() => CreateService(CreateSettings(30), new LifecycleClient())
+            .ObserveAsync(Target(), id, "artist title", SoulseekSearchMode.Manual, null, CancellationToken.None));
+        Assert.False(SoulseekSearchService.ActiveSearches.ContainsKey(id));
+        Assert.False(SoulseekSearchService.LiveResults.ContainsKey(id));
+        Assert.False(SoulseekSearchService.LiveCounts.ContainsKey(id));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ScanCancellationAndUnexpectedFailureReleaseTheRunningClaim(bool cancel)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var client = new LifecycleClient { OnRescan = () =>
+        {
+            if (cancel) { cancellation.Cancel(); cancellation.Token.ThrowIfCancellationRequested(); }
+            throw new InvalidOperationException("private backend details");
+        }};
+        var repository = CreateRepository();
+        var service = new SoulseekShareService(client,
+            new StubCredentialProvider(new SlskdCredentials("http://localhost:5030", "key")),
+            new StubConnectionService(), CreateSettings(30), repository, NullLogger<SoulseekShareService>.Instance);
+        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.RequestRescanAsync(cancellation.Token));
+        else Assert.False(await service.RequestRescanAsync());
+        var state = await repository.GetShareScanStateAsync();
+        Assert.False(state!.IsRunning);
+        Assert.NotNull(state.CompletedAtUtc);
+        Assert.DoesNotContain("private backend", state.Error!);
+        Assert.True(await repository.RecordShareScanStartedAsync());
+    }
+
+    private sealed class LifecycleClient : CapturingSlskdClientBase
+    {
+        public bool Vanish { get; init; }
+        public Action? OnPoll { get; init; }
+        public Action? OnRescan { get; init; }
+        public int Starts { get; private set; }
+        public int Deletes { get; private set; }
+        public Guid LastSearchId { get; private set; }
+        public override Task<SlskdSearch> StartSearchAsync(SlskdCredentials credentials, SlskdSearchRequest request, CancellationToken cancellationToken = default)
+        {
+            Starts++;
+            LastSearchId = Guid.NewGuid();
+            return Task.FromResult(new SlskdSearch { Id = LastSearchId, SearchText = request.SearchText });
+        }
+        public override Task<SlskdSearch?> GetSearchAsync(SlskdCredentials credentials, Guid searchId, bool includeResponses = false, CancellationToken cancellationToken = default)
+        {
+            OnPoll?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<SlskdSearch?>(Vanish ? null : new SlskdSearch { Id = searchId, IsComplete = true, FileCount = 42, ResponseCount = 3 });
+        }
+        public override Task<bool> DeleteSearchAsync(SlskdCredentials credentials, Guid searchId, CancellationToken cancellationToken = default)
+        { Deletes++; return Task.FromResult(true); }
+        public override Task RescanSharesAsync(SlskdCredentials credentials, CancellationToken cancellationToken = default)
+        { OnRescan?.Invoke(); return Task.CompletedTask; }
+    }
 
     private SoulseekSettingsService CreateSettings(int searchTimeoutSeconds)
     {
@@ -627,7 +751,7 @@ public sealed class SoulseekSearchServiceTest : IDisposable
         var client = new LateResponsesSlskdClient(responseDelay: TimeSpan.FromSeconds(2));
         var service = new SoulseekSearchService(
             client,
-            new StubCredentialProvider(new SlskdCredentials("http://192.168.28.24:5030", string.Empty)),
+            new StubCredentialProvider(new SlskdCredentials("http://192.0.2.10:5030", string.Empty)),
             new StubConnectionService(),
             new StubScoringService(),
             CreateSettings(searchTimeoutSeconds: 5),
@@ -1195,8 +1319,8 @@ public sealed class SoulseekSearchServiceTest : IDisposable
             {
                 Id = searchId,
                 IsComplete = true,
-                ResponseCount = 1,
-                FileCount = 1,
+                ResponseCount = StartedSearchTexts.Count > 1 || AnswerFirstSearch ? 1 : 0,
+                FileCount = StartedSearchTexts.Count > 1 || AnswerFirstSearch ? 1 : 0,
                 EndedAt = DateTimeOffset.UtcNow
             });
 

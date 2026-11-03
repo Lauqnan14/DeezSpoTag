@@ -14,6 +14,32 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekAudioCompletionBoundaryTest
 {
+    [Fact]
+    public void SoulseekAppliesTheSavedTemplatesAfterEnrichmentBeforeMoving()
+    {
+        var source = ReadWeb("Services", "AutoTagService.PathHelpers.cs");
+        var start = source.IndexOf("private async Task<AutoMoveExecutionResult> MoveAfterAutoTagAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("private static bool TryParseLegacyFolderId", start, StringComparison.Ordinal);
+        var block = end > start ? source[start..end] : source[start..];
+        Assert.Contains("IsSoulseekEnrichmentIntent(job.RunIntent)", block, StringComparison.Ordinal);
+        var organize = block.IndexOf("_libraryOrganizer.OrganizeFilesWithReportAsync", StringComparison.Ordinal);
+        var move = block.IndexOf("_downloadMoveService.MoveForRootWithSummaryAsync", StringComparison.Ordinal);
+        Assert.True(organize >= 0 && organize < move);
+        Assert.Contains("StagingPathTransitions", block, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingPersistedPathIsRefusedInsteadOfReturningTemplateTokens()
+    {
+        var method = typeof(DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor).GetMethod(
+            "ResolveExpectedPath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var payload = new DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem();
+        var failure = Assert.Throws<System.Reflection.TargetInvocationException>(() => method.Invoke(null, [payload]));
+        Assert.IsType<InvalidOperationException>(failure.InnerException);
+        payload.FilePath = Path.Join(Path.GetTempPath(), "expected.flac");
+        Assert.Equal(payload.FilePath, (string)method.Invoke(null, [payload])!);
+    }
+
     // ─────────────────────────── Task 4: verified audio, not completed tagging ───────────────────────────
 
     /// <summary>
@@ -308,7 +334,7 @@ public sealed class SoulseekAudioCompletionBoundaryTest
         // The queue row serialises the whole intent, so the category rides along in the existing payload
         // rather than needing a separate write, and the reader treats null or blank as genuinely unknown.
         var enqueue = ReadWeb("Services", "DownloadIntentService.cs");
-        Assert.Contains("var json = JsonSerializer.Serialize(payload);", enqueue, StringComparison.Ordinal);
+        Assert.Contains("var json = JsonSerializer.Serialize(payload, payload.GetType());", enqueue, StringComparison.Ordinal);
         Assert.DoesNotContain("SoulseekReleaseCategory", enqueue, StringComparison.Ordinal);
 
         var orchestration = ReadWeb("Services", "DownloadOrchestrationService.cs");
@@ -432,11 +458,13 @@ public sealed class SoulseekAudioCompletionBoundaryTest
         Assert.Contains("ManualReleasePreferenceKey", method, System.StringComparison.Ordinal);
         Assert.Contains("root[\"materializeToTemplatePath\"] = true;", method, System.StringComparison.Ordinal);
         Assert.Contains("root[\"organizeSidecarsIntoTemplateFolders\"] = true;", method, System.StringComparison.Ordinal);
+        Assert.Contains("root[AutoTagLiterals.ManualForceFingerprintKey] = true;", method, StringComparison.Ordinal);
+        Assert.Contains("EnsureSoulseekFingerprintPlatform(root);", method, StringComparison.Ordinal);
 
         // And it has to be applied at the group call site, or it is dead code.
         // And it has to be applied at the group call site, or it is dead code.
         Assert.Contains(
-            "ApplySoulseekOperationShape(configJson, destinationFolderId, partition.Mode)",
+            "ApplySoulseekOperationShape(configJson, destinationFolderId, partition.Mode, folder.RootPath)",
             orchestration,
             System.StringComparison.Ordinal);
     }

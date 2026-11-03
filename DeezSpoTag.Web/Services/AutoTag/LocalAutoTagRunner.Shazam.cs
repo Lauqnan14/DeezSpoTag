@@ -227,6 +227,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var outcome = attempt?.Outcome ?? ShazamRecognitionOutcome.NoMatch;
             if (outcome is ShazamRecognitionOutcome.RecognizerError or ShazamRecognitionOutcome.RecognizerUnavailable)
             {
+                cache.Remove(filePath); // Infrastructure failures must be retried, not cached as no-match.
                 return new ShazamEnrichmentResult(
                     false,
                     attempt?.Error ?? "shazam unavailable",
@@ -241,7 +242,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         if (!fromCache)
         {
-            logCallback($"onetagger_autotag: shazam identified {Path.GetFileName(filePath)}");
+            logCallback($"onetagger_autotag: shazam fingerprint identified {recognized.Artist} - {recognized.Title} for {Path.GetFileName(filePath)}");
         }
 
         var preferShazamCore = forceShazamMatch || !identityIsTrusted || IsLikelyNoisyCoreMetadata(info);

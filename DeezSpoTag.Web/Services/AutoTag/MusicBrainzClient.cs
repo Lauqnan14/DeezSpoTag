@@ -68,7 +68,7 @@ public sealed class MusicBrainzClient
         for (var page = 0; page < maxPages; page++)
         {
             var offset = page * pageSize;
-            var path = $"release?recording={Uri.EscapeDataString(recordingId)}&inc=labels+isrcs+recordings+genres+tags+release-groups+media+release-events&limit={pageSize}&offset={offset}&fmt=json";
+            var path = $"release?recording={Uri.EscapeDataString(recordingId)}&inc=labels+isrcs+recordings+genres+tags+release-groups+media&limit={pageSize}&offset={offset}&fmt=json";
             var response = await GetAsync(path, cancellationToken);
             if (response == null)
             {

@@ -23,6 +23,7 @@ namespace DeezSpoTag.Tests;
 ///         would tell the user they have a track they do not have.
 ///     </para>
 /// </remarks>
+[Collection("Settings Config Isolation")]
 public sealed class SoulseekTransferCompletionVerificationTest : IDisposable
 {
     private readonly string _tempRoot;
@@ -52,6 +53,41 @@ public sealed class SoulseekTransferCompletionVerificationTest : IDisposable
         {
             // A locked temp file must not fail the run.
         }
+    }
+
+    [Fact]
+    public async Task PeerSidecarUsesTheSameConfiguredSlskdDownloadRootAndOwnershipAsAudio()
+    {
+        using var config = new TestConfigRootScope(Path.Join(_tempRoot,"config"));
+        var settingsService = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+            NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+        var settings = settingsService.LoadSettings();
+        settings.DownloadLocation = Path.Join(_tempRoot,"slskd-downloads");
+        settingsService.SaveSettings(settings);
+        const string remote = "Album/front cover.jpg";
+        var actual = SoulseekTransferService.ResolveSourcePath(remote,settings.DownloadLocation)!;
+        _client.Transfer = CompletedTransfer(120_000);
+        _client.Transfer = _client.Transfer with { Filename = remote };
+        Directory.CreateDirectory(Path.GetDirectoryName(actual)!);
+        _client.OnEnqueue = () => WriteBytes(actual,120_000);
+        var service = CreateService();
+        var field = typeof(SoulseekTransferService).GetField("_settingsService",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field.SetValue(service,settingsService);
+        var result = await service.FetchSidecarsAsync("listener",[remote],_stagingDir);
+        Assert.Equal(actual,result[remote]);
+        Assert.True(File.Exists(result[remote]));
+        Assert.Empty(await CreateRepository().GetSourceClaimsForTransferAsync(_client.Transfer.Id!.Value));
+    }
+
+    [Fact]
+    public async Task FindTransfer_MatchesWireAndCanonicalSeparatorsWithoutChangingThePeer()
+    {
+        var wanted = Guid.NewGuid();
+        _client.Downloads = [new SlskdTransfer { Id = wanted, Username = "listener", Filename = @"Music\Album\track.flac", Size = 1, State = 8 }];
+        var found = await CreateService().FindTransferAsync("listener", "Music/Album/track.flac", CancellationToken.None);
+        Assert.Equal(wanted, found?.TransferId);
+        Assert.Null(await CreateService().FindTransferAsync("other", "Music/Album/track.flac", CancellationToken.None));
     }
 
     [Fact]
@@ -555,6 +591,59 @@ public sealed class SoulseekTransferCompletionVerificationTest : IDisposable
         Assert.False(row.IsSuccessful);
         Assert.False(row.Verified);
         Assert.Contains("verified file", row.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    ///     slskd can report success a moment before the finished file is renamed into place.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSuccessAcceptsAFileThatLandsDuringTheSettleWindow()
+    {
+        var transfer = CompletedTransfer(30_000);
+        _client.Transfer = transfer;
+        var path = await ClaimedPathAsync(
+            transfer.Id!.Value,
+            "queue-settle",
+            "settling.flac",
+            30_000,
+            remoteFilename: transfer.Filename!);
+        File.Delete(path);
+        var landing = Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            WriteBytes(path, 30_000);
+        });
+
+        var result = await CreateService().WaitForCompletionAsync(
+            "listener", transfer.Id.Value, path, "queue-settle");
+        await landing;
+
+        Assert.NotNull(result);
+        Assert.Equal(path, result!.LocalPath);
+        var row = await CreateRepository().GetTransferAsync(transfer.Id.Value, CancellationToken.None);
+        Assert.True(row!.Verified);
+    }
+
+    /// <summary>
+    ///     A refused file must not keep the staging path, or the next similar-quality peer cannot be reserved.
+    /// </summary>
+    [Fact]
+    public async Task RefusedTerminalFileReleasesItsPathClaims()
+    {
+        var transfer = CompletedTransfer(30_000);
+        var path = await ClaimedPathAsync(
+            transfer.Id!.Value,
+            "queue-refused",
+            "short.flac",
+            100,
+            remoteFilename: transfer.Filename!);
+        _client.Transfer = transfer;
+
+        var result = await CreateService().WaitForCompletionAsync(
+            "listener", transfer.Id.Value, path, "queue-refused");
+
+        Assert.Null(result);
+        Assert.Empty(await CreateRepository().GetSourceClaimsForTransferAsync(transfer.Id.Value));
     }
 
     [Fact]

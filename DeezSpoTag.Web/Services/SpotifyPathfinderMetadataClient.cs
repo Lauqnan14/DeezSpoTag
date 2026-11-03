@@ -2879,7 +2879,15 @@ public sealed class SpotifyPathfinderMetadataClient
         return await QueryAsync(context, payload, cancellationToken);
     }
 
-    public async Task<List<SpotifyTrackSummary>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken)
+    public async Task<List<SpotifyTrackSummary>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken, bool required = false)
+    {
+        var previous = _requiredRefresh.Value;
+        _requiredRefresh.Value = previous || required;
+        try { return await SearchTracksCoreAsync(query, limit, cancellationToken); }
+        finally { _requiredRefresh.Value = previous; }
+    }
+
+    private async Task<List<SpotifyTrackSummary>> SearchTracksCoreAsync(string query, int limit, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -2895,6 +2903,7 @@ public sealed class SpotifyPathfinderMetadataClient
         PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
+            if (_requiredRefresh.Value) throw new HttpRequestException("Spotify catalog search could not verify a session.", null, HttpStatusCode.Unauthorized);
             return new List<SpotifyTrackSummary>();
         }
         int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);

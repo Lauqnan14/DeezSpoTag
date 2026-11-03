@@ -102,7 +102,7 @@ public sealed class AppleMusicCatalogService
         finally { gate.Release(); }
     }
 
-    private static JsonDocument ParseBrowsePage(string html)
+    internal static JsonDocument ParseBrowsePage(string html)
     {
         var match = CreateRegex("<script\\b[^>]*\\bid=[\"']serialized-server-data[\"'][^>]*>(?<json>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Match(html);
         if (!match.Success) throw new JsonException("Apple Music structured browse data is unavailable.");

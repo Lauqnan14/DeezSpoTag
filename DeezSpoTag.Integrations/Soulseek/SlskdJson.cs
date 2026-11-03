@@ -27,22 +27,20 @@ internal static class SlskdJson
             return null;
         }
 
-        foreach (var match in names
+        var exact = names
             .Select(name => element.TryGetProperty(name, out var value) ? (JsonElement?)value : null)
-            .Where(match => match.HasValue))
+            .FirstOrDefault(match => match.HasValue);
+        if (exact.HasValue)
         {
-            return match;
+            return exact;
         }
 
-        // Fall back to a case-insensitive scan for casing variants we were not told about.
-        foreach (var property in element.EnumerateObject()
+        // Prefer exact spellings; otherwise accept the server's casing variants.
+        return element.EnumerateObject()
             .Where(property => names.Any(name =>
-                string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))))
-        {
-            return property.Value;
-        }
-
-        return null;
+                string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)))
+            .Select(property => (JsonElement?)property.Value)
+            .FirstOrDefault();
     }
 
     internal static string? ReadString(JsonElement element, params string[] names)
@@ -76,9 +74,10 @@ internal static class SlskdJson
             JsonValueKind.True => true,
             JsonValueKind.False => false,
             JsonValueKind.Number => value.TryGetDecimal(out var number) && number != 0,
+            // Protocol numbers use invariant decimal syntax, not currency or thousands separators.
             JsonValueKind.String => bool.TryParse(value.GetString(), out var parsed)
                 ? parsed
-                : decimal.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var text) && text != 0,
+                : decimal.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var text) && text != 0,
             _ => fallback
         };
     }
@@ -99,12 +98,13 @@ internal static class SlskdJson
         if (value.ValueKind == JsonValueKind.String)
         {
             var text = value.GetString();
-            if (int.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+            // Preserve integer precision before accepting a decimal representation below.
+            if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
             {
                 return parsed;
             }
 
-            if (double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out number))
+            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number))
             {
                 return (int)Math.Round(number, MidpointRounding.AwayFromZero);
             }
@@ -140,7 +140,7 @@ internal static class SlskdJson
         }
 
         if (value.ValueKind == JsonValueKind.String
-            && long.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+            && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
         {
             return parsed;
         }
@@ -175,7 +175,7 @@ internal static class SlskdJson
         }
 
         if (value.ValueKind == JsonValueKind.String
-            && double.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+            && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
         {
             return parsed;
         }

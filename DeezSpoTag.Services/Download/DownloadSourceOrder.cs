@@ -938,6 +938,46 @@ public static class DownloadSourceOrder
     }
 
     /// <summary>
+    ///     Qualities an explicit Soulseek search may show, even when Soulseek is excluded from the download ladder.
+    /// </summary>
+    /// <remarks>
+    ///     The custom-order engine toggle decides whether automatic downloads walk Soulseek. It must not blank
+    ///     the Soulseek search tab: a reader who typed a query there asked to see what peers have. Ticked
+    ///     qualities on the disabled engine are therefore used, and a completely unticked engine shows the
+    ///     known ladder rather than an empty pane beside a non-zero file count.
+    /// </remarks>
+    public static List<string> ResolveSoulseekBrowserQualities(DeezSpoTagSettings settings)
+    {
+        var enabled = ResolveEnabledSoulseekQualities(settings);
+        if (enabled.Count > 0)
+        {
+            return enabled;
+        }
+
+        var selected = settings.DownloadEngineOrder?.Engines?
+            .Where(engine => string.Equals(NormalizeEngine(engine.Engine), SoulseekSource, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(engine => engine.Qualities ?? [])
+            .Where(quality => quality.Enabled && !string.IsNullOrWhiteSpace(quality.Quality))
+            .Select(quality => NormalizeQuality(SoulseekSource, quality.Quality))
+            .Where(code => !SoulseekQuality.IsUnknownCode(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+        if (selected.Count > 0)
+        {
+            return SoulseekPriority
+                .Select(profile => NormalizeQuality(SoulseekSource, profile.Quality))
+                .Where(selected.Contains)
+                .ToList();
+        }
+
+        return SoulseekPriority
+            .Select(profile => NormalizeQuality(SoulseekSource, profile.Quality))
+            .Where(code => !SoulseekQuality.IsUnknownCode(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
     ///     Returns the Soulseek qualities the search tab renders as groups, in ladder order.
     /// </summary>
     /// <remarks>

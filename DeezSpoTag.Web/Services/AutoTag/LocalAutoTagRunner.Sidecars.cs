@@ -621,6 +621,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        if (plan.ShazamCache.TryGetValue(previousPath, out var recognition))
+        {
+            plan.ShazamCache[materializedPath] = recognition;
+            plan.ShazamCache.Remove(previousPath);
+        }
         var runtimeDirectory = Path.GetDirectoryName(plan.ConfigPath);
         if (string.IsNullOrWhiteSpace(runtimeDirectory) || !Directory.Exists(runtimeDirectory))
         {

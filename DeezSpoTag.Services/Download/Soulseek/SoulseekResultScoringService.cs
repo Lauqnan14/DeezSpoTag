@@ -73,7 +73,13 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
         ArgumentNullException.ThrowIfNull(raw);
 
         var settings = _settings.GetSettings();
-        var permittedQualities = _settings.GetEnabledQualityCodes().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // A manual search is the Soulseek tab, not an automatic ladder step. An engine switched off in the
+        // custom order has no enabled codes, and treating that as "reject every file" is how a search that
+        // found thousands of files rendered none. Automation keeps the ladder restriction.
+        var permittedSource = mode == SoulseekSearchMode.Manual
+            ? _settings.GetBrowserQualityCodes()
+            : _settings.GetEnabledQualityCodes();
+        var permittedQualities = permittedSource.ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (allowedQualities is not null)
         {
             permittedQualities.IntersectWith(allowedQualities);
@@ -107,24 +113,30 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
                 cancellationToken).ConfigureAwait(false));
         }
 
-        return results
+        return OrderPeersWithinQualities(results).ToList();
+    }
+
+    private static IEnumerable<SoulseekCandidate> OrderPeersWithinQualities(IEnumerable<SoulseekCandidate> candidates)
+        => candidates
+            // Preserve the existing choice between qualities. Only peers inside a quality are reordered.
             .OrderByDescending(candidate => candidate.Score)
             .ThenByDescending(candidate => candidate.CanonicalRank ?? 0)
             .ThenByDescending(candidate => candidate.IdentityConfidence)
-            .ThenBy(candidate => candidate.Raw.PeerQueueLength)
-            .ToList();
-    }
+            .GroupBy(candidate => candidate.Quality, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(group => group
+                .OrderByDescending(candidate => candidate.Accepted)
+                .ThenByDescending(candidate => candidate.Raw.PeerUploadSpeed)
+                .ThenBy(candidate => candidate.Raw.PeerQueueLength)
+                .ThenByDescending(candidate => candidate.Score)
+                .ThenByDescending(candidate => candidate.IdentityConfidence));
 
     /// <inheritdoc />
     public SoulseekCandidate? SelectBest(IReadOnlyList<SoulseekCandidate> candidates)
     {
         ArgumentNullException.ThrowIfNull(candidates);
-        return candidates
-            .Where(candidate => candidate.Accepted)
-            .OrderByDescending(candidate => candidate.Raw.PeerUploadSpeed)
-            .ThenByDescending(candidate => candidate.Score)
-            .ThenBy(candidate => candidate.Raw.PeerQueueLength)
-            .FirstOrDefault();
+
+        // A fast peer never bypasses identity, quality or peer-policy rejection.
+        return OrderPeersWithinQualities(candidates.Where(candidate => candidate.Accepted)).FirstOrDefault();
     }
 
     private async Task<SoulseekCandidate> ScoreOneAsync(
@@ -195,7 +207,7 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
             return Reject("quality_not_allowed");
         }
 
-        if (!SatisfiesRequestedQuality(quality, requestedCode))
+        if (!SatisfiesRequestedQuality(quality, requestedCode, raw.BitrateKbps))
         {
             return Reject("below_requested_quality");
         }
@@ -206,7 +218,7 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
             return Reject(identity.Reason);
         }
 
-        var score = ComputeScore(identity.Score, quality, raw, facts, mode);
+        var score = ComputeScore(identity.Score, quality, raw, facts, mode, unknownAllowed);
 
         if (mode == SoulseekSearchMode.Automated && score < AutomatedMinimumScore)
         {
@@ -298,7 +310,8 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
         SoulseekQualityInfo quality,
         SoulseekRawCandidate raw,
         SoulseekFilenameFacts facts,
-        SoulseekSearchMode mode)
+        SoulseekSearchMode mode,
+        bool unknownAllowed)
     {
         // The shared validator's score already accounts for artist, title, duration and album. Multiplying it
         // by the parser's confidence as well would count the artist twice and make a clean, well-named
@@ -318,10 +331,14 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
             score -= SoftNoiseScorePenalty;
         }
 
-        // Unknown quality is never allowed to outrank a known one just because its peer looked healthy.
+        // Unknown quality is never allowed to outrank a known one just because its peer looked healthy. With the
+        // user's explicit opt-in the ceiling sits exactly at the automated minimum, so an allowed unknown-quality
+        // file can reach delivery, while everything above it - a stronger identity, a healthier peer - is still
+        // capped: "could not tell" does not become better than "known" because the peer is fast.
         if (quality.IsUnknown)
         {
-            score = Math.Min(score, 0.5);
+            score = Math.Min(score, unknownAllowed && mode == SoulseekSearchMode.Automated
+                ? AutomatedMinimumScore : UnknownQualityScoreCeiling);
         }
 
         return Math.Round(Math.Clamp(score, 0, 1), 4);
@@ -381,18 +398,32 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
             .Any(candidate => candidate is "non_audio_file" or "unparseable_name" or "hash_filename" or "empty_filename" or "no_filename");
     }
 
-    /// <summary>
-    ///     Returns a value indicating whether a candidate meets the quality the user asked for.
-    /// </summary>
+    /// <summary>Scores how much an unknown-quality candidate may show.</summary>
     /// <remarks>
-    ///     An empty step request adds no minimum, so an explicitly allowed unknown-quality candidate is
-    ///     allowed through here. An explicit step, on the other hand, is a hard requirement: a candidate
-    ///     whose quality could not be determined never satisfies it, because "I could not tell" is not
-    ///     evidence of meeting the bar.
+    ///     Kept below the automated minimum so an unknown-quality file can never reach delivery by accident; an
+    ///     explicit opt-in moves the ceiling to the minimum instead (see <see cref="ComputeScore"/>).
     /// </remarks>
-    private static bool SatisfiesRequestedQuality(SoulseekQualityInfo quality, string requestedCode)
+    private const double UnknownQualityScoreCeiling = 0.5;
+
+    /// <summary>Returns a value indicating whether a candidate meets the quality the user asked for.</summary>
+    /// <remarks>
+    ///     <para>
+    ///         An empty step request adds no minimum, so an explicitly allowed unknown-quality candidate is
+    ///         allowed through here. An explicit step, on the other hand, is a hard requirement: a candidate
+    ///         whose quality could not be determined never satisfies it, because "I could not tell" is not
+    ///         evidence of meeting the bar.
+    ///     </para>
+    ///     <para>
+    ///         For a lossy request the advertised bitrate, not the shared tier, is the bar: MP3_256 and
+    ///         MP3_192 borrow the mp3_320 tier for ranking, so a 192 kbps file would otherwise pass a
+    ///         320 kbps request on rank alone.
+    ///     </para>
+    /// </remarks>
+    private static bool SatisfiesRequestedQuality(SoulseekQualityInfo quality, string requestedCode, int? bitrateKbps)
     {
-        if (string.IsNullOrEmpty(requestedCode))
+        // UNKNOWN is an enabled ladder option, not a bitrate minimum. The separate opt-in and enabled-code
+        // checks above still apply; otherwise the explicit UNKNOWN rung would remain unusable in automation.
+        if (string.IsNullOrEmpty(requestedCode) || requestedCode == SoulseekQualityInfo.UnknownCode)
         {
             return true;
         }
@@ -412,6 +443,12 @@ public sealed class SoulseekResultScoringService : ISoulseekResultScoringService
         if (quality.IsLossless)
         {
             return true;
+        }
+
+        var requestedFloor = SoulseekQuality.LossyBitrateFloor(requestedCode);
+        if (requestedFloor is { } floor)
+        {
+            return bitrateKbps is { } kbps && kbps >= floor;
         }
 
         var requestedRank = SoulseekQuality.NormalizeCodeWithFacts(requestedCode).CanonicalRank ?? 0;

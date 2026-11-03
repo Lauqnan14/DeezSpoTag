@@ -300,6 +300,28 @@ public partial class AutoTagService
                 organizerOptions.MoveUntaggedPath = null;
                 organizerOptions.OnlyMoveWhenTagged = true;
             }
+            if (IsSoulseekEnrichmentIntent(job.RunIntent))
+            {
+                using var runtimeConfig = JsonDocument.Parse(await File.ReadAllTextAsync(configPath, cancellationToken));
+                if (runtimeConfig.RootElement.TryGetProperty("materializedPathTransitions", out var recorded))
+                {
+                    foreach (var path in recorded.EnumerateObject())
+                        organizerOptions.StagingPathTransitions[path.Name] = path.Value.GetString()!;
+                }
+
+                // Enrichment can change album/title tags after its first materialization. Apply the
+                // saved profile to the final tags, using the existing scoped organizer before export.
+                organizerOptions.MoveMisplacedFiles = true;
+                organizerOptions.RenameFilesToTemplate = true;
+                organizerOptions.SourceFoldersAreProvisional = true;
+                var report = await _libraryOrganizer.OrganizeFilesWithReportAsync(
+                    rootPath, taggedFiles, organizerOptions,
+                    line => AppendLog(job, $"Soulseek final templates: {line}"), cancellationToken);
+                foreach (var transition in report.Entries.Select(TryParseMoveFileEntry)
+                             .Where(move => move.Source is not null && move.Destination is not null))
+                    FinalDestinationTracker.RecordPathTransition(organizerOptions.StagingPathTransitions, transition.Source, transition.Destination);
+                taggedFiles = ResolveCurrentBatchFiles(taggedFiles.ToList(), [report]);
+            }
             var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 rootPath,
                 organizerOptions,
@@ -414,27 +436,13 @@ public partial class AutoTagService
             return;
         }
 
-        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
-        if (!isManualEnrichment
-            && !string.Equals(status.Platform, "shazam", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-        if (!isManualEnrichment && !HasShazamReviewCandidate(statusValue))
-        {
-            AppendLog(
-                job,
-                $"review folder: ignored Shazam review status without candidate metadata for {statusValue.Path}; file remains in place.");
-            return;
-        }
-
         var settings = _settingsService.LoadSettings();
         var reviewFolder = settings.ReviewFolderPath?.Trim();
         if (string.IsNullOrWhiteSpace(reviewFolder))
         {
             PauseForMissingReviewFolder(
                 job,
-                "Review folder is not configured. Configure it in Settings > Download Path and mount it in Docker before Shazam review handling can continue.");
+                "Review folder is not configured. Configure it in Settings > Download Path and mount it in Docker before review handling can continue.");
         }
 
         var reviewRoot = ResolveReviewFolderIoPath(reviewFolder!);
@@ -450,7 +458,7 @@ public partial class AutoTagService
         {
             PauseForMissingReviewFolder(
                 job,
-                $"Shazam flagged a file for review, but the source file no longer exists: {statusValue.Path}");
+                $"A file was marked for review, but the source file no longer exists: {statusValue.Path}");
         }
 
         var destinationPath = ResolveReviewDestinationPath(sourcePath, reviewRoot, settings.DownloadLocation);
@@ -465,7 +473,7 @@ public partial class AutoTagService
         statusValue.Message = string.IsNullOrWhiteSpace(statusValue.Message)
             ? $"Moved to review folder: {destinationName}"
             : $"{statusValue.Message}; moved to review folder";
-        AppendLog(job, $"review folder: moved Shazam-flagged file to {destinationPath}");
+        AppendLog(job, $"review folder: moved file marked for review to {destinationPath}");
     }
 
     private void PauseForMissingReviewFolder(AutoTagJob job, string message)

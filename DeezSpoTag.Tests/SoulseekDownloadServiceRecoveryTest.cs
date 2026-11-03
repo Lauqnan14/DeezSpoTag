@@ -232,6 +232,32 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         Assert.True(payload.AudioAcquired);
     }
 
+    /// <summary>
+    ///     A template path has no extension. Promotion must keep the one the peer file actually has.
+    /// </summary>
+    /// <remarks>
+    ///     Dropping it makes the finished file invisible to enrichment: ownership only recognises audio
+    ///     extensions, so a completed FLAC is closed as if it had never arrived.
+    /// </remarks>
+    [Fact]
+    public async Task PromotionKeepsTheSourceAudioExtensionWhenTheTemplateHasNone()
+    {
+        var source = WriteBytes(Path.Join(_tempRoot, "slskd", "downloads", "California Love.flac"), 640);
+        var template = Path.Join(_tempRoot, "staging", "2 Pac", "2 Pac - California Love [Long Radio Edit]");
+        var payload = new SoulseekQueueItem { Id = "queue-extension", FilePath = template };
+
+        await SeedVerifiedSourceAsync(payload, source);
+
+        var promoted = await CreateService().PromoteAcceptedAudioAsync(payload, source, CancellationToken.None);
+
+        var expected = template + ".flac";
+        Assert.Equal(Path.GetFullPath(expected), promoted);
+        Assert.True(File.Exists(expected));
+        Assert.False(File.Exists(template));
+        Assert.False(File.Exists(source));
+        Assert.EndsWith(".flac", payload.FilePath, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task PromotionCreatesTheDestinationDirectory()
     {
@@ -440,7 +466,7 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
             _transfer,
             new StubCredentials(new SlskdCredentials("http://localhost:5030", "key")),
             new AllowingPeerPolicy(),
-            new SpeedFirstScoring(),
+            new ScoreFirstScoring(),
             CreateRepository(),
             NullLogger<SoulseekDownloadService>.Instance);
 
@@ -698,7 +724,7 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
             _transfer,
             new StubCredentials(new SlskdCredentials("http://localhost:5030", "key")),
             peerPolicy,
-            new SpeedFirstScoring(),
+            new ScoreFirstScoring(),
             CreateRepository(),
             NullLogger<SoulseekDownloadService>.Instance,
             connection);
@@ -710,8 +736,29 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         Assert.Empty(peerPolicy.Failures);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FreshPolicyRefusalPreventsEnqueueWithoutPenalizingThePeer(bool pinned)
+    {
+        var policy = new RecordingPeerPolicy { RefuseNewTransfers = true };
+        var request = Request();
+        if (pinned) { request.Username = Peer; request.RemotePath = RemotePath; request.RemoteSizeBytes = RemoteSize; }
+        var service = CreateService(peerPolicy: policy);
+        if (pinned)
+            await Assert.ThrowsAsync<SoulseekTransferException>(() => service.DownloadAsync(request, "policy-queue", Path.Join(_stagingDir, "expected.flac"), null, CancellationToken.None));
+        else
+            await Assert.ThrowsAsync<SoulseekNoMatchException>(() => service.DownloadAsync(request, "policy-queue", Path.Join(_stagingDir, "expected.flac"), null, CancellationToken.None));
+        Assert.Equal(Peer, Assert.Single(policy.TransferChecks));
+        Assert.Equal(0, _transfer.EnqueueCalls);
+        Assert.Empty(policy.Failures);
+        Assert.Empty(await CreateRepository().GetSourceClaimsForQueueAsync("policy-queue"));
+    }
+
     private sealed class RecordingPeerPolicy : ISoulseekPeerPolicyService
     {
+        public bool RefuseNewTransfers { get; init; }
+        public List<string> TransferChecks { get; } = [];
         public List<string> Failures { get; } = [];
 
         public List<string> Successes { get; } = [];
@@ -726,6 +773,12 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
             => Task.FromResult(new SoulseekPeerDecision(true));
 
         public bool IsBlockedFilename(string? filename) => false;
+
+        public Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+        {
+            TransferChecks.Add(username);
+            return Task.FromResult(new SoulseekPeerDecision(!RefuseNewTransfers, RefuseNewTransfers ? "peer_in_cooldown" : null));
+        }
 
         public Task RecordSuccessAsync(string username, CancellationToken cancellationToken = default)
         {
@@ -861,9 +914,11 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ReservationWithoutHistoryResumesBeforeNewWork(bool alreadyAttached)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task ReservationWithoutHistoryResumesBeforeNewWork(bool alreadyAttached, bool canonicalSeparators)
     {
         var expected = Path.Join(_stagingDir, "reserved.flac");
         var owner = Guid.NewGuid();
@@ -872,6 +927,7 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         Assert.True(await repository.TryClaimSourcePathsAsync(owner, "queue-reservation", Peer, RemotePath, [expected]));
         if (alreadyAttached) await repository.AttachSourceClaimsAsync(owner, transferId);
         _transfer.FindResult = Status(transferId);
+        if (canonicalSeparators) _transfer.FindResult = _transfer.FindResult with { Filename = RemotePath.Replace('\\', '/') };
         _transfer.CompletedFile = new SoulseekCompletedFile(Peer, RemotePath, expected, RemoteSize);
         var request = Request();
         request.Username = Peer;
@@ -892,6 +948,60 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         Assert.Equal(0, _transfer.EnqueueCalls);
         Assert.Equal([transferId], _transfer.WaitedForIds);
         Assert.Equal(transferId, Assert.Single(await repository.GetSourceClaimsForQueueAsync("queue-reservation")).TransferId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnconfirmedEnqueueWithKnownExactFileResumesUsingTheSameOwnership(bool pinned)
+    {
+        var expected = Path.Join(_stagingDir, "replay.flac");
+        var repository = CreateRepository();
+        var owner = Guid.NewGuid();
+        var transferId = Guid.NewGuid();
+        Assert.True(await repository.TryClaimSourcePathsAsync(owner, "queue-replay", Peer, RemotePath, [expected]));
+        var request = Request();
+        if (pinned)
+        {
+            request.Username = Peer;
+            request.RemotePath = RemotePath;
+            request.RemoteSizeBytes = RemoteSize;
+            request.Automation = false;
+        }
+        else
+        {
+            var previous = await new StubSearchService().SearchAsync(request.Target);
+            await repository.RecordSearchStartedAsync(previous.SearchId, "Isabella", SoulseekSearchMode.Manual, "queue-replay");
+            await repository.ReplaceCandidatesAsync(previous.SearchId, previous.Candidates);
+        }
+        _transfer.EnqueueResult = transferId;
+        _transfer.CompletedFile = new SoulseekCompletedFile(Peer, RemotePath, expected, RemoteSize);
+        var search = new StubSearchService();
+        await CreateService(search).DownloadAsync(request, "queue-replay", expected, null, CancellationToken.None);
+        Assert.Equal(0, search.SearchCalls);
+        Assert.Equal(new[] { (Peer, RemotePath, RemoteSize) }, _transfer.Enqueued);
+        Assert.Equal(new[] { transferId }, _transfer.WaitedForIds);
+        var claim = Assert.Single(await repository.GetSourceClaimsForQueueAsync("queue-replay"));
+        Assert.Equal(owner, claim.OwnershipId);
+        Assert.Equal(transferId, claim.TransferId);
+    }
+
+    [Fact]
+    public async Task UnconfirmedKnownFileWithAnOccupiedPathIsNeverReenqueuedOrAdoptedFromDisk()
+    {
+        var expected = Path.Join(_stagingDir, "occupied-replay.flac");
+        var repository = CreateRepository();
+        var owner = Guid.NewGuid();
+        Assert.True(await repository.TryClaimSourcePathsAsync(owner, "queue-occupied-replay", Peer, RemotePath, [expected]));
+        WriteBytes(expected, (int)RemoteSize);
+        var request = Request(); request.Username = Peer; request.RemotePath = RemotePath;
+        request.RemoteSizeBytes = RemoteSize; request.Automation = false;
+        await Assert.ThrowsAsync<SoulseekTransferMonitoringException>(() => CreateService().DownloadAsync(request,
+            "queue-occupied-replay", expected, null, CancellationToken.None));
+        Assert.Equal(0, _transfer.EnqueueCalls);
+        Assert.Empty(_transfer.WaitedForIds);
+        Assert.Equal(owner, Assert.Single(await repository.GetSourceClaimsForQueueAsync("queue-occupied-replay")).OwnershipId);
+        Assert.Equal(RemoteSize, new FileInfo(expected).Length);
     }
 
     [Fact]
@@ -934,6 +1044,37 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         var record = await repository.GetTransferAsync(transferId);
         Assert.True(record!.Verified);
         Assert.Equal(destination, record.ExpectedPath);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task PromotionRecognizesOwnedSourceAcrossRemoteSeparatorStyles(bool recordUsesForwardSlashes, bool payloadUsesForwardSlashes)
+    {
+        var source = Path.Join(_tempRoot, "slskd", "owned-source.mp3");
+        var destination = Path.Join(_stagingDir, "owned-destination.mp3");
+        var payload = new SoulseekQueueItem { Id = "queue-separator-promotion", FilePath = destination };
+        var transferId = Guid.NewGuid();
+        var repository = CreateRepository();
+        var owner = Guid.NewGuid();
+        Assert.True(await repository.TryClaimSourcePathsAsync(owner, payload.Id, Peer, RemotePath.Replace('\\', '/'), [source, destination]));
+        await repository.AttachSourceClaimsAsync(owner, transferId);
+        WriteBytes(source, 512);
+        await SeedVerifiedSourceAsync(payload, source, transferId);
+        payload.SoulseekRemotePath = payloadUsesForwardSlashes ? RemotePath.Replace('\\', '/') : RemotePath;
+        var recordedPath = recordUsesForwardSlashes ? RemotePath.Replace('\\', '/') : RemotePath;
+        await repository.UpsertTransferAsync(new SoulseekTransferStatus(transferId, Peer, recordedPath,
+            "completed", true, true, 512, 512, 0, null, 100), payload.Id, destination, true);
+
+        var promoted = await CreateService().PromoteAcceptedAudioAsync(payload, source, CancellationToken.None);
+
+        Assert.Equal(destination, promoted);
+        Assert.Equal(512, new FileInfo(destination).Length);
+        Assert.False(File.Exists(source));
+        Assert.Empty(await repository.GetSourceClaimsForQueueAsync(payload.Id));
+        Assert.True((await repository.GetTransferAsync(transferId))!.Verified);
     }
 
     [Fact]
@@ -994,12 +1135,13 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
 
     private SoulseekDownloadService CreateService(
         ISoulseekSearchService? search = null,
-        ISoulseekConnectionService? connection = null) => new(
+        ISoulseekConnectionService? connection = null,
+        ISoulseekPeerPolicyService? peerPolicy = null) => new(
         search ?? new StubSearchService(),
         _transfer,
         new StubCredentials(new SlskdCredentials("http://localhost:5030", "key")),
-        new AllowingPeerPolicy(),
-        new SpeedFirstScoring(),
+        peerPolicy ?? new AllowingPeerPolicy(),
+        new ScoreFirstScoring(),
         CreateRepository(),
         NullLogger<SoulseekDownloadService>.Instance,
         connection);
@@ -1240,6 +1382,9 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
 
         public bool IsBlockedFilename(string? filename) => false;
 
+        public Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SoulseekPeerDecision(true));
+
         public Task RecordFailureAsync(string username, string reason, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
@@ -1254,7 +1399,7 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
             => Task.FromResult(0);
     }
 
-    private sealed class SpeedFirstScoring : ISoulseekResultScoringService
+    private sealed class ScoreFirstScoring : ISoulseekResultScoringService
     {
         public Task<IReadOnlyList<SoulseekCandidate>> ScoreAsync(
             SoulseekSearchTarget target,
@@ -1269,8 +1414,10 @@ public sealed class SoulseekDownloadServiceRecoveryTest : IDisposable
         public SoulseekCandidate? SelectBest(IReadOnlyList<SoulseekCandidate> candidates)
             => candidates
                 .Where(candidate => candidate.Accepted)
-                .OrderByDescending(candidate => candidate.Raw.PeerUploadSpeed)
-                .ThenByDescending(candidate => candidate.Score)
+                .OrderByDescending(candidate => candidate.Score)
+                .ThenByDescending(candidate => candidate.CanonicalRank ?? 0)
+                .ThenByDescending(candidate => candidate.IdentityConfidence)
+                .ThenByDescending(candidate => candidate.Raw.PeerUploadSpeed)
                 .ThenBy(candidate => candidate.Raw.PeerQueueLength)
                 .FirstOrDefault();
     }

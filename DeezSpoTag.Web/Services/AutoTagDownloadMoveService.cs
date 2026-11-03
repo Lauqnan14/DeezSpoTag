@@ -383,6 +383,24 @@ public sealed class AutoTagDownloadMoveService
         var normalizedRootPath = ResolveExistingDirectoryPath(rootPath);
         var settings = _settingsService.LoadSettings();
         var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        if (options.StagingPathTransitions.Count > 0)
+        {
+            var relocated = new List<DownloadQueueItem>(items.Count);
+            foreach (var item in items)
+            {
+                if (!IsCompletedStatus(item.Status) || string.IsNullOrWhiteSpace(item.PayloadJson))
+                {
+                    relocated.Add(item);
+                    continue;
+                }
+                var payload = RelocateOwnedStagingPaths(item.PayloadJson, normalizedRootPath,
+                    options.StagingPathTransitions, settings.OverwriteFile);
+                if (payload != item.PayloadJson)
+                    await _queueRepository.UpdatePayloadAsync(item.QueueUuid, payload, cancellationToken);
+                relocated.Add(item with { PayloadJson = payload });
+            }
+            items = relocated;
+        }
         if (options.BatchScopedFilesOnly)
         {
             items = FilterQueueItemsToBatchScope(items, normalizedRootPath, taggedFiles, failedFiles);
@@ -417,6 +435,47 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return summary;
+    }
+
+    private static string RelocateOwnedStagingPaths(
+        string payloadJson, string stagingRoot, IReadOnlyDictionary<string, string> transitions, string? overwritePolicy)
+    {
+        JsonObject? payload;
+        try { payload = JsonNode.Parse(payloadJson) as JsonObject; }
+        catch (JsonException) { return payloadJson; }
+        if (payload is null) return payloadJson;
+        var tracked = ReadTrackedPayloadPaths(payloadJson);
+        var owned = transitions.Where(pair => tracked.Contains(DownloadPathResolver.NormalizeDisplayPath(pair.Key))
+            && IsUnderRoot(stagingRoot, pair.Key) && IsUnderRoot(stagingRoot, pair.Value)
+            && IsAudioExtension(pair.Value) && IOFile.Exists(pair.Value)).ToList();
+        if (owned.Count == 0) return payloadJson;
+        var rewrites = owned.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        if (payload[FilesProperty] is JsonArray files)
+        {
+            foreach (var file in files.OfType<JsonObject>())
+            {
+                var source = file["path"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(source)) continue;
+                if (rewrites.TryGetValue(source, out var audio)) { file["path"] = audio; continue; }
+                if (IsAudioExtension(source) || !IOFile.Exists(source)) continue;
+                foreach (var move in owned)
+                {
+                    var oldAlbum = Path.GetDirectoryName(move.Key);
+                    var newAlbum = Path.GetDirectoryName(move.Value);
+                    if (string.IsNullOrWhiteSpace(oldAlbum) || string.IsNullOrWhiteSpace(newAlbum)
+                        || string.Equals(oldAlbum, newAlbum, StringComparison.OrdinalIgnoreCase)
+                        || !IsUnderRoot(oldAlbum, source)
+                        || Directory.EnumerateFiles(oldAlbum, "*", SearchOption.AllDirectories).Any(IsAudioExtension)) continue;
+                    var moved = MoveResidualFile(source, oldAlbum, newAlbum, overwritePolicy ?? "n", Array.Empty<string>());
+                    if (!string.IsNullOrWhiteSpace(moved)) { rewrites[source] = moved; file["path"] = moved; }
+                    break;
+                }
+            }
+        }
+        foreach (var property in payload.ToList())
+            if (property.Value is JsonValue value && value.TryGetValue<string>(out var path)
+                && rewrites.TryGetValue(path, out var destination)) payload[property.Key] = destination;
+        return payload.ToJsonString();
     }
 
     private static List<DownloadQueueItem> FilterQueueItemsToBatchScope(

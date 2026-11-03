@@ -128,6 +128,31 @@ public sealed class SoulseekPeerPolicyService : ISoulseekPeerPolicyService
     }
 
     /// <inheritdoc />
+    public async Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return Reject("invalid_peer");
+        }
+
+        var settings = _settings.GetSettings();
+        var normalized = username.Trim();
+
+        if (IsBlocked(settings, normalized))
+        {
+            return Reject("blocked_user");
+        }
+
+        var cooldowns = await ReadCooldownsAsync(cancellationToken).ConfigureAwait(false);
+        if (IsInCooldown(cooldowns, normalized))
+        {
+            return Reject("peer_in_cooldown");
+        }
+
+        return new SoulseekPeerDecision(true);
+    }
+
+    /// <inheritdoc />
     public Task RecordFailureAsync(string username, string reason, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username))
@@ -255,12 +280,24 @@ public sealed class SoulseekPeerPolicyService : ISoulseekPeerPolicyService
             return System.Text.RegularExpressions.Regex.IsMatch(
                 haystack,
                 System.Text.RegularExpressions.Regex.Escape(needle).Replace("\\*", ".*", StringComparison.Ordinal).Replace("\\?", ".", StringComparison.Ordinal),
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.NonBacktracking,
                 TimeSpan.FromMilliseconds(200));
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+        {
+            // An indeterminate blocklist match must not let the file through. Reject this candidate only;
+            // the rest of the search can still be scored.
+            return true;
         }
         catch (ArgumentException)
         {
             return haystack.Contains(lowered, StringComparison.Ordinal);
+        }
+        catch (NotSupportedException)
+        {
+            // The non-backtracking engine can refuse an excessively large wildcard automaton.
+            // Keep the blocklist fail-closed for this candidate without aborting the rest of the search.
+            return true;
         }
     }
 

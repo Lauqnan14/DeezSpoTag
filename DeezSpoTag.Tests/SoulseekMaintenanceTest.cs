@@ -253,6 +253,9 @@ public sealed class SoulseekMaintenanceTest : IDisposable
 
         public bool IsBlockedFilename(string? filename) => false;
 
+        public Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SoulseekPeerDecision(true));
+
         public Task RecordFailureAsync(string username, string reason, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 

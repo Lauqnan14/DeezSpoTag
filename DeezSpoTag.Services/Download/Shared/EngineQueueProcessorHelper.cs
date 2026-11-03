@@ -408,7 +408,8 @@ internal static class EngineQueueProcessorHelper
         EngineAudioPostDownloadHelper.EngineTrackContext? context)
         where TPayload : EngineQueueItemBase
     {
-        if (context == null)
+        if (context == null || (workContext.Payload is DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem soulseek
+            && DeezSpoTag.Services.Download.Soulseek.SoulseekSidecarPolicy.UsesPeerSidecars(soulseek)))
         {
             return;
         }

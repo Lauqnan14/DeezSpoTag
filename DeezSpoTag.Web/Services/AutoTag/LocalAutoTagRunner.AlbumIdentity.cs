@@ -530,14 +530,19 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             ? null
             : BuildAlbumRelativePath(destination.RootPath, albumRoot);
         var folderKey = AlbumIdentity.BuildFolderScopedKey(destination.Scope, albumRelativePath);
-        var key = folderKey ?? releaseContext?.ReleaseKey;
+        // External files may contain stale album tags or several unrelated releases in
+        // one staging directory. Consensus must follow the verified selected release.
+        var externalRelease = IsManualEnrichment(context.Plan.Config);
+        var key = externalRelease
+            ? AlbumIdentity.BuildScopedEditionAwareKey(context.Plan.TargetPath, albumArtist, track.Album)
+            : folderKey ?? releaseContext?.ReleaseKey;
         if (key is null)
         {
             return;
         }
 
         AlbumIdentity? seed = null;
-        if (context.Plan.SeededAlbumIdentityKeys.Add(key))
+        if (context.Plan.SeededAlbumIdentityKeys.Add(key) && !externalRelease)
         {
             seed = TryReadAlbumIdentityFromFolder(
                 context.File,
@@ -546,8 +551,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         var candidate = BuildAlbumIdentityCandidate(track, payload) with
         {
-            CanonicalAlbumTitle = releaseContext?.AlbumTitle ?? track.Album,
-            CanonicalAlbumArtist = releaseContext?.AlbumArtist ?? albumArtist,
+            CanonicalAlbumTitle = externalRelease ? track.Album : releaseContext?.AlbumTitle ?? track.Album,
+            CanonicalAlbumArtist = externalRelease ? albumArtist : releaseContext?.AlbumArtist ?? albumArtist,
             AlbumRelativePath = albumRelativePath
         };
         var established = context.Plan.AlbumIdentities.Establish(
@@ -598,8 +603,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             // First matched file for this folder: seed from the file's own existing
             // tags (download source wording) and fall back to the candidate wording.
-            var sourceAlbum = string.IsNullOrWhiteSpace(sourceInfo?.Album) ? null : sourceInfo.Album.Trim();
-            var sourceAlbumArtist = sourceInfo?.Tags.TryGetValue("ALBUMARTIST", out var albumArtistValues) == true
+            var sourceAlbum = IsManualEnrichment(context.Plan.Config) || string.IsNullOrWhiteSpace(sourceInfo?.Album)
+                ? null : sourceInfo.Album.Trim();
+            var sourceAlbumArtist = !IsManualEnrichment(context.Plan.Config)
+                && sourceInfo?.Tags.TryGetValue("ALBUMARTIST", out var albumArtistValues) == true
                 ? albumArtistValues.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim()
                 : null;
             establishedFolder = new FolderAlbumIdentity(
@@ -775,6 +782,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static string ResolveAlbumFolderKey(AutoTagFileRunContext context, AutoTagTrack track)
     {
+        if (IsManualEnrichment(context.Plan.Config))
+        {
+            return AlbumIdentity.BuildScopedEditionAwareKey(context.Plan.TargetPath,
+                track.AlbumArtists.FirstOrDefault() ?? track.Artists.FirstOrDefault(), track.Album) ?? string.Empty;
+        }
         var prospective = TryResolveProspectiveAlbumDirectory(context, track);
         return ResolveAlbumRootDirectory(context.File, prospective) ?? string.Empty;
     }

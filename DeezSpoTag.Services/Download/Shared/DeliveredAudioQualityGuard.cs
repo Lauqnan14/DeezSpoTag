@@ -133,6 +133,12 @@ internal static class DeliveredAudioQualityGuard
 
         if (IsSoulseekEngine(engine))
         {
+            // Soulseek exposes explicit bitrate choices, not the broader MP3 classes used by other engines.
+            // Recheck the delivered bytes against the same floor used for peer-advertised search facts.
+            if (SoulseekQuality.LossyBitrateFloor(normalized) is { } bitrateFloor)
+            {
+                return actual.IsLossless || actual.BitrateKbps >= bitrateFloor;
+            }
             // Soulseek requested quality codes are the engine's own. UNKNOWN is accepted because the user
             // opted into unknown-quality candidates; the scoring service is what rejects them by default.
             // The two FLAC bands carry the same depth and sample-rate floors Qobuz's "27" and "7" use.
@@ -146,10 +152,6 @@ internal static class DeliveredAudioQualityGuard
                     && actual.BitsPerSample >= 24
                     && actual.SampleRate > 0,
                 "LOSSLESS" or "FLAC" => actual.IsLossless && actual.BitsPerSample > 0,
-                "MP3_320" => !actual.IsLossless && actual.BitrateKbps >= 256,
-                "MP3_256" => !actual.IsLossless && actual.BitrateKbps >= 192,
-                "MP3_192" => !actual.IsLossless && actual.BitrateKbps >= 128,
-                "MP3_128" => !actual.IsLossless && actual.BitrateKbps > 0,
                 _ => true
             };
         }

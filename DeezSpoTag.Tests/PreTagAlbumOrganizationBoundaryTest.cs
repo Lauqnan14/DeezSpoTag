@@ -13,7 +13,7 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 /// <remarks>
 ///     <para>
-///         For an external-file operation the first accepted platform match establishes the file's identity.
+///         For an external-file operation a verified release is selected after provider matching.
 ///         That match is the point at which the whole album must be organized, before a single tag is
 ///         written, so every track of one release lands in one staging folder.
 ///     </para>
@@ -26,6 +26,128 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class PreTagAlbumOrganizationBoundaryTest
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async System.Threading.Tasks.Task FortyFiveExternalFilesAreResolvedInProviderOrderAndReusedWithoutAnotherLookup(bool conflictingFingerprint)
+    {
+        var root = Path.Join(Path.GetTempPath(), "external-enrichment-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var files = new List<string>();
+            var recognition = new Dictionary<string, DeezSpoTag.Web.Services.ShazamRecognitionInfo?>(StringComparer.OrdinalIgnoreCase);
+            for (var n = 1; n <= 45; n++)
+            {
+                var path = Path.Join(root, $"Song Number {n:D2}.wav");
+                DeliveredAudioQualityGuardTest.WriteWave(path, 16);
+                using (var audio = TagLib.File.Create(path))
+                {
+                    audio.Tag.Title = $"Song Number {n:D2}";
+                    audio.Tag.Performers = ["Test Performer"];
+                    audio.Tag.AlbumArtists = ["Test Performer"];
+                    audio.Tag.Album = "Original Album";
+                    audio.Save();
+                }
+                files.Add(path);
+                recognition[path] = new() { Title = $"Song Number {n:D2}", Artist = "Test Performer" };
+            }
+            if (conflictingFingerprint) recognition[files[0]] = new() { Title = "Completely Different Recording", Artist = "Another Performer" };
+            var expectedCount = conflictingFingerprint ? 44 : 45;
+            var calls = new List<string>();
+            using var http = new System.Net.Http.HttpClient(new ExternalCatalogHandler(calls));
+            var apple = new ItunesClient(http, Microsoft.Extensions.Logging.Abstractions.NullLogger<ItunesClient>.Instance);
+            apple.SetRateLimit(int.MaxValue);
+            var deezer = new DeezerClient(http, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezerClient>.Instance);
+            var runner = (LocalAutoTagRunner)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(LocalAutoTagRunner));
+            void Field(string name, object value) => typeof(LocalAutoTagRunner).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(runner, value);
+            Field("_logger", Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalAutoTagRunner>.Instance);
+            Field("_itunesMatcher", new ItunesMatcher(apple));
+            Field("_deezerMatcher", new DeezerMatcher(deezer, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezerMatcher>.Instance));
+            Field("_shazamRecognitionService", System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(DeezSpoTag.Web.Services.ShazamRecognitionService)));
+            var config = new LocalAutoTagRunner.AutoTagRunnerConfig
+            {
+                ManualReleasePreference = "single", ManualDestinationFolderId = 7, MaterializeToTemplatePath = true,
+                Platforms = new() { "itunes", "deezer" }, Tags = new() { "title", "artist", "album" }
+            };
+            var planType = typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunPlan", BindingFlags.NonPublic)!;
+            var plan = Activator.CreateInstance(planType, nonPublic: true)!;
+            void Set(string name, object value) => planType.GetProperty(name)!.SetValue(plan, value);
+            var settings = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings { DownloadLocation = root };
+            Set("JobId", "test"); Set("ConfigPath", Path.Join(root, "runtime.json")); Set("Config", config);
+            Set("TargetPath", root); Set("Settings", settings); Set("TagSettings", new DeezSpoTag.Core.Models.Settings.TagSettings());
+            Set("Files", files); Set("ShazamCache", recognition); Set("ForceShazamMatch", true); Set("EnableShazamFallback", true);
+            Set("EffectivePlatforms", new List<string> { "itunes", "deezer" });
+            Set("MatchingConfig", new AutoTagMatchingConfig { PreferredReleaseType = "single", PreferAvailableRelease = true });
+            Set("PlatformSupportedTags", Activator.CreateInstance(planType.GetProperty("PlatformSupportedTags")!.PropertyType)!);
+            var cacheType = typeof(LocalAutoTagRunner).GetNestedType("JobMatchCacheState", BindingFlags.NonPublic)!;
+            var cache = Activator.CreateInstance(cacheType, nonPublic: true)!;
+            var statuses = new List<DeezSpoTag.Web.Services.TaggingStatusWrap>();
+            var logs = new List<string>();
+            var prepare = typeof(LocalAutoTagRunner).GetMethod("PrepareExternalFileEnrichmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            await (System.Threading.Tasks.Task)prepare.Invoke(runner, new object[] { plan, cache,
+                new Action<DeezSpoTag.Web.Services.TaggingStatusWrap>(statuses.Add), new Action<string>(logs.Add), default(System.Threading.CancellationToken) })!;
+            Assert.Equal(expectedCount, logs.Count(line => line.Contains("itunes match starting", StringComparison.Ordinal)));
+            Assert.Equal(expectedCount, logs.Count(line => line.Contains("deezer match starting", StringComparison.Ordinal)));
+            Assert.True(calls.FindLastIndex(call => call.StartsWith("itunes:", StringComparison.Ordinal))
+                < calls.FindIndex(call => call.StartsWith("deezer:", StringComparison.Ordinal)));
+            Assert.Equal(45, statuses.Count(status => status.Status?.Outcome == "fingerprint_identified"));
+            var frozen = (System.Collections.IDictionary)planType.GetProperty("FrozenManualReleases")!.GetValue(plan)!;
+            Assert.True(frozen.Count == expectedCount, $"Expected {expectedCount} frozen releases, got {frozen.Count}.\n" + string.Join("\n", logs));
+            Assert.Equal(conflictingFingerprint, statuses.Any(status => status.Status?.Outcome == "fingerprint_conflict"));
+            for (var index = conflictingFingerprint ? 1 : 0; index < 45; index++)
+            {
+                var release = frozen[index]!;
+                Assert.Equal(index < 15 ? "album" : "single", release.GetType().GetProperty("ReleaseType")!.GetValue(release));
+                Assert.Equal(index < 15 ? "Verified Album" : $"Single {index + 1:D2}", release.GetType().GetProperty("Album")!.GetValue(release));
+            }
+            var count = calls.Count;
+            await (System.Threading.Tasks.Task)prepare.Invoke(runner, new object[] { plan, cache,
+                new Action<DeezSpoTag.Web.Services.TaggingStatusWrap>(statuses.Add), new Action<string>(logs.Add), default(System.Threading.CancellationToken) })!;
+            Assert.Equal(count, calls.Count);
+            using var unchanged = TagLib.File.Create(files[0]);
+            Assert.Equal("Original Album", unchanged.Tag.Album);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class ExternalCatalogHandler(List<string> calls) : System.Net.Http.HttpMessageHandler
+    {
+        protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(
+            System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri!;
+            var apple = uri.Host == "itunes.apple.com";
+            calls.Add((apple ? "itunes:" : "deezer:") + uri.PathAndQuery);
+            var decoded = Uri.UnescapeDataString(uri.Query).Replace('+', ' ');
+            var number = System.Text.RegularExpressions.Regex.Match(decoded, "Song Number (\\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var n = number.Success ? int.Parse(number.Groups[1].Value) : int.TryParse(uri.Segments.Last(), out var id) ? id - 1000 : 1;
+            object payload;
+            if (apple)
+            {
+                object Track(bool single) => new { wrapperType = "track", kind = "song", artistName = "Test Performer",
+                    trackName = $"Song Number {n:D2}", trackId = 1000 + n, collectionId = single ? 300 : 200,
+                    collectionName = single ? $"Single {n:D2}" : "Verified Album", trackCount = single ? 1 : 45,
+                    trackNumber = single ? 1 : n, trackTimeMillis = 1000 };
+                payload = new { results = n <= 15 ? new[] { Track(false) } : n <= 30 ? new[] { Track(true) } : new[] { Track(false), Track(true) } };
+            }
+            else if (uri.AbsolutePath.StartsWith("/album/", StringComparison.Ordinal))
+                payload = new { id = 200, title = "Verified Album", record_type = "album", nb_tracks = 45,
+                    artist = new { id = 1, name = "Test Performer" }, contributors = Array.Empty<object>(), genres = new { data = Array.Empty<object>() } };
+            else
+            {
+                var track = new { id = 1000 + n, title = $"Song Number {n:D2}", duration = 1,
+                    artist = new { id = 1, name = "Test Performer" }, album = new { id = 200, title = "Verified Album" },
+                    track_position = n, disk_number = 1 };
+                payload = uri.AbsolutePath.StartsWith("/search/", StringComparison.Ordinal) ? new { data = new[] { track } } : (object)track;
+            }
+            return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent(System.Text.Json.JsonSerializer.Serialize(payload))
+            });
+        }
+    }
+
     // ─────────────────────────── Shazam is a recognizer, not a gate ───────────────────────────
 
     /// <summary>
@@ -118,7 +240,7 @@ public sealed class PreTagAlbumOrganizationBoundaryTest
         var passIndex = source.IndexOf("ExecuteLibraryWideEnhancementBatchesAsync", StringComparison.Ordinal);
         Assert.True(passIndex > 0, "The library-wide pass was not found.");
 
-        var organizeIndex = source.IndexOf("OrganizeExternalFileBatchBeforeTaggingAsync", passIndex, StringComparison.Ordinal);
+        var organizeIndex = source.IndexOf("OrganizeExternalFileBatchBeforeTagging", passIndex, StringComparison.Ordinal);
         var platformLoopIndex = source.IndexOf(
             "for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)",
             passIndex,

@@ -79,37 +79,6 @@ public sealed class AutoTagServiceEligibilityTest
     }
 
     [Fact]
-    public void HasShazamReviewCandidate_RejectsUnavailableStatusWithoutCandidate()
-    {
-        var result = InvokeStatic<bool>(
-            "HasShazamReviewCandidate",
-            new TaggingStatus
-            {
-                Status = "review",
-                Message = "shazam unavailable",
-                SourceTitle = "16 - Gangster",
-                SourceArtist = "Unknown"
-            });
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public void HasShazamReviewCandidate_AcceptsCandidateConflict()
-    {
-        var result = InvokeStatic<bool>(
-            "HasShazamReviewCandidate",
-            new TaggingStatus
-            {
-                Status = "review",
-                SourceTitle = "Wrong Song",
-                CandidateTitle = "Correct Song"
-            });
-
-        Assert.True(result);
-    }
-
-    [Fact]
     public void HasEligibleInputFiles_ReturnsTrueWhenTargetFilesContainSupportedInScopeAudioFile()
     {
         var root = Path.Combine(Path.GetTempPath(), $"autotag-targets-{Guid.NewGuid():N}");
@@ -468,4 +437,82 @@ public sealed class AutoTagServiceEligibilityTest
             }
         };
     }
+}
+
+
+[Collection("Settings Config Isolation")]
+public sealed class AutoTagReviewRoutingTest : IDisposable
+{
+    private readonly string _root = Path.Join(Path.GetTempPath(), "review-routing-" + Guid.NewGuid().ToString("N"));
+    private readonly TestConfigRootScope _scope;
+    private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settings;
+    private readonly AutoTagService _service;
+
+    public AutoTagReviewRoutingTest()
+    {
+        _scope = new TestConfigRootScope(_root);
+        _settings = new(Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+        var settings = _settings.LoadSettings();
+        settings.DownloadLocation = Path.Join(_root, "staging");
+        settings.ReviewFolderPath = Path.Join(_root, "review");
+        _settings.SaveSettings(settings);
+        _service = (AutoTagService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(AutoTagService));
+        SetField("_settingsService", _settings);
+        SetField("_logger", Microsoft.Extensions.Logging.Abstractions.NullLogger<AutoTagService>.Instance);
+        SetField("_lastJobFullSaveUtc", new System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>());
+        SetField("_jobsDir", _root);
+    }
+
+    private void SetField(string name, object value) => typeof(AutoTagService)
+        .GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(_service, value);
+
+    [Theory]
+    [InlineData("soulseek_enrichment", "shazam", false)]
+    [InlineData("download_enrichment", "shazam", false)]
+    [InlineData("enhancement_only", "spotify", false)]
+    [InlineData("manual_enrichment", "itunes", true)]
+    [InlineData("default", "shazam", true)]
+    public void ExplicitReviewMovesAudioImmediatelyRegardlessOfPlatformOrCandidate(string intent, string platform, bool candidate)
+    {
+        var source = Path.Join(_root, "staging", "Artist", "Album", "song.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+        File.WriteAllText(source, "unchanged audio bytes");
+        var status = new TaggingStatusWrap { Platform = platform, Status = new TaggingStatus
+        {
+            Status = "review", Path = source, Message = "Release selection could not be verified because a provider failed.",
+            CandidateTitle = candidate ? "Candidate song" : null
+        }};
+        Route(new AutoTagJob { RunIntent = intent }, status);
+        var destination = Path.Join(_root, "review", "Artist", "Album", "song.flac");
+        Assert.False(File.Exists(source));
+        Assert.Equal("unchanged audio bytes", File.ReadAllText(destination));
+        Assert.Equal(destination, status.Status.ReviewDestinationPath);
+        Assert.Contains("Release selection could not be verified", File.ReadAllText(status.Status.ReviewReportPath!));
+    }
+
+    [Fact]
+    public void UnconfiguredReviewFolderPausesWithoutLeavingAnUnroutedReviewAsSuccess()
+    {
+        var settings = _settings.LoadSettings(); settings.ReviewFolderPath = ""; _settings.SaveSettings(settings);
+        var source = Path.Join(_root, "song.flac"); File.WriteAllText(source, "audio");
+        var exception = Assert.Throws<TargetInvocationException>(() => Route(new AutoTagJob { RunIntent = "soulseek_enrichment" },
+            new TaggingStatusWrap { Platform = "shazam", Status = new TaggingStatus { Status = "review", Path = source } }));
+        Assert.IsType<DeezSpoTag.Web.Services.AutoTagRunPausedException>(exception.InnerException);
+        Assert.True(File.Exists(source));
+    }
+
+    [Fact]
+    public void ProviderErrorWithoutReviewDoesNotMoveAudio()
+    {
+        var source = Path.Join(_root, "song.flac"); File.WriteAllText(source, "audio");
+        Route(new AutoTagJob(), new TaggingStatusWrap { Platform = "musicbrainz",
+            Status = new TaggingStatus { Status = "error", Path = source, Outcome = "provider_error" } });
+        Assert.True(File.Exists(source));
+        Assert.False(Directory.Exists(Path.Join(_root, "review")));
+    }
+
+    private void Route(AutoTagJob job, TaggingStatusWrap status) => typeof(AutoTagService)
+        .GetMethod("RouteReviewFileIfNeeded", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_service, new object[] { job, status });
+
+    public void Dispose() { _scope.Dispose(); Directory.Delete(_root, recursive: true); }
 }

@@ -619,7 +619,8 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
         Assert.Contains("trustSourceIdentity: identityIsTrusted", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo);", runnerSource, StringComparison.Ordinal);
-        Assert.Equal(2, runnerSource.Split("RestoreTrustedCoreIdentity(validationInfo, info, context.File);", StringSplitOptions.None).Length - 1);
+        Assert.Contains("RestoreTrustedCoreIdentity(original, working, file);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("plan.OriginalManualInfo[index] = CloneAudioInfo(original);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("HasTrustworthyEmbeddedIdentity(validationInfo, context.File)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("usedShazamForStatus", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var validationBasis", runnerSource, StringComparison.Ordinal);

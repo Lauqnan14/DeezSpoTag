@@ -254,9 +254,25 @@ PRAGMA busy_timeout=5000;";
         _logger = logger;
         var rawConnection =
             Environment.GetEnvironmentVariable("QUEUE_DB")
-            ?? configuration.GetConnectionString("Queue")
-            ?? Environment.GetEnvironmentVariable("LIBRARY_DB")
-            ?? configuration.GetConnectionString("Library");
+            ?? configuration.GetConnectionString("Queue");
+
+        if (rawConnection is null)
+        {
+            rawConnection =
+                Environment.GetEnvironmentVariable("LIBRARY_DB")
+                ?? configuration.GetConnectionString("Library");
+            if (rawConnection is not null)
+            {
+                // The queue database is where this repository keeps downloads, searches and cooldowns.
+                // Falling back to the library database is a deployment mistake that would only surface as
+                // Soulseek state quietly missing from wherever the operator is told the queue lives, so the
+                // fallback still works but says what happened, loudly.
+                _logger.LogWarning(
+                    "The Soulseek state database is not configured (Queue connection string or QUEUE_DB " +
+                    "environment variable). Falling back to the library database; " +
+                    "Soulseek state will live there instead of the queue database.");
+            }
+        }
 
         _connectionString = SqliteConnectionStringResolver.Resolve(rawConnection, "queue.db")
             ?? throw new InvalidOperationException("Soulseek state database connection string is not configured.");
@@ -277,6 +293,11 @@ ON CONFLICT(search_id) DO UPDATE SET
     queue_uuid = excluded.queue_uuid,
     search_text = excluded.search_text,
     mode = excluded.mode,
+    is_completed = 0,
+    is_timed_out = 0,
+    error_code = NULL,
+    error = NULL,
+    ended_at_utc = NULL,
     started_at_utc = excluded.started_at_utc;";
 
         await using var command = new SqliteCommand(sql, connection);
@@ -406,15 +427,29 @@ ORDER BY started_at_utc DESC;";
         return results;
     }
 
-    /// <summary>Deletes searches that finished before <paramref name="olderThanUtc"/>.</summary>
+    /// <summary>Prunes terminal searches that ended before the cutoff, together with their candidates.</summary>
     /// <returns>The number of searches deleted.</returns>
-    public async Task<int> DeleteSearchesOlderThanAsync(DateTimeOffset olderThanUtc, CancellationToken cancellationToken = default)
+    public async Task<int> DeleteSearchesOlderThanAsync(
+        DateTimeOffset olderThanUtc,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = "DELETE FROM " + SearchTable + " WHERE started_at_utc < @cutoff;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("cutoff", Format(olderThanUtc));
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        // Failure rows have neither completion nor timeout set; ended_at_utc is common to all terminal paths.
+        const string terminal = "ended_at_utc IS NOT NULL AND ended_at_utc < @cutoff";
+        await using (var candidates = new SqliteCommand(
+            "DELETE FROM " + CandidateTable + " WHERE search_id IN (SELECT search_id FROM "
+            + SearchTable + " WHERE " + terminal + ");", connection, transaction))
+        {
+            candidates.Parameters.AddWithValue("cutoff", Format(olderThanUtc));
+            await candidates.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using var searches = new SqliteCommand(
+            "DELETE FROM " + SearchTable + " WHERE " + terminal + ";", connection, transaction);
+        searches.Parameters.AddWithValue("cutoff", Format(olderThanUtc));
+        var deleted = await searches.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
     }
 
     /// <summary>Replaces the candidates recorded for a search and returns their row ids.</summary>
@@ -426,7 +461,14 @@ ORDER BY started_at_utc DESC;";
         ArgumentNullException.ThrowIfNull(candidates);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using (var delete = new SqliteCommand("DELETE FROM " + CandidateTable + " WHERE search_id = @searchId;", connection))
+        // The replacement is delete-then-insert. Without one transaction a failure between them would
+        // leave a search that was scored either without the candidates it genuinely has, or with a partial
+        // half of a newer set mixed into an older one - both unreadable as history.
+        await using var transaction = (SqliteTransaction)await connection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await using (var delete = new SqliteCommand("DELETE FROM " + CandidateTable + " WHERE search_id = @searchId;", connection, transaction))
         {
             delete.Parameters.AddWithValue("searchId", searchId.ToString("D"));
             await delete.ExecuteNonQueryAsync(cancellationToken);
@@ -445,7 +487,7 @@ RETURNING id;";
 
         foreach (var candidate in candidates)
         {
-            await using var command = new SqliteCommand(insert, connection);
+            await using var command = new SqliteCommand(insert, connection, transaction);
             command.Parameters.AddWithValue("searchId", searchId.ToString("D"));
             command.Parameters.AddWithValue("username", candidate.Username);
             command.Parameters.AddWithValue("filename", candidate.Filename);
@@ -468,6 +510,8 @@ RETURNING id;";
                 ids.Add(Convert.ToInt64(id, CultureInfo.InvariantCulture));
             }
         }
+
+        await transaction.CommitAsync(cancellationToken);
 
         return ids;
     }
@@ -511,7 +555,13 @@ ORDER BY score DESC, id ASC;";
                 ParseDate(reader.GetString(15))));
         }
 
-        return results;
+        return results
+            .GroupBy(candidate => candidate.QualityCode, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(group => group.OrderByDescending(candidate => candidate.Accepted)
+                .ThenByDescending(candidate => candidate.PeerUploadSpeed)
+                .ThenBy(candidate => candidate.PeerQueueLength)
+                .ThenByDescending(candidate => candidate.Score))
+            .ToList();
     }
 
     /// <summary>Inserts or updates a transfer record and returns its row id.</summary>
@@ -523,6 +573,14 @@ ORDER BY score DESC, id ASC;";
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(status);
+
+        if (status.TransferId is not { } transferIdGuid || transferIdGuid == Guid.Empty)
+        {
+            // Inventing a shared sentinel id here would make every anonymous transfer collide on one row:
+            // the second upsert overwrites the first on conflict, and one unrelated failure erases another's
+            // record. A transfer without an id is a call the caller constructed wrongly, so it is refused.
+            throw new ArgumentException("A Soulseek transfer status must carry a transfer id.", nameof(status));
+        }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = InsertStatementPreamble + TransferTable + @"
@@ -547,7 +605,7 @@ ON CONFLICT(transfer_id) DO UPDATE SET
 RETURNING id;";
 
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("transferId", status.TransferId?.ToString("D") ?? Guid.Empty.ToString("D"));
+        command.Parameters.AddWithValue("transferId", transferIdGuid.ToString("D"));
         command.Parameters.AddWithValue("queueUuid", (object?)queueUuid ?? DBNull.Value);
         command.Parameters.AddWithValue("username", status.Username);
         command.Parameters.AddWithValue("filename", status.Filename);
@@ -777,18 +835,24 @@ VALUES (@path, @ownershipId, @queueUuid, @username, @filename, NULL);",
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        await using var check = new SqliteCommand("SELECT COUNT(*) FROM " + SourceClaimTable
-            + " WHERE ownership_id = @owner AND transfer_id IS NOT NULL AND transfer_id <> @transfer;", connection, transaction);
-        check.Parameters.AddWithValue("owner", ownershipId.ToString("D"));
-        check.Parameters.AddWithValue("transfer", transferId.ToString("D"));
-        if (Convert.ToInt64(await check.ExecuteScalarAsync(cancellationToken)) != 0)
-            throw new InvalidOperationException("The source paths are already attached to a different transfer.");
+
+        // Put the invariant in the write as well as the transaction: an attached claim cannot be reassigned.
         await using var command = new SqliteCommand("UPDATE " + SourceClaimTable
-            + " SET transfer_id = @transfer WHERE ownership_id = @owner;", connection, transaction);
+            + " SET transfer_id = @transfer WHERE ownership_id = @owner"
+            + " AND (transfer_id IS NULL OR transfer_id = @transfer);", connection, transaction);
         command.Parameters.AddWithValue("owner", ownershipId.ToString("D"));
         command.Parameters.AddWithValue("transfer", transferId.ToString("D"));
         if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
             throw new InvalidOperationException("No reserved source paths were available to attach.");
+
+        // While this transaction holds the write lock nothing else can commit, so a claim left pointing at
+        // another transfer is a real conflict rather than a race it just failed to see coming.
+        await using var verify = new SqliteCommand("SELECT COUNT(*) FROM " + SourceClaimTable
+            + " WHERE ownership_id = @owner AND transfer_id IS NOT NULL AND transfer_id <> @transfer;", connection, transaction);
+        verify.Parameters.AddWithValue("owner", ownershipId.ToString("D"));
+        verify.Parameters.AddWithValue("transfer", transferId.ToString("D"));
+        if (Convert.ToInt64(await verify.ExecuteScalarAsync(cancellationToken)) != 0)
+            throw new InvalidOperationException("The source paths are already attached to a different transfer.");
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -1102,11 +1166,19 @@ ORDER BY cooldown_expires_utc ASC;";
     }
 
     /// <summary>Removes cooldowns that have already expired.</summary>
+    /// <remarks>
+    ///     Only the cooldown columns are cleared. The success and failure counts are the peer's genuine
+    ///     history - exactly what the cooldown policy reads to decide how a repeat failure is treated - so
+    ///     deleting the whole row would quietly reset it on every expiry and make repeat offenders look new.
+    /// </remarks>
     public async Task<int> DeleteExpiredCooldownsAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-DELETE FROM " + PeerStatTable + @"
+UPDATE " + PeerStatTable + @"
+SET cooldown_expires_utc = NULL,
+    last_failure_reason = NULL,
+    updated_at_utc = @now
 WHERE cooldown_expires_utc IS NOT NULL
   AND cooldown_expires_utc <= @now;";
         await using var command = new SqliteCommand(sql, connection);
@@ -1114,8 +1186,16 @@ WHERE cooldown_expires_utc IS NOT NULL
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>Maximum age of an abandoned rescan claim, longer than the bounded rescan request.</summary>
+    public static readonly TimeSpan ShareScanLease = TimeSpan.FromMinutes(5);
+
     /// <summary>Records the start of a share scan.</summary>
-    public async Task RecordShareScanStartedAsync(CancellationToken cancellationToken = default)
+    /// <returns>A value indicating whether this call claimed the scan. A scan already in progress is left alone.</returns>
+    /// <remarks>
+    ///     The claim is one statement so two concurrent requests cannot both start: only a caller whose
+    ///     upsert actually lands may rescan, and the running scan's row keeps the outcome it will record.
+    /// </remarks>
+    public async Task<bool> RecordShareScanStartedAsync(CancellationToken cancellationToken = default, DateTimeOffset? startedAtUtc = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = InsertStatementPreamble + ShareScanTable + @" (id, is_running, share_count, file_count, started_at_utc)
@@ -1123,11 +1203,14 @@ VALUES (1, 1, 0, 0, @startedAt)
 ON CONFLICT(id) DO UPDATE SET
     is_running = 1,
     error = NULL,
-    started_at_utc = excluded.started_at_utc,
-    completed_at_utc = NULL;";
+    started_at_utc = @startedAt,
+    completed_at_utc = NULL
+WHERE is_running = 0 OR started_at_utc IS NULL OR started_at_utc < @staleBefore
+RETURNING id;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("startedAt", Format(DateTimeOffset.UtcNow));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.AddWithValue("startedAt", Format(startedAtUtc ?? DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("staleBefore", Format(DateTimeOffset.UtcNow - ShareScanLease));
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     /// <summary>Records the outcome of a share scan.</summary>
@@ -1135,7 +1218,8 @@ ON CONFLICT(id) DO UPDATE SET
         int shareCount,
         long fileCount,
         string? error,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? expectedStartedAtUtc = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = InsertStatementPreamble + ShareScanTable + @" (id, is_running, share_count, file_count, error, started_at_utc, completed_at_utc)
@@ -1145,13 +1229,15 @@ ON CONFLICT(id) DO UPDATE SET
     share_count = excluded.share_count,
     file_count = excluded.file_count,
     error = excluded.error,
-    completed_at_utc = excluded.completed_at_utc;";
+    completed_at_utc = excluded.completed_at_utc
+WHERE @owner IS NULL OR started_at_utc = @owner;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("shareCount", shareCount);
         command.Parameters.AddWithValue("fileCount", fileCount);
         command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
         command.Parameters.AddWithValue("startedAt", Format(DateTimeOffset.UtcNow));
         command.Parameters.AddWithValue("completedAt", Format(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("owner", expectedStartedAtUtc is { } owner ? Format(owner) : DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1159,6 +1245,15 @@ ON CONFLICT(id) DO UPDATE SET
     public async Task<SoulseekShareScanRecord?> GetShareScanStateAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        // A process crash cannot run a finally. Expire only a lease older than the bounded scan request.
+        await using (var expire = new SqliteCommand("UPDATE " + ShareScanTable
+            + " SET is_running = 0, completed_at_utc = @now, error = 'The share rescan was interrupted.'"
+            + " WHERE is_running = 1 AND (started_at_utc IS NULL OR started_at_utc < @staleBefore);", connection))
+        {
+            expire.Parameters.AddWithValue("now", Format(DateTimeOffset.UtcNow));
+            expire.Parameters.AddWithValue("staleBefore", Format(DateTimeOffset.UtcNow - ShareScanLease));
+            await expire.ExecuteNonQueryAsync(cancellationToken);
+        }
         const string sql = @"
 SELECT is_running, share_count, file_count, error, started_at_utc, completed_at_utc
 FROM " + ShareScanTable + @"

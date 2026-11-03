@@ -29,7 +29,16 @@ public sealed class MusicBrainzMatcher
         _logger = logger;
     }
 
-    public async Task<AutoTagMatchResult?> MatchAsync(
+    public Task<AutoTagMatchResult?> MatchAsync(
+        AutoTagAudioInfo info,
+        AutoTagMatchingConfig matchingConfig,
+        MusicBrainzMatchConfig config,
+        CancellationToken cancellationToken)
+        => matchingConfig.PreferAvailableRelease
+            ? _client.RunRequiredAsync(() => MatchCoreAsync(info, matchingConfig, config, cancellationToken))
+            : MatchCoreAsync(info, matchingConfig, config, cancellationToken);
+
+    private async Task<AutoTagMatchResult?> MatchCoreAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig matchingConfig,
         MusicBrainzMatchConfig config,
@@ -37,6 +46,8 @@ public sealed class MusicBrainzMatcher
     {
         var matchStartedAt = DateTimeOffset.UtcNow;
         var resolvedConfig = NormalizeConfig(config);
+        if (matchingConfig.PreferAvailableRelease && matchingConfig.PreferredReleaseType is "album" or "single")
+            resolvedConfig.PreferredPrimaryType = matchingConfig.PreferredReleaseType;
         var preferences = MusicBrainzPreferences.FromConfig(resolvedConfig);
 
         if (resolvedConfig.MatchById)
@@ -129,7 +140,7 @@ public sealed class MusicBrainzMatcher
                 }
 
                 var track = ToTrack(recording, preferences);
-                await ExtendTrackAsync(info, track, preferences, cancellationToken);
+                await ExtendTrackAsync(info, track, preferences, cancellationToken, matchingConfig.PreferAvailableRelease);
                 if (!IsCandidateCompatibleWithSource(info, track, matchingConfig, config))
                 {
                     continue;
@@ -142,7 +153,7 @@ public sealed class MusicBrainzMatcher
                     MatchStrategy = "id"
                 };
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && !matchingConfig.PreferAvailableRelease)
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -196,7 +207,7 @@ public sealed class MusicBrainzMatcher
                 continue;
             }
 
-            await ExtendTrackAsync(info, candidate.Track, preferences, cancellationToken);
+            await ExtendTrackAsync(info, candidate.Track, preferences, cancellationToken, matchingConfig.PreferAvailableRelease);
             if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig, config))
             {
                 continue;
@@ -270,7 +281,8 @@ public sealed class MusicBrainzMatcher
             MatchDuration = config.MatchDuration,
             MaxDurationDifferenceSeconds = Math.Max(config.MaxDurationDifferenceSeconds, configuredDurationFloor),
             MultipleMatches = config.MultipleMatches,
-            PreferredReleaseType = config.PreferredReleaseType
+            PreferredReleaseType = config.PreferredReleaseType,
+            PreferAvailableRelease = config.PreferAvailableRelease
         };
     }
 
@@ -321,7 +333,8 @@ public sealed class MusicBrainzMatcher
         AutoTagAudioInfo info,
         MusicBrainzTrack track,
         MusicBrainzPreferences preferences,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireCatalogResults = false)
     {
         if (string.IsNullOrWhiteSpace(track.TrackId))
         {
@@ -335,6 +348,7 @@ public sealed class MusicBrainzMatcher
             var releases = await _client.GetReleasesAsync(track.TrackId!, cancellationToken);
             if (releases == null)
             {
+                if (requireCatalogResults) throw new InvalidDataException("MusicBrainz did not return verifiable release details.");
                 return;
             }
 
@@ -342,8 +356,17 @@ public sealed class MusicBrainzMatcher
             // Honor it before the preliminary recording release; without an anchor,
             // rank the detailed candidates by country order and ordinary release scores.
             var fileAlbumId = ReadFileAlbumId(info);
+            var availableReleases = releases.Releases;
+            if (requireCatalogResults && preferences.PreferredPrimaryType is not null)
+            {
+                var preferredReleases = availableReleases.Where(release => AutoTagReleaseCategory.MatchesPreference(
+                    AutoTagReleaseCategory.Resolve(release.ReleaseGroup?.PrimaryType, release.ReleaseGroup?.SecondaryTypes,
+                        release.Media.Sum(media => media.TrackCount ?? media.Tracks.Count)),
+                    null, preferences.PreferredPrimaryType)).ToList();
+                if (preferredReleases.Count > 0) availableReleases = preferredReleases;
+            }
             var release = SelectBestRelease(
-                releases.Releases,
+                availableReleases,
                 track.ReleaseDate,
                 preferences,
                 fileAlbumId,
@@ -381,7 +404,7 @@ public sealed class MusicBrainzMatcher
                 AddOtherValue(track.Other, "albumartistsort", albumArtistSortName);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !requireCatalogResults)
         {
             _logger.LogWarning(ex, "Failed to extend MusicBrainz track.");
         }
@@ -950,24 +973,12 @@ public sealed class MusicBrainzMatcher
 
     private static List<string> CreditIds(IEnumerable<ArtistCredit>? credits)
     {
-        var ids = new List<string>();
-        if (credits == null)
-        {
-            return ids;
-        }
-
-        foreach (var id in credits
-                     .Select(credit => credit.Artist?.Id)
-                     .Where(id => !string.IsNullOrWhiteSpace(id))
-                     .Select(id => id!.Trim()))
-        {
-            if (!ids.Contains(id, StringComparer.OrdinalIgnoreCase))
-            {
-                ids.Add(id);
-            }
-        }
-
-        return ids;
+        return credits?
+            .Select(credit => credit.Artist?.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
     }
 
     private static List<string> GenreNames(IEnumerable<Genre>? genres)
@@ -984,15 +995,17 @@ public sealed class MusicBrainzMatcher
             return;
         }
 
-        foreach (var name in values
-                     .Where(value => !string.IsNullOrWhiteSpace(value))
-                     .Select(value => value.Trim()))
-        {
-            if (!names.Contains(name, StringComparer.OrdinalIgnoreCase))
-            {
-                names.Add(name);
-            }
-        }
+        // The list may already hold names from an earlier caller, so incoming
+        // values have to dedupe against those as well as among themselves. The
+        // candidate set is materialized before appending so nothing enumerates
+        // the list while it grows.
+        var pending = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Where(value => !names.Contains(value, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        names.AddRange(pending);
     }
 
     private static int? ParseYear(string? date)
@@ -1190,17 +1203,10 @@ public sealed class MusicBrainzMatcher
 
     private static int BestCountryTier(Release release, IReadOnlyList<string> preferredCountries)
     {
-        var best = ReleaseCountryTier(release.Country, preferredCountries);
-        foreach (var country in EnumerateEventCountries(release))
-        {
-            var tier = ReleaseCountryTier(country, preferredCountries);
-            if (tier < best)
-            {
-                best = tier;
-            }
-        }
-
-        return best;
+        return EnumerateEventCountries(release)
+            .Select(country => ReleaseCountryTier(country, preferredCountries))
+            .Prepend(ReleaseCountryTier(release.Country, preferredCountries))
+            .Min();
     }
 
     private static string? FirstPreferredEventCountry(Release release, MusicBrainzPreferences preferences)

@@ -870,6 +870,7 @@ DeezSpoTag.DownloadClient = {
             preferredEngine,
             preferredQuality,
             shouldUseIntentRouting: (sourceService) => {
+                if (options?.metadata?.downloadOrigin === 'shazam') return true;
                 const configured = String(preferredEngine || '').trim().toLowerCase();
                 if (!configured) return false;
                 if (configured === 'auto') return true;
@@ -897,6 +898,7 @@ DeezSpoTag.DownloadClient = {
                 resolveImmediately,
                 intents: [{
                     sourceService,
+                    downloadOrigin: metadata?.downloadOrigin === 'shazam' ? 'shazam' : undefined,
                     sourceUrl: sourceUrl || undefined,
                     isrc: isrc || metadata?.isrc || undefined,
                     tidalId: metadata?.tidalId || undefined,

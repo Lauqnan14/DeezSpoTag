@@ -865,7 +865,8 @@ public partial class Program
         if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
             || context.Request.Path.StartsWithSegments("/deezerQueueHub", StringComparison.OrdinalIgnoreCase)
             || context.Request.Path.StartsWithSegments("/activitiesHub", StringComparison.OrdinalIgnoreCase)
-            || context.Request.Path.StartsWithSegments("/crossDeviceSyncHub", StringComparison.OrdinalIgnoreCase))
+            || context.Request.Path.StartsWithSegments("/crossDeviceSyncHub", StringComparison.OrdinalIgnoreCase)
+            || context.Request.Path.StartsWithSegments("/hubs/soulseek", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = statusCode;
             return Task.CompletedTask;

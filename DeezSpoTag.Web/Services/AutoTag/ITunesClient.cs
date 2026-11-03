@@ -30,15 +30,16 @@ public sealed class ItunesClient
         _rateLimitPerMinute = rateLimitPerMinute;
     }
 
-    public async Task<ItunesSearchResults?> SearchAsync(string query, string? country, int limit, CancellationToken cancellationToken)
+    public async Task<ItunesSearchResults?> SearchAsync(string query, string? country, int limit, CancellationToken cancellationToken, bool required = false)
     {
         await ApplyRateLimitAsync(cancellationToken);
         var normalizedCountry = NormalizeCountry(country);
         var normalizedLimit = Math.Clamp(limit, 1, 200);
         var url = BuildSearchUri(query, normalizedCountry, normalizedLimit);
-        var response = await _httpClient.GetAsync(url, cancellationToken);
+        using var response = await _httpClient.GetAsync(url, cancellationToken);
         _lastRequest = DateTimeOffset.UtcNow;
 
+        if (required) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("iTunes search failed with status {Status}.", response.StatusCode);
@@ -49,7 +50,7 @@ public sealed class ItunesClient
         return await JsonSerializer.DeserializeAsync<ItunesSearchResults>(stream, _jsonOptions, cancellationToken);
     }
 
-    public async Task<ItunesSearchResult?> LookupTrackAsync(string? trackId, string? country, CancellationToken cancellationToken)
+    public async Task<ItunesSearchResult?> LookupTrackAsync(string? trackId, string? country, CancellationToken cancellationToken, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(trackId))
         {
@@ -65,9 +66,10 @@ public sealed class ItunesClient
         await ApplyRateLimitAsync(cancellationToken);
         var normalizedCountry = NormalizeCountry(country);
         var url = BuildLookupUri(cleaned, normalizedCountry);
-        var response = await _httpClient.GetAsync(url, cancellationToken);
+        using var response = await _httpClient.GetAsync(url, cancellationToken);
         _lastRequest = DateTimeOffset.UtcNow;
 
+        if (required) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("iTunes track lookup failed with status {Status}.", response.StatusCode);

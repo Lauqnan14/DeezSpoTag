@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -67,6 +68,66 @@ public sealed class SoulseekPinnedCandidateIntentTest
     ///         again, instead of in the queue, where it looks like the network's fault.
     ///     </para>
     /// </remarks>
+    [Fact]
+    public void PendingQueueKeepsTheExplicitFileQualityWhenHigherQualityIsEnabledFirst()
+    {
+        var intent = JsonSerializer.Deserialize<DownloadIntent>(PanelIntentJson, ClientOptions)!;
+        intent.Quality = "FLAC";
+        var settings = new DeezSpoTagSettings { Service = "custom" };
+        var type = typeof(DownloadIntentService).GetNestedType("EnqueueRoutingState", BindingFlags.NonPublic)!;
+        var routing = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)[0]
+            .Invoke(["soulseek", false, false, new List<string> { "soulseek|FLAC_HI_RES", "soulseek|FLAC" }, "soulseek", "FLAC", null, false]);
+        var method = typeof(DownloadIntentService).GetMethod("BuildPendingEnqueueTarget", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var target = method.Invoke(null, [intent, routing, settings])!;
+        Assert.Equal("soulseek", target.GetType().GetProperty("Engine")!.GetValue(target));
+        Assert.Equal("FLAC", target.GetType().GetProperty("SelectedQuality")!.GetValue(target));
+        Assert.Equal(false, target.GetType().GetProperty("AllowCrossEngineFallback")!.GetValue(target));
+        Assert.Equal("soulseek|FLAC", Assert.Single(Assert.IsType<List<string>>(target.GetType().GetProperty("AutoSources")!.GetValue(target))));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("album")]
+    public async System.Threading.Tasks.Task QueueInsertionThroughBasePayloadPreservesTheExactPeerSelection(string? releaseCategory)
+    {
+        var root = System.IO.Path.Join(System.IO.Path.GetTempPath(), "soulseek-pinned-insert-" + Guid.NewGuid());
+        System.IO.Directory.CreateDirectory(root);
+        try
+        {
+            var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Queue"] = "Data Source=" + System.IO.Path.Join(root, "queue.db") + ";Pooling=False" }).Build();
+            var repository = new DownloadQueueRepository(configuration, Microsoft.Extensions.Logging.Abstractions.NullLogger<DownloadQueueRepository>.Instance);
+            var service = (DownloadIntentService)RuntimeHelpers.GetUninitializedObject(typeof(DownloadIntentService));
+            typeof(DownloadIntentService).GetField("_queueRepository", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, repository);
+            var intent = JsonSerializer.Deserialize<DownloadIntent>(PanelIntentJson, ClientOptions)!;
+            intent.Quality = "FLAC";
+            var settings = new DeezSpoTagSettings();
+            var build = typeof(DownloadIntentService).GetMethod("BuildVisiblePreResolutionPayload", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var payload = Assert.IsType<SoulseekQueueItem>(build.Invoke(null, [intent, settings, "soulseek", "FLAC", null, null]));
+            payload.SoulseekReleaseCategory = releaseCategory;
+            var identity = typeof(DownloadIntentService).GetMethod("BuildPayloadIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(typeof(DeezSpoTag.Services.Download.Shared.EngineQueueItemBase)).Invoke(null, [payload]);
+            var contextType = typeof(DownloadIntentService).GetNestedType("EnqueueItemContext", BindingFlags.NonPublic)!;
+            var context = contextType.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)[0]
+                .Invoke([identity, settings, null, false, null, false, int.MinValue, null, false]);
+            var insert = typeof(DownloadIntentService).GetMethod("InsertQueueItemAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .MakeGenericMethod(typeof(DeezSpoTag.Services.Download.Shared.EngineQueueItemBase));
+            await (System.Threading.Tasks.Task)insert.Invoke(service, [payload, context, "queued", System.Threading.CancellationToken.None])!;
+            var stored = await repository.GetByUuidAsync(payload.Id);
+            Assert.NotNull(stored);
+            var revived = JsonSerializer.Deserialize<SoulseekQueueItem>(stored!.PayloadJson)!;
+            Assert.Equal(payload.SoulseekUsername, revived.SoulseekUsername);
+            Assert.Equal(payload.SoulseekRemotePath, revived.SoulseekRemotePath);
+            Assert.Equal(payload.SoulseekRemoteSizeBytes, revived.SoulseekRemoteSizeBytes);
+            Assert.Equal("FLAC", revived.SoulseekQualityCode);
+            Assert.Equal(releaseCategory, revived.SoulseekReleaseCategory);
+            Assert.True(SoulseekPinnedCandidatePolicy.IsManualSelection(revived));
+            Assert.True(QueuePreResolutionPayload.IsResolved(JsonNode.Parse(stored.PayloadJson)!.AsObject()));
+            Assert.Equal("FLAC", Assert.Single(revived.FallbackPlan).Quality);
+        }
+        finally { System.IO.Directory.Delete(root, true); }
+    }
+
     [Fact]
     public void SoulseekTabIntentWithoutPeerAndPathIsRejected()
     {

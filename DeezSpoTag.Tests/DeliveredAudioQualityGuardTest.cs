@@ -18,6 +18,39 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DeliveredAudioQualityGuardTest : IDisposable
 {
+    [Theory]
+    [InlineData("MP3_320", 256, false)]
+    [InlineData("MP3_320", 320, true)]
+    [InlineData("MP3_256", 192, false)]
+    [InlineData("MP3_256", 256, true)]
+    [InlineData("MP3_192", 128, false)]
+    [InlineData("MP3_192", 192, true)]
+    [InlineData("MP3_128", 96, false)]
+    [InlineData("MP3_128", 128, true)]
+    public void SoulseekDeliveredBitrateMustMeetTheExplicitRequest(string requested, int bitrate, bool expected)
+    {
+        Assert.Equal(expected, IsDeliveredQualityAccepted("soulseek", requested, $"MP3 {bitrate} kbps", 0, 44100, bitrate, false));
+    }
+
+    [Theory]
+    [InlineData(192, false)]
+    [InlineData(256, false)]
+    [InlineData(320, true)]
+    public void SoulseekInspectsDeliveredMp3BytesInsteadOfTrustingAdvertised320(int deliveredBitrate, bool expected)
+    {
+        var path = Path.Join(_tempDirectory, "delivered.mp3");
+        var bitrateIndex = deliveredBitrate switch { 192 => 11, 256 => 13, 320 => 14, _ => throw new ArgumentOutOfRangeException() };
+        // Deterministic MPEG-1 Layer III CBR frames, no tags or network/provider fixture dependency.
+        var frame = new byte[144000 * deliveredBitrate / 44100];
+        frame[0] = 0xff; frame[1] = 0xfb; frame[2] = (byte)(bitrateIndex << 4); frame[3] = 0;
+        using (var stream = File.Create(path))
+            for (var index = 0; index < 100; index++) stream.Write(frame);
+        var payload = new DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem { Quality = "MP3_320" };
+        var result = Validate(payload, path);
+        Assert.True(ReadBool(result, "Conclusive"), ReadString(result, "DeliveredQuality"));
+        Assert.Equal(expected, ReadBool(result, "Success"));
+    }
+
     private readonly string _tempDirectory = Path.Combine(Path.GetTempPath(), $"delivered-quality-{Guid.NewGuid():N}");
 
     public DeliveredAudioQualityGuardTest()

@@ -59,6 +59,7 @@ public sealed class SoulseekFolderShareApiController : ControllerBase
 
     /// <summary>Updates one folder's share alias and filters.</summary>
     [HttpPut("folders/{folderId:long}")]
+    [EnableRateLimiting("SensitiveWrites")]
     public async Task<IActionResult> UpdateFolder(
         long folderId,
         [FromBody] UpdateFolderShareRequest request,
@@ -83,6 +84,7 @@ public sealed class SoulseekFolderShareApiController : ControllerBase
 
     /// <summary>Enables or disables sharing for one folder. This is the folder tab's only toggle.</summary>
     [HttpPatch("folders/{folderId:long}/enabled")]
+    [EnableRateLimiting("SensitiveWrites")]
     public async Task<IActionResult> SetEnabled(
         long folderId,
         [FromBody] SetFolderShareEnabledRequest request,

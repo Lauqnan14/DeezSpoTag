@@ -10,6 +10,8 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string Engine { get; set; } = "";
     public string QueueOrigin { get; set; } = "";
     public string SourceService { get; set; } = "";
+    /// <summary>The initiating UI, retained separately from the catalog source and delivering engine.</summary>
+    public string DownloadOrigin { get; set; } = "";
     public string SourceUrl { get; set; } = "";
     public string CollectionName { get; set; } = "";
     public string CollectionType { get; set; } = "";

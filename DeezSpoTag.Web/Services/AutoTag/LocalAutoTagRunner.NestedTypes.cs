@@ -483,6 +483,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public Dictionary<int, AutoTagAudioInfo> OriginalManualInfo { get; } = new();
         public Dictionary<int, AutoTagAudioInfo> ResolvedManualInfo { get; } = new();
         public Dictionary<int, ManualReleaseIdentity> FrozenManualReleases { get; } = new();
+        public Dictionary<(int FileIndex, string Platform), AutoTagMatchResult?> ExternalMatchResults { get; } = new();
+        public Dictionary<(int FileIndex, string Platform), (string? Outcome, string? Message)> ExternalMatchFailures { get; } = new();
+        public Dictionary<int, (string Platform, AutoTagMatchResult Match)> ExternalReleaseMatches { get; } = new();
+        public HashSet<int> PreparedExternalFiles { get; } = new();
         public AlbumIdentityRegistry AlbumIdentities { get; } = new();
         public HashSet<string> SeededAlbumIdentityKeys { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, ArtistSortMeta> ArtistSortMeta { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -557,6 +561,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public string? ReleaseType { get; init; }
         public int? TrackTotal { get; init; }
         public string? Art { get; set; }
+        public int? TrackNumber { get; init; }
+        public int? DiscNumber { get; init; }
+        public int? DiscTotal { get; init; }
+        public DateTime? ReleaseDate { get; init; }
 
         public static ManualReleaseIdentity FromTrack(AutoTagTrack track)
             => new()
@@ -568,7 +576,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 Isrc = track.Isrc,
                 ReleaseType = track.ReleaseType,
                 TrackTotal = track.TrackTotal,
-                Art = track.Art
+                Art = track.Art,
+                TrackNumber = track.TrackNumber,
+                DiscNumber = track.DiscNumber,
+                DiscTotal = track.DiscTotal,
+                ReleaseDate = track.ReleaseDate
             };
 
         public AutoTagAudioInfo ToAudioInfo()
@@ -590,6 +602,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             track.Isrc = Isrc;
             track.ReleaseType = ReleaseType;
             track.TrackTotal = TrackTotal;
+            track.TrackNumber = TrackNumber;
+            track.DiscNumber = DiscNumber;
+            track.DiscTotal = DiscTotal;
+            track.ReleaseDate = ReleaseDate;
             if (!string.IsNullOrWhiteSpace(Art))
             {
                 track.Art = Art;

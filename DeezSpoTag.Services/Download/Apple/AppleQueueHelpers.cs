@@ -821,7 +821,7 @@ public static class AppleQueueHelpers
             : string.Empty;
         if (string.IsNullOrWhiteSpace(raw) || !IsLikelyUsableItunesArtistPageArtwork(raw))
         {
-            raw = TryExtractSquareAppleArtistPageArtwork(html);
+            raw = TryExtractSquareAppleArtistPageArtwork(html, artistLinkUrl, raw);
         }
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -838,8 +838,28 @@ public static class AppleQueueHelpers
         return raw;
     }
 
-    private static string? TryExtractSquareAppleArtistPageArtwork(string html)
+    private static string? TryExtractSquareAppleArtistPageArtwork(string html, string artistLinkUrl, string socialArtwork)
     {
+        if (Uri.TryCreate(artistLinkUrl, UriKind.Absolute, out var artistUri))
+        {
+            var artistId = artistUri.AbsolutePath.TrimEnd('/').Split('/').LastOrDefault();
+            if (long.TryParse(artistId, out _))
+            {
+                try
+                {
+                    using var data = AppleMusicCatalogService.ParseBrowsePage(html);
+                    var portrait = FindArtistPortrait(data.RootElement, artistId!);
+                    if (!string.IsNullOrWhiteSpace(portrait)) return portrait;
+                }
+                catch (JsonException) { /* Pages without structured artist data can still provide their own social image. */ }
+            }
+        }
+
+        // Older pages expose a square rendition of the social portrait. Bind it to that exact
+        // image asset; scanning unrelated artist cards is how another artist's face was selected.
+        var separator = socialArtwork.LastIndexOf('/');
+        if (separator < 0) return null;
+        var socialAsset = socialArtwork[..(separator + 1)];
         var matches = Regex.Matches(
             html,
             "https://[^\\\"'\\s]+/image/thumb/AMCArtistImages[^\\\"'\\s]+/(?<width>\\d{2,5})x(?<height>\\d{2,5})[^\\\"'\\s]*\\.(?:jpg|jpeg|png|webp)",
@@ -847,6 +867,7 @@ public static class AppleQueueHelpers
             RegexTimeout);
         foreach (Match match in matches)
         {
+            if (!WebUtility.HtmlDecode(match.Value).StartsWith(socialAsset, StringComparison.OrdinalIgnoreCase)) continue;
             if (!int.TryParse(match.Groups["width"].Value, out var width)
                 || !int.TryParse(match.Groups["height"].Value, out var height)
                 || width <= 0
@@ -859,6 +880,39 @@ public static class AppleQueueHelpers
             return WebUtility.HtmlDecode(match.Value);
         }
 
+        return null;
+    }
+
+    private static string? FindArtistPortrait(JsonElement node, string artistId)
+    {
+        if (node.ValueKind == JsonValueKind.Object)
+        {
+            if (TryReadItunesString(node, "id") == artistId
+                && node.TryGetProperty("contentDescriptor", out var descriptor)
+                && TryReadItunesString(descriptor, "kind") == "artist")
+            {
+                foreach (var property in new[] { "circleArtwork", "artwork" })
+                {
+                    if (!node.TryGetProperty(property, out var artwork)) continue;
+                    if (artwork.TryGetProperty("dictionary", out var dictionary)) artwork = dictionary;
+                    var url = TryReadItunesString(artwork, "url");
+                    if (!string.IsNullOrWhiteSpace(url)) return url;
+                }
+            }
+            foreach (var property in node.EnumerateObject())
+            {
+                var portrait = FindArtistPortrait(property.Value, artistId);
+                if (!string.IsNullOrWhiteSpace(portrait)) return portrait;
+            }
+        }
+        else if (node.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in node.EnumerateArray())
+            {
+                var portrait = FindArtistPortrait(item, artistId);
+                if (!string.IsNullOrWhiteSpace(portrait)) return portrait;
+            }
+        }
         return null;
     }
 

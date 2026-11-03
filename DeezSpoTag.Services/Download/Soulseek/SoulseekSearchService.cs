@@ -27,6 +27,13 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
     public static readonly TimeSpan ResponseCollectionGrace = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    ///     A second read window used only when the polling counts say peers answered but the final response
+    ///     list came back empty. A genuinely empty search pays the first window once; only the anomaly pays
+    ///     the second.
+    /// </summary>
+    public static readonly TimeSpan ResponseSecondChanceGrace = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     ///     Persists and publishes a search that ended because its results could not be read.
     /// </summary>
     /// <remarks>
@@ -221,10 +228,6 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
         // boundary, and nowhere else.
         var remoteTimeout = TimeSpan.FromSeconds(Math.Clamp(settings.SearchTimeoutSeconds, 5, 600));
 
-        // slskd's timeout measures inactivity since the last response. The app's elapsed deadline
-        // therefore explicitly stops an active search and waits for finalization before reading results.
-        ResolvePollTimeout(remoteTimeout);
-
         // A bounded sequence, not a retry loop. The first query that returns an accepted candidate ends the
         // search, so a successful download costs exactly one remote search; a query that returns nothing may be
         // followed by the title alone, once. Every attempt carries the same mode, the same queue UUID, the same
@@ -265,15 +268,6 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
             {
                 throw new SoulseekUnavailableException("slskd did not return a search identifier.");
             }
-
-            await _repository.RecordSearchStartedAsync(search.Id, queries[index], mode, queueUuid, cancellationToken)
-                .ConfigureAwait(false);
-
-            _realtime.PublishSearchUpdate(new SoulseekSearchProgress(
-                search.Id,
-                queueUuid,
-                queries[index],
-                SoulseekSearchStage.Searching));
 
             last = await ObserveAsync(target, search.Id, queries[index], mode, queueUuid, cancellationToken, requiredQualityCode)
                 .ConfigureAwait(false);
@@ -337,11 +331,8 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
         CancellationToken cancellationToken,
         string? requiredQualityCode = null)
     {
-        var credentials = await RequireCredentialsAsync(cancellationToken).ConfigureAwait(false);
+        SlskdCredentials? credentials = null;
         var startedAt = DateTimeOffset.UtcNow;
-        var settings = _settings.GetSettings();
-        var remoteTimeout = TimeSpan.FromSeconds(Math.Clamp(settings.SearchTimeoutSeconds, 5, 600));
-        var pollTimeout = ResolvePollTimeout(remoteTimeout);
 
         // Accumulated across the whole search, keyed by username+filename, which is the identity the
         // candidate record already uses. Local to this invocation, so concurrent searches cannot mix.
@@ -358,10 +349,21 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
             // live view rather than a 404 for a search that is plainly running.
             LiveResults[searchId] = [];
             LiveCounts[searchId] = (0, 0);
-            await _repository.RecordSearchStartedAsync(searchId, searchText, mode, queueUuid, cancellationToken).ConfigureAwait(false);
+
+            // False when slskd itself lost the search - expired, restarted - rather than the search finishing
+            // or the local deadline firing. That distinction decides what the record says below.
+            var searchVanished = false;
 
             try
             {
+                // Include the initial write in the lifecycle finally, including cancellation during that write.
+                await _repository.RecordSearchStartedAsync(searchId, searchText, mode, queueUuid, linked.Token)
+                    .ConfigureAwait(false);
+                credentials = await RequireCredentialsAsync(linked.Token).ConfigureAwait(false);
+                var settings = _settings.GetSettings();
+                var remoteTimeout = TimeSpan.FromSeconds(Math.Clamp(settings.SearchTimeoutSeconds, 5, 600));
+                var pollTimeout = ResolvePollTimeout(remoteTimeout);
+                _realtime.PublishSearchUpdate(new SoulseekSearchProgress(searchId, queueUuid, searchText, SoulseekSearchStage.Searching));
                 var deadline = DateTimeOffset.UtcNow + pollTimeout;
 
                 while (true)
@@ -377,8 +379,8 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                         var remote = await _client.GetSearchAsync(credentials, searchId, includeResponses: false, linked.Token).ConfigureAwait(false);
                         if (remote is not null)
                         {
-                            lastFileCount = remote.FileCount;
-                            responseCount = remote.ResponseCount;
+                            lastFileCount = Math.Max(lastFileCount, remote.FileCount);
+                            responseCount = Math.Max(responseCount, remote.ResponseCount);
                             LiveCounts[searchId] = (remote.ResponseCount, remote.FileCount);
 
                             if (_logger.IsEnabled(LogLevel.Debug))
@@ -406,7 +408,8 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
 
                         if (IsSearchFinished(remote))
                         {
-                            completed = true;
+                            completed = remote is not null;
+                            searchVanished = remote is null;
                             break;
                         }
                     }
@@ -431,29 +434,49 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                     await Task.Delay(PollInterval, linked.Token).ConfigureAwait(false);
                 }
 
+                if (searchVanished)
+                {
+                    throw new SoulseekUnavailableException("slskd no longer has the search being observed.");
+                }
+
                 if (!completed)
                 {
                     // The local deadline passed first. Cancel the remote search and wait for slskd to bring it
                     // to a terminal state, so the responses are still finalized and readable.
                     var stopped = await PollUntilCompleteAsync(credentials, searchId, TimeSpan.Zero, linked.Token).ConfigureAwait(false);
-                    lastFileCount = stopped.FileCount;
+                    lastFileCount = Math.Max(lastFileCount, stopped.FileCount);
                 }
 
                 // The single response read of the search. If this throws, the remote search is deliberately
                 // left in place: it is the only copy of the results, and deleting it in a finally block would
                 // destroy the very thing a retry would need.
                 var responsesCaptured = false;
+                var responseFilesCaptured = false;
                 try
                 {
                     var finalResponses = await FetchResponsesAsync(credentials, searchId, linked.Token).ConfigureAwait(false);
+                    if (!finalResponses.Any(response => response.Files.Count > 0) && lastFileCount > 0)
+                    {
+                        // The polling counts say peers answered, but the finalized list came back empty. That
+                        // is the retrieval anomaly, not a clean empty result: slskd attaches responses during
+                        // finalisation, so one bounded second chance is taken before the outcome is decided.
+                        finalResponses = await FetchResponsesAsync(credentials, searchId, ResponseSecondChanceGrace, linked.Token)
+                            .ConfigureAwait(false);
+                    }
+
                     responsesCaptured = true;
+                    responseFilesCaptured = finalResponses.Any(response => response.Files.Count > 0);
 
                     // The outcome counts the responses this process actually holds, which is what was scored
                     // and persisted. The live figure slskd reported during the search was already published on
-                    // every tick, so it is not re-applied here.
-                    responseCount = finalResponses.Count;
-
+                    // every tick, so it is not re-applied here - except that no rung below goes through when
+                    // the counts say results were reported and never arrived, which is the failure case below.
                     foreach (var raw in Flatten(finalResponses)) collected[raw.Identity] = raw;
+                    // Keep observed counts on retrieval failure; do not rewrite real answers as network silence.
+                    if (lastFileCount == 0 || responseFilesCaptured)
+                    {
+                        responseCount = finalResponses.Count;
+                    }
                 }
                 catch (OperationCanceledException) when (linked.IsCancellationRequested)
                 {
@@ -470,10 +493,10 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                     }
                 }
 
-                if (responsesCaptured)
-                {
-                    remoteSearchRemovable = true;
-                }
+                // A vanished search whose finalized list still came back readable-but-empty is the same loss:
+                // the search that produced them is gone from slskd, so nothing that was answered is on hand.
+                var peersAnsweredButResultsMissing =
+                    responsesCaptured && !responseFilesCaptured && lastFileCount > 0;
 
                 // Peers answered and their files were never retrieved. That is not an empty result set, and the
                 // difference is the whole point: an empty set is scored, published as a completed search, and the
@@ -483,8 +506,15 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                 //
                 // The observed counts are kept. They are the only record that this was a genuine search with real
                 // answers, and losing them is what turns a retrieval failure into "no peers responded" on reload.
-                if (!responsesCaptured)
+                if (!responsesCaptured || peersAnsweredButResultsMissing)
                 {
+                    if (peersAnsweredButResultsMissing)
+                    {
+                        // The read "succeeded", so without this the dead search would be recorded as a clean
+                        // completed-empty result and deleted. Keeping the record honest beats tidy remote side.
+                        remoteSearchRemovable = false;
+                    }
+
                     await RecordRetrievalFailureAsync(
                             searchId,
                             searchText,
@@ -525,6 +555,8 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                         CancellationToken.None)
                     .ConfigureAwait(false);
 
+                remoteSearchRemovable = true;
+
                 var outcome = new SoulseekSearchOutcome(
                     searchId,
                     searchText,
@@ -550,6 +582,45 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
 
                 return outcome;
             }
+            catch (OperationCanceledException)
+            {
+                // The user cancelled, or the item that owned the search did. slskd's side of the search is
+                // handled in the finally; this record is what keeps the row from reading as "in flight"
+                // forever once nothing will ever advance it.
+                await RecordSearchInterruptedAsync(
+                        searchId,
+                        searchText,
+                        queueUuid,
+                        startedAt,
+                        lastFileCount,
+                        responseCount,
+                        SearchCancelledCode,
+                        SearchCancelledMessage)
+                    .ConfigureAwait(false);
+                throw;
+            }
+            catch (Exception observationFailure) when (observationFailure is not OperationCanceledException)
+            {
+                // A throw that escaped the observation loop would otherwise leave the record sitting at
+                // "started", unreachable by the terminal-only cleanup and unreadable as anything but a hang.
+                // The message is fixed text because it is rendered in the panel; the cause is in the log.
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(observationFailure, "Soulseek search {SearchId} was interrupted.", searchId);
+                }
+
+                await RecordSearchInterruptedAsync(
+                        searchId,
+                        searchText,
+                        queueUuid,
+                        startedAt,
+                        lastFileCount,
+                        responseCount,
+                        SearchObservationFailedCode,
+                        SearchObservationFailedMessage)
+                    .ConfigureAwait(false);
+                throw;
+            }
             finally
             {
                 ActiveSearches.TryRemove(searchId, out _);
@@ -561,7 +632,7 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                 // the results are abandoned deliberately and the search must not be left behind in slskd. When
                 // the read merely failed, the search is left where it is, because deleting it would throw away
                 // the only copy of the results.
-                if (remoteSearchRemovable || linked.IsCancellationRequested)
+                if (credentials is not null && (remoteSearchRemovable || linked.IsCancellationRequested))
                 {
                     await TryDeleteSearchAsync(credentials, searchId, CancellationToken.None).ConfigureAwait(false);
                 }
@@ -675,6 +746,72 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
         => BuildSearchTexts(target).FirstOrDefault() ?? string.Empty;
 
     /// <summary>
+    ///     The code carried by a search that ended because it was cancelled or could not finish being watched.
+    /// </summary>
+    /// <remarks>
+    ///     The searches' own codes so a reloaded history says what happened, and the terminal-only cleanup can
+    ///     see these rows as theirs to prune.
+    /// </remarks>
+    public const string SearchCancelledCode = "search_cancelled";
+
+    public const string SearchCancelledMessage = "The search was cancelled.";
+
+    public const string SearchObservationFailedCode = "search_observation_failed";
+
+    public const string SearchObservationFailedMessage =
+        "Soulseek search could not be watched to completion. Try the search again.";
+
+    /// <summary>
+    ///     Persists the terminal outcome of a search that was cancelled or whose observation threw, and stops
+    ///     any page still watching from polling a search that will never advance.
+    /// </summary>
+    /// <remarks>
+    ///     Best effort by construction: a repository or transport failure inside an interruption must never
+    ///     mask the original exception, so anything it raises is logged and dropped.
+    /// </remarks>
+    private async Task RecordSearchInterruptedAsync(
+        Guid searchId,
+        string searchText,
+        string? queueUuid,
+        DateTimeOffset startedAt,
+        int fileCount,
+        int responseCount,
+        string code,
+        string message)
+    {
+        try
+        {
+            await _repository
+                .RecordSearchFailedAsync(searchId, fileCount, responseCount, code, message, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            _realtime.PublishSearchUpdate(new SoulseekSearchProgress(
+                searchId,
+                queueUuid,
+                searchText,
+                code == SearchCancelledCode ? SoulseekSearchStage.Cancelled : SoulseekSearchStage.Failed,
+                Completed: false,
+                TimedOut: false,
+                responseCount,
+                (DateTimeOffset.UtcNow - startedAt).TotalSeconds,
+                Results: null,
+                Final: true,
+                ErrorCode: code,
+                Error: message));
+        }
+        catch (Exception interruptionRecording) when (interruptionRecording is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(
+                    interruptionRecording,
+                    "Could not record the interrupted Soulseek search {SearchId}.",
+                    searchId);
+            }
+        }
+    }
+
+    /// <summary>
     ///     Reads the responses for a finished search, retrying while they come back empty.
     /// </summary>
     /// <remarks>
@@ -694,12 +831,32 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
         SlskdCredentials credentials,
         Guid searchId,
         CancellationToken cancellationToken)
+        => await FetchResponsesAsync(credentials, searchId, ResponseCollectionGrace, cancellationToken).ConfigureAwait(false);
+
+    private async Task<IReadOnlyList<SlskdSearchResponse>> FetchResponsesAsync(
+        SlskdCredentials credentials,
+        Guid searchId,
+        TimeSpan grace,
+        CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + ResponseCollectionGrace;
+        var deadline = DateTimeOffset.UtcNow + grace;
+        using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        window.CancelAfter(grace);
+        IReadOnlyList<SlskdSearchResponse>? lastResponses = null;
 
         while (true)
         {
-            var responses = await _client.GetSearchResponsesAsync(credentials, searchId, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<SlskdSearchResponse> responses;
+            try
+            {
+                responses = await _client.GetSearchResponsesAsync(credentials, searchId, window.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (lastResponses is not null) return lastResponses;
+                throw new SoulseekUnavailableException("slskd response collection timed out.");
+            }
+            lastResponses = responses;
             if (responses.Count > 0 || DateTimeOffset.UtcNow >= deadline)
             {
                 return responses;
@@ -710,7 +867,12 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
                 _logger.LogDebug("Soulseek search {SearchId} reported complete with no responses yet; re-reading.", searchId);
             }
 
-            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero) return responses;
+            // Delay uses the caller token so expiry after a successful empty read returns that empty set,
+            // allowing the counts-based second collection window rather than misclassifying it as an outage.
+            await Task.Delay(remaining < PollInterval ? remaining : PollInterval, cancellationToken).ConfigureAwait(false);
+            if (DateTimeOffset.UtcNow >= deadline) return responses;
         }
     }
 
@@ -730,9 +892,7 @@ public sealed class SoulseekSearchService : ISoulseekSearchService
 
             if (search is null)
             {
-                // slskd forgot the search, which normally means it expired. Treat it as finished so the
-                // caller still gets whatever was collected.
-                return (true, 0);
+                throw new SoulseekUnavailableException("slskd no longer has the search being finalized.");
             }
 
             if (search.IsComplete)

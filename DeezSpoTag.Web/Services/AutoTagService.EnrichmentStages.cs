@@ -59,13 +59,6 @@ public partial class AutoTagService
         strippedKeys = new List<string>();
 
         var plan = BuildManualEnrichmentStagePlan(baseRoot, eligiblePlatforms);
-        if (plan.ForceShazamFingerprint
-            && !plan.Platforms.Any(platform => string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase)))
-        {
-            skipReason = "manual fingerprint recognition requires Shazam to be enabled";
-            return false;
-        }
-
         var manualPlan = plan with
         {
             Platforms = plan.Platforms.ToList(),
@@ -115,9 +108,10 @@ public partial class AutoTagService
     {
         return new EnrichmentStagePlan(
             RequestedTags: ResolveEnrichmentRequestedTags(baseRoot),
-            Platforms: eligiblePlatforms.ToList(),
+            Platforms: new[] { ShazamPlatformId }.Concat(eligiblePlatforms)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             ExcludedPlatform: null,
-            ForceShazamFingerprint: ReadBool(baseRoot, AutoTagLiterals.ManualForceFingerprintKey) ?? false,
+            ForceShazamFingerprint: true,
             OrganizeSidecarsIntoTemplateFolders: true,
             MaterializeToTemplatePath: true);
     }
@@ -248,9 +242,10 @@ public partial class AutoTagService
         {
             stageRoot["materializeToTemplatePath"] = true;
         }
-        if (string.Equals(context.RunIntent, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase))
+        if (ResolveEnrichmentRunMode(context.RunIntent) == EnrichmentRunMode.Manual)
         {
-            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+            // External files use one platform-major pass; ordinary library batching is unchanged.
+            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 0;
         }
 
         strippedKeys = ApplyStageSchema(stageRoot, EnrichmentStageAllowedKeys);
@@ -295,6 +290,12 @@ public partial class AutoTagService
 
         stageRoot["organizeSidecarsIntoTemplateFolders"] = true;
     }
+
+    private static bool IsSoulseekEnrichmentIntent(string? runIntent)
+        => string.Equals(
+            NormalizeRunIntent(runIntent),
+            AutoTagLiterals.RunIntentSoulseekEnrichment,
+            StringComparison.OrdinalIgnoreCase);
 
     private static EnrichmentRunMode ResolveEnrichmentRunMode(string? runIntent)
     {

@@ -52,6 +52,28 @@ public interface ISoulseekPeerPolicyService
     bool IsBlockedFilename(string? filename);
 
     /// <summary>
+    ///     Decides whether a peer may be downloaded from, reading the durable rules for itself.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Search scoring sees a peer's health once, at search time. The blocklist and the cooldown are
+    ///         the exceptions: they are durable state that can have changed - a failure recorded while the
+    ///         item sat queued, a user blocking the peer after the search - and they are also the only rules
+    ///         that can be applied without the peer's advertised facts, which a pinned or batch selection
+    ///         carries none of.
+    ///     </para>
+    ///     <para>
+    ///         This reads the settings and the cooldown table fresh, so it is the check to run just before a
+    ///         transfer is enqueued. It deliberately says nothing about queue length, free slots or upload
+    ///         speed: those live on the candidate's own facts, and an empty guess must not become a
+    ///         rejection.
+    ///     </para>
+    /// </remarks>
+    /// <param name="username">The peer a transfer is about to be enqueued from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<SoulseekPeerDecision> EvaluateBeforeTransferAsync(string username, CancellationToken cancellationToken = default);
+
+    /// <summary>
     ///     Records that a peer let us down, starting or extending its cooldown.
     /// </summary>
     /// <param name="username">The peer to penalise.</param>

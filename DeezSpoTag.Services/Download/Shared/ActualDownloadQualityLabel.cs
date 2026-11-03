@@ -14,12 +14,43 @@ internal static class ActualDownloadQualityLabel
             return;
         }
 
+        // Inspection can fail after the file has already been accepted, for example when promotion
+        // dropped the extension TagLib needs. The delivered or requested quality is still the file
+        // the queue was filed under; replacing it hides the badge.
+        if (TryKeepKnownQuality(payload))
+        {
+            return;
+        }
+
         if (!payload.Quality.Contains("ATMOS", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(payload.ContentType, "video", StringComparison.OrdinalIgnoreCase))
         {
             payload.Quality = "Quality unverified";
         }
     }
+
+    private static bool TryKeepKnownQuality(EngineQueueItemBase payload)
+    {
+        var delivered = KnownQuality(payload.DeliveredQuality);
+        var requested = KnownQuality(payload.RequestedQuality);
+        if (delivered is null && requested is null && KnownQuality(payload.Quality) is null)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Quality) || IsUnverifiedQuality(payload.Quality))
+        {
+            payload.Quality = delivered ?? requested ?? payload.Quality;
+        }
+
+        return true;
+    }
+
+    private static string? KnownQuality(string? value)
+        => string.IsNullOrWhiteSpace(value) || IsUnverifiedQuality(value) ? null : value.Trim();
+
+    private static bool IsUnverifiedQuality(string? value)
+        => string.Equals(value?.Trim(), "Quality unverified", StringComparison.OrdinalIgnoreCase);
 
     public static string? TryBuild(string filePath)
         => TryInspect(filePath, amazon: false)?.Label;

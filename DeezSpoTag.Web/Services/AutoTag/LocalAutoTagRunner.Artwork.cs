@@ -152,7 +152,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             AutoTagMatchResult? fallbackMatch;
             try
             {
-                fallbackMatch = await MatchPlatformAsync(
+                if (context.Plan.ExternalMatchResults.TryGetValue((context.FileIndex, platform!), out var preparedArtworkMatch))
+                {
+                    fallbackMatch = preparedArtworkMatch;
+                }
+                else if (IsManualEnrichment(context.Plan.Config)) continue;
+                else fallbackMatch = await MatchPlatformAsync(
                     platform!,
                     info,
                     new PlatformMatchContext
@@ -181,7 +186,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 && (!AutoTagReleaseCategory.MatchesPreference(
                         fallbackMatch!.Track.ReleaseType,
                         fallbackMatch.Track.TrackTotal,
-                        context.Plan.Config.ManualReleasePreference)
+                        context.Plan.FrozenManualReleases.TryGetValue(context.FileIndex, out var chosenRelease)
+                            ? chosenRelease.ReleaseType : context.Plan.Config.ManualReleasePreference)
                     || (context.Plan.FrozenManualReleases.TryGetValue(context.FileIndex, out var frozenRelease)
                         && !AlbumsReferToSameRelease(frozenRelease.Album, fallbackMatch.Track.Album))))
             {

@@ -21,6 +21,11 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
     /// <summary>How often the transfer is polled while it runs.</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
 
+    /// <summary>How long to wait for slskd to rename a finished file into its completed path.</summary>
+    private static readonly TimeSpan CompletedFileSettleDelay = TimeSpan.FromMilliseconds(200);
+
+    private const int CompletedFileSettleAttempts = 4;
+
     /// <summary>Slack allowed when comparing the file size to what the peer advertised.</summary>
     private const double SizeToleranceRatio = 0.02;
 
@@ -36,6 +41,7 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
     /// </remarks>
     private const int MaxConsecutiveTransportFailures = 3;
 
+    private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService? _settingsService;
     private readonly ISlskdClient _client;
     private readonly ISoulseekCredentialProvider _credentials;
     private readonly SoulseekRepository _repository;
@@ -48,9 +54,11 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
         ISoulseekCredentialProvider credentials,
         SoulseekRepository repository,
         ILogger<SoulseekTransferService> logger,
-        ISoulseekRealtimePublisher? realtime = null)
+        ISoulseekRealtimePublisher? realtime = null,
+        DeezSpoTag.Services.Settings.DeezSpoTagSettingsService? settingsService = null)
     {
         _client = client;
+        _settingsService = settingsService;
         _credentials = credentials;
         _repository = repository;
         _logger = logger;
@@ -116,6 +124,7 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
         }
 
         var credentials = await RequireCredentialsAsync(cancellationToken).ConfigureAwait(false);
+        var downloadRoot = _settingsService?.LoadSettings().DownloadLocation;
         foreach (var remotePath in remotePaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -138,7 +147,7 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
 
                 // Reserved before the enqueue, for the same reason the audio path is: a file already sitting at the
                 // sidecar's destination, or one another operation is filling, is not this sidecar's to collect.
-                var claimed = await TryClaimSidecarAsync(ownershipId, username, normalized, expected, cancellationToken)
+                var claimed = await TryClaimSidecarAsync(ownershipId, username, normalized, expected, downloadRoot, cancellationToken)
                     .ConfigureAwait(false);
                 if (!claimed)
                 {
@@ -186,7 +195,7 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
                         transferId.Value,
                         expected,
                         queueUuid: string.Empty,
-                        completedDownloadsRoot: null,
+                        completedDownloadsRoot: downloadRoot,
                         progress: null,
                         cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
@@ -258,7 +267,7 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
             }
 
             var samePeer = string.Equals(transfer.Username, username, StringComparison.OrdinalIgnoreCase);
-            var sameFile = string.Equals(transfer.Filename, filename, StringComparison.OrdinalIgnoreCase);
+            var sameFile = SoulseekRemotePath.AreEqual(transfer.Filename, filename);
             if (samePeer && sameFile)
             {
                 return ToStatus(transfer);
@@ -447,6 +456,22 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
                 var completed = lastSeen.IsTerminal
                     ? Verify(expectedPath, username, remoteFilename, reportedSize, completedDownloadsRoot, ownedPaths)
                     : VerifyActive();
+                if (completed is null && lastSeen.IsTerminal && lastSeen.IsSuccessful)
+                {
+                    // slskd reports the transfer finished before it renames the file out of its incomplete
+                    // directory. Failing on that first look rejects a complete download and then blocks every
+                    // later peer, because the claim is kept once the file appears.
+                    completed = await WaitForSettledFileAsync(
+                            expectedPath,
+                            username,
+                            remoteFilename,
+                            reportedSize,
+                            completedDownloadsRoot,
+                            ownedPaths,
+                            monitoringToken)
+                        .ConfigureAwait(false);
+                }
+
                 if (completed is not null)
                 {
                     return await CompleteVerifiedAsync(completed).ConfigureAwait(false);
@@ -460,7 +485,15 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
                         queueUuid, username, remoteFilename, SoulseekDownloadStage.Failed,
                         lastSeen.Progress, lastSeen.BytesTransferred, lastSeen.Size, lastSeen.AverageSpeed,
                         Error: lastSeen.Error ?? "slskd finished without a verified file on disk."));
-                    await ReleaseUnusedClaimsAsync(transferId, queueUuid, username, CancellationToken.None).ConfigureAwait(false);
+                    // The file, if it exists, was refused. Keeping its claim would stop the next similar-quality
+                    // peer from reserving this item's staging path.
+                    await ReleaseUnusedClaimsAsync(
+                            transferId,
+                            queueUuid,
+                            username,
+                            CancellationToken.None,
+                            releaseOccupiedPaths: true)
+                        .ConfigureAwait(false);
                     return null;
                 }
 
@@ -624,16 +657,19 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
         string username,
         string remotePath,
         string expectedPath,
+        string? downloadRoot,
         CancellationToken cancellationToken)
     {
         try
         {
+            var source = ResolveSourcePath(remotePath, downloadRoot);
+            var paths = source is null ? new[] { expectedPath } : new[] { expectedPath, source };
             return await _repository.TryClaimSourcePathsAsync(
                     ownershipId,
                     string.Empty,
                     username,
                     remotePath,
-                    [expectedPath],
+                    paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -1197,12 +1233,39 @@ public sealed class SoulseekTransferService : ISoulseekTransferService
         }
     }
 
-    private async Task ReleaseUnusedClaimsAsync(Guid transferId, string queueUuid, string username, CancellationToken token)
+    private async Task<SoulseekCompletedFile?> WaitForSettledFileAsync(
+        string expectedPath,
+        string username,
+        string filename,
+        long reportedSize,
+        string? completedDownloadsRoot,
+        IReadOnlySet<string> claimedPaths,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < CompletedFileSettleAttempts; attempt++)
+        {
+            await Task.Delay(CompletedFileSettleDelay, cancellationToken).ConfigureAwait(false);
+            var settled = Verify(expectedPath, username, filename, reportedSize, completedDownloadsRoot, claimedPaths);
+            if (settled is not null)
+            {
+                return settled;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task ReleaseUnusedClaimsAsync(
+        Guid transferId,
+        string queueUuid,
+        string username,
+        CancellationToken token,
+        bool releaseOccupiedPaths = false)
     {
         var claims = await _repository.GetSourceClaimsForTransferAsync(transferId, token).ConfigureAwait(false);
         if (claims.Count == 0 || claims.Any(claim => claim.QueueUuid != queueUuid
             || !string.Equals(claim.Username, username, StringComparison.OrdinalIgnoreCase)
-            || File.Exists(claim.Path))) return;
+            || (!releaseOccupiedPaths && File.Exists(claim.Path)))) return;
         foreach (var owner in claims.Select(claim => claim.OwnershipId).Distinct())
             await _repository.ReleaseSourceClaimsAsync(owner, token).ConfigureAwait(false);
     }

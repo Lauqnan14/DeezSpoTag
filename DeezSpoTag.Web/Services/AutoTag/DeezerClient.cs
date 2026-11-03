@@ -19,6 +19,17 @@ public sealed class DeezerClient
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(4)
     ];
+    private readonly AsyncLocal<bool> _requiredResults = new();
+    internal bool RequiredResults => _requiredResults.Value;
+
+    internal async Task<T> WithRequiredResultsAsync<T>(bool required, Func<Task<T>> action)
+    {
+        var previous = _requiredResults.Value;
+        _requiredResults.Value = previous || required;
+        try { return await action(); }
+        finally { _requiredResults.Value = previous; }
+    }
+
     private readonly HttpClient _httpClient;
     private readonly ILogger<DeezerClient> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new()
@@ -130,6 +141,7 @@ public sealed class DeezerClient
             var payload = await ReadResponsePayloadAsync(response, cancellationToken);
             if (string.IsNullOrWhiteSpace(payload))
             {
+                if (RequiredResults) throw new InvalidDataException("Deezer returned an empty catalog response.");
                 _logger.LogWarning("Deezer request returned an empty payload.");
                 return GetAttemptOutcome<T>.Complete();
             }
@@ -139,7 +151,7 @@ public sealed class DeezerClient
             {
                 doc = JsonDocument.Parse(payload);
             }
-            catch (JsonException ex)
+            catch (JsonException ex) when (!RequiredResults)
             {
                 return await HandleInvalidJsonAsync<T>(attempt, ex, cancellationToken);
             }
@@ -159,7 +171,7 @@ public sealed class DeezerClient
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !RequiredResults)
         {
             return await HandleUnexpectedRequestErrorAsync<T>(attempt, ex, cancellationToken);
         }
@@ -181,6 +193,7 @@ public sealed class DeezerClient
             return GetAttemptOutcome<T>.Retry();
         }
 
+        if (RequiredResults && response.StatusCode != HttpStatusCode.NotFound) response.EnsureSuccessStatusCode();
         _logger.LogWarning("Deezer request failed with status {Status}.", response.StatusCode);
         return GetAttemptOutcome<T>.Complete();
     }
@@ -235,6 +248,9 @@ public sealed class DeezerClient
             return GetAttemptOutcome<T>.Retry();
         }
 
+        if (RequiredResults && error is not null && error.Code != 800)
+            throw new HttpRequestException($"Deezer catalog error {error.Code}.", null,
+                error.Code == RateLimitCode ? HttpStatusCode.TooManyRequests : HttpStatusCode.BadGateway);
         if (error != null)
         {
             _logger.LogWarning("Deezer API error {Code}: {Message}", error.Code, error.Message);

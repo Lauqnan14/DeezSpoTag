@@ -738,7 +738,11 @@ public class AutoTagLibraryOrganizer
         string extension,
         AutoTagOrganizerOptions options)
     {
-        return options.OnlyMoveWhenTagged && !AutoTagTaggedDateProbe.HasTaggedDate(tagFile, extension);
+        // A verified download can already have complete tags without our tagged-date stamp.
+        // Its provisional folder must still follow those tags after enrichment finishes.
+        var verifiedStagingTags = options.SourceFoldersAreProvisional && !IsMissingCoreTags(tagFile.Tag);
+        return options.OnlyMoveWhenTagged && !verifiedStagingTags
+            && !AutoTagTaggedDateProbe.HasTaggedDate(tagFile, extension);
     }
 
     private MovePlanItem? BuildTaggedMovePlanItem(
@@ -775,13 +779,16 @@ public class AutoTagLibraryOrganizer
             context.FullPath,
             context.UsePrimaryArtistFolders,
             context.Settings.Tags?.MultiArtistSeparator);
-        ApplyFolderIdentityGuards(
-            track,
-            context.FullPath,
-            context.RootPath,
-            context.UsePrimaryArtistFolders,
-            context.Settings.Tags?.MultiArtistSeparator,
-            context.Log);
+        if (!context.Options.SourceFoldersAreProvisional)
+        {
+            ApplyFolderIdentityGuards(
+                track,
+                context.FullPath,
+                context.RootPath,
+                context.UsePrimaryArtistFolders,
+                context.Settings.Tags?.MultiArtistSeparator,
+                context.Log);
+        }
         var downloadType = string.IsNullOrWhiteSpace(tag.Album) ? DownloadTypeTrack : DownloadTypeAlbum;
         return BuildMovePlanItemFromTrack(track, downloadType, context);
     }

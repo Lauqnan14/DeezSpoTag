@@ -456,14 +456,6 @@ public partial class AutoTagService
         }
     }
 
-    private static bool HasShazamReviewCandidate(TaggingStatus status)
-    {
-        return !string.IsNullOrWhiteSpace(status.CandidateTitle)
-            || !string.IsNullOrWhiteSpace(status.CandidateArtist)
-            || !string.IsNullOrWhiteSpace(status.CandidateIsrc)
-            || status.CandidateDurationSeconds.HasValue;
-    }
-
     private void TrackStartedPlatform(AutoTagJob job, string line)
     {
         var cleaned = AnsiRegex.Replace(line, string.Empty).Trim();

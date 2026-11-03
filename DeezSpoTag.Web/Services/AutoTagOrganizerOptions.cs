@@ -53,6 +53,8 @@ public sealed class AutoTagOrganizerOptions
     public string? PlaylistNameTemplateOverride { get; set; }
     public string? TracknameTemplateOverride { get; set; }
     public bool BatchScopedFilesOnly { get; set; }
+    public bool SourceFoldersAreProvisional { get; set; }
+    public Dictionary<string, string> StagingPathTransitions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool RequireIncomingQualityReplacement { get; set; }
     public string? IllegalCharacterReplacerOverride { get; set; }
     public TechnicalTagSettings? TechnicalSettingsOverride { get; set; }

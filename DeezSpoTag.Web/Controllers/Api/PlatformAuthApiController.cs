@@ -841,6 +841,21 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("slskd URL is required.");
         }
 
+        // The blank key means "keep the existing key" - exactly right on a re-save of the same instance, and
+        // exactly wrong when the URL was edited at the same time: the old key very likely does not authorize
+        // the new instance, and the connection check would answer with an opaque unauthorized failure. This
+        // is not refused - a reverse proxy can legitimately front slskd with one key across origins - but it
+        // is written to the log so the operator can see why the check failed.
+        if (string.IsNullOrWhiteSpace(request.ApiKey)
+            && !string.IsNullOrWhiteSpace(previous?.ApiKey)
+            && !string.Equals(previous?.BaseUrl?.Trim(), baseUrl, StringComparison.OrdinalIgnoreCase)
+            && _logger.IsEnabled(LogLevel.Warning))
+        {
+            _logger.LogWarning(
+                "The slskd URL changed while the saved API key was kept. " +
+                "If the new instance uses a different key, re-enter it.");
+        }
+
         if (DeezSpoTag.Web.Services.SoulseekConnectionService.NormalizeBaseUri(baseUrl) is null)
         {
             return BadRequest("slskd URL is invalid.");

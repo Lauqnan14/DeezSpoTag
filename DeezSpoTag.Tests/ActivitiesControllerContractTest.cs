@@ -113,6 +113,11 @@ public sealed class ActivitiesControllerContractTest
         Assert.Contains("mapBitrate(nextRawQuality, nextEngine || task.engine)", source, StringComparison.Ordinal);
         Assert.Contains("String(task?.rawQuality || task?.quality || '')", source, StringComparison.Ordinal);
         Assert.Contains("mapBitrate(rawQuality, task?.engine)", source, StringComparison.Ordinal);
+        var resolver = source[source.IndexOf("function isUnusableQueueQualityLabel", StringComparison.Ordinal)..source.IndexOf("function resolveQueueItemTitle", StringComparison.Ordinal)];
+        Assert.Contains("quality unverified", resolver, StringComparison.OrdinalIgnoreCase);
+        var delivered = resolver.IndexOf("deliveredQuality", StringComparison.Ordinal);
+        var requested = resolver.IndexOf("'requestedQuality'", StringComparison.Ordinal);
+        Assert.True(delivered >= 0 && requested > delivered, "The badge must prefer the delivered file quality, then the queued quality.");
     }
 
     [Fact]

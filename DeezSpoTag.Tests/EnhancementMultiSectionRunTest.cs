@@ -841,7 +841,9 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("var handlesLyrics = fetchScope.HandlesLyrics;", body, StringComparison.Ordinal);
         var planStart = workflows.IndexOf("internal sealed class SidecarFetchPlan", StringComparison.Ordinal);
         Assert.True(planStart > 0);
-        var planBody = workflows[planStart..(planStart + 1500)];
+        // The window covers the plan's constructor plus Resolve together with its XML doc, so
+        // the pinned body expressions cannot drift behind a class member that gains them.
+        var planBody = workflows[planStart..(planStart + 2400)];
         Assert.Contains("_runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath))", planBody, StringComparison.Ordinal);
         // Lyrics still require a library id OR a tag-resolved identity. The old bare "trackId > 0"
         // meant every staged file was reported as handling no lyrics at all.

@@ -25,6 +25,7 @@ namespace DeezSpoTag.Tests;
 ///         give Soulseek a run that tags, moves and finalizes with none of manual's resumability.
 ///     </para>
 /// </remarks>
+[Collection("Settings Config Isolation")]
 public sealed class SoulseekEnrichmentRunIntentTest
 {
     /// <summary>
@@ -149,17 +150,16 @@ public sealed class SoulseekEnrichmentRunIntentTest
     }
 
     /// <summary>
-    ///     A file that no platform could identify keeps its existing review behaviour. The scope of that rule
-    ///     belongs to both intents equally.
+    ///     An explicit review decision moves the file immediately, including when no candidate metadata
+    ///     is available. The routing rule belongs to both external intents equally.
     /// </summary>
-    [Fact]
-    public void TheReviewGateIsStillPendingTaskTwoAndIsNotSilentlyChanged()
+    [Theory]
+    [InlineData("soulseek_enrichment")]
+    [InlineData("manual_enrichment")]
+    public void BothExternalRunIntentsMoveExplicitReviewsWithoutCandidateMetadata(string intent)
     {
-        var source = ReadRepoFile("DeezSpoTag.Web", "Services", "AutoTagService.PathHelpers.cs");
-
-        // Task 2 replaces this branch. Pinning that it is still manual-only documents the starting point, so
-        // Task 2's change is a visible, deliberate edit rather than an unnoticed drift.
-        Assert.Contains("var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);", source, StringComparison.Ordinal);
+        using var routing = new AutoTagReviewRoutingTest();
+        routing.ExplicitReviewMovesAudioImmediatelyRegardlessOfPlatformOrCandidate(intent, "shazam", false);
     }
 
     // ─────────────────────────── the three Task 1 review gaps ───────────────────────────

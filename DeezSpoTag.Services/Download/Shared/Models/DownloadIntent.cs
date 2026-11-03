@@ -8,6 +8,8 @@ namespace DeezSpoTag.Services.Download.Shared.Models;
 public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
 {
     public string SourceService { get; set; } = "";
+    /// <summary>The initiating UI, retained separately from the catalog source and delivering engine.</summary>
+    public string DownloadOrigin { get; set; } = "";
     public string SourceUrl { get; set; } = "";
     public string SpotifyId { get; set; } = "";
     public string SpotifyArtistId { get; set; } = "";

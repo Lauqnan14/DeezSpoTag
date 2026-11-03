@@ -434,11 +434,6 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("Manual enrichment release preference must be 'album' or 'single'.");
         }
 
-        if (request.ForceFingerprint && !ContainsConfiguredPlatform(configNode, "shazam"))
-        {
-            return BadRequest("Manual fingerprint recognition requires Shazam in the destination folder's profile.");
-        }
-
         if (!TryResolveConfiguredDownloadRoot(out var stagingRoot, out var stagingError))
         {
             return BadRequest(stagingError);
@@ -482,8 +477,8 @@ public class AutoTagJobsController : ControllerBase
         configNode[AutoTagLiterals.ManualReleasePreferenceKey] = releasePreference;
         configNode[AutoTagLiterals.ManualDestinationFolderIdKey] = destinationFolder.Id;
         ApplyDestinationFolderScopes(configNode, [destinationFolder]);
-        configNode[AutoTagLiterals.ManualForceFingerprintKey] = request.ForceFingerprint;
-        configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+        configNode[AutoTagLiterals.ManualForceFingerprintKey] = true;
+        configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 0;
         configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
             targetFiles.Select(path => JsonValue.Create(path)).ToArray());
 
@@ -591,10 +586,6 @@ public class AutoTagJobsController : ControllerBase
             "single" => "single",
             _ => null
         };
-
-    private static bool ContainsConfiguredPlatform(JsonObject configNode, string platform)
-        => configNode[AutoTagLiterals.PlatformsKey] is JsonArray platforms
-           && platforms.Any(value => string.Equals(value?.GetValue<string>(), platform, StringComparison.OrdinalIgnoreCase));
 
     private static string ResolveEnhancementTargetRootPath(IReadOnlyList<string> targetFiles)
     {

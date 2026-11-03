@@ -1,6 +1,7 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Http.Headers;
+using DeezSpoTag.Core.Models.Soulseek;
+using DeezSpoTag.Integrations.Soulseek;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
@@ -40,36 +41,13 @@ public sealed class SoulseekConnectionService
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(RequestTimeout);
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, "api/v0/server"));
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            if (!string.IsNullOrWhiteSpace(auth.ApiKey))
-            {
-                request.Headers.TryAddWithoutValidation("X-API-Key", auth.ApiKey);
-            }
-
             using var client = _httpClientFactory.CreateClient(nameof(SoulseekConnectionService));
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            var adapter = new SlskdClient(client, NullLogger<SlskdClient>.Instance);
+            var state = await adapter.GetServerStateAsync(new SlskdCredentials(baseUri.AbsoluteUri, auth.ApiKey ?? string.Empty), timeoutCts.Token);
             var elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                return SoulseekConnectionCheckResult.Failed("unauthorized", "slskd rejected the API key.", elapsedMs);
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return SoulseekConnectionCheckResult.Failed(
-                    "http_error",
-                    $"slskd returned HTTP {(int)response.StatusCode}.",
-                    elapsedMs);
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeoutCts.Token);
-            var root = document.RootElement;
-            var isConnected = ReadBoolean(root, "isConnected", "IsConnected");
-            var isLoggedIn = ReadBoolean(root, "isLoggedIn", "IsLoggedIn");
-            var username = ReadString(root, "username", "Username", "login", "Login");
+            var isConnected = state.IsConnected;
+            var isLoggedIn = state.IsLoggedIn;
+            var username = state.Username;
 
             return new SoulseekConnectionCheckResult(
                 Configured: true,
@@ -87,10 +65,14 @@ public sealed class SoulseekConnectionService
         {
             return SoulseekConnectionCheckResult.Failed("timeout", "slskd connection timed out.");
         }
-        catch (HttpRequestException ex)
+        catch (SlskdApiException ex)
         {
-            _logger.LogDebug(ex, "slskd connection check failed.");
-            return SoulseekConnectionCheckResult.Failed("unreachable", "slskd is unavailable.");
+            _logger.LogDebug(ex, "slskd verified connection check failed.");
+            var status = ex.IsUnauthorized ? "unauthorized"
+                : ex.ResponseBody == "server_unresponsive" ? "server_unresponsive"
+                : ex.StatusCode == 0 ? "unreachable" : "http_error";
+            return SoulseekConnectionCheckResult.Failed(status,
+                ex.IsUnauthorized ? "slskd rejected the API key." : ex.Message, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
         catch (JsonException ex)
         {
@@ -125,48 +107,6 @@ public sealed class SoulseekConnectionService
             Fragment = string.Empty
         };
         return builder.Uri;
-    }
-
-    private static bool ReadBoolean(JsonElement root, params string[] names)
-    {
-        foreach (var name in names)
-        {
-            if (!root.TryGetProperty(name, out var property))
-            {
-                continue;
-            }
-
-            if (property.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                return property.GetBoolean();
-            }
-
-            if (property.ValueKind == JsonValueKind.String
-                && bool.TryParse(property.GetString(), out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return false;
-    }
-
-    private static string? ReadString(JsonElement root, params string[] names)
-    {
-        foreach (var name in names)
-        {
-            if (root.TryGetProperty(name, out var property)
-                && property.ValueKind == JsonValueKind.String)
-            {
-                var value = property.GetString();
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
-        }
-
-        return null;
     }
 }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
@@ -26,6 +27,12 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekReleaseModeSelectionTest
 {
+    [Theory]
+    [InlineData("album", "single")]
+    [InlineData("single", "album")]
+    public void SavedReleasePreferenceReachesCandidateSelectionEvenWhenPeerCategoryDiffers(string peerCategory, string preferred)
+        => Assert.Equal(preferred, DownloadOrchestrationService.ResolveEffectiveSoulseekMode(peerCategory, preferred));
+
     // ─────────────────────────── the saved preference really does survive the builder ───────────────────────────
 
     /// <summary>
@@ -73,16 +80,16 @@ public sealed class SoulseekReleaseModeSelectionTest
     // ─────────────────────────── the two-source rule ───────────────────────────
 
     [Fact]
-    public void ARecordedCategoryWinsOverAnOppositeSavedChoice()
+    public void ARecordedCategoryDoesNotOverrideTheSavedSelectionPreference()
     {
-        // The folder said album; the reader's profile says single. The folder's evidence is specific to this
-        // download, so it decides - and the saved choice is only ever a fallback.
+        // A peer folder is input evidence, not a command to ignore the user's release preference.
+        // The runner still requires a verified release and never fabricates the requested type.
         Assert.Equal(
-            DownloadOrchestrationService.SoulseekAlbumMode,
+            DownloadOrchestrationService.SoulseekSingleMode,
             DownloadOrchestrationService.ResolveEffectiveSoulseekMode("album", "single"));
 
         Assert.Equal(
-            DownloadOrchestrationService.SoulseekSingleMode,
+            DownloadOrchestrationService.SoulseekAlbumMode,
             DownloadOrchestrationService.ResolveEffectiveSoulseekMode("single", "album"));
     }
 
@@ -124,7 +131,7 @@ public sealed class SoulseekReleaseModeSelectionTest
     ///     A known album and a known single become two runs, even in one folder.
     /// </summary>
     [Fact]
-    public void MixedKnownCategoriesProduceSeparateGroups()
+    public void MixedKnownCategoriesShareTheSavedPreferenceWithoutForcingTheirActualReleaseTypes()
     {
         var items = new List<DownloadQueueItem>
         {
@@ -135,13 +142,9 @@ public sealed class SoulseekReleaseModeSelectionTest
 
         var partitions = Partition(items, _ => "album");
 
-        Assert.Equal(2, partitions.Count);
-
-        var album = Single(partitions, DownloadOrchestrationService.SoulseekAlbumMode);
-        Assert.Equal(2, album.Items.Count);
-
-        var single = Single(partitions, DownloadOrchestrationService.SoulseekSingleMode);
-        Assert.Single(single.Items);
+        var album = Assert.Single(partitions);
+        Assert.Equal(DownloadOrchestrationService.SoulseekAlbumMode, album.Mode);
+        Assert.Equal(3, album.Items.Count);
     }
 
     /// <summary>
@@ -163,13 +166,10 @@ public sealed class SoulseekReleaseModeSelectionTest
 
         var partitions = Partition(items, _ => "single");
 
-        var album = Single(partitions, DownloadOrchestrationService.SoulseekAlbumMode);
-        Assert.Single(album.Items);
-        Assert.Equal(1, album.Items[0].Id);
-
-        // The two with no category took the saved choice, not their neighbour's album.
-        var single = Single(partitions, DownloadOrchestrationService.SoulseekSingleMode);
-        Assert.Equal(2, single.Items.Count);
+        var single = Assert.Single(partitions);
+        Assert.Equal(DownloadOrchestrationService.SoulseekSingleMode, single.Mode);
+        Assert.Equal(3, single.Items.Count);
+        Assert.Equal(new long[] { 1, 2, 3 }, single.Items.Select(item => item.Id));
     }
 
     /// <summary>
@@ -262,6 +262,27 @@ public sealed class SoulseekReleaseModeSelectionTest
         Assert.True(ReadBool(written, "organizeSidecarsIntoTemplateFolders"));
     }
 
+    [Fact]
+    public void TheRunConfigMovesTaggedFilesToItsSelectedDestination()
+    {
+        var written = WriteOperationShape("{}", 7, "album");
+        using var document = JsonDocument.Parse(written);
+        Assert.True(document.RootElement.GetProperty("moveSuccess").GetBoolean());
+        Assert.Equal(Path.GetFullPath("/library/AltB"), document.RootElement.GetProperty("moveSuccessPath").GetString());
+        Assert.False(document.RootElement.GetProperty("moveFailed").GetBoolean());
+        var configPath = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(configPath, written);
+            var loader = typeof(AutoTagService).GetMethod("LoadOrganizerOptions",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var options = Assert.IsType<AutoTagOrganizerOptions>(loader.Invoke(null, [configPath]));
+            Assert.Equal(Path.GetFullPath("/library/AltB"), options.MoveTaggedPath);
+            Assert.Null(options.MoveUntaggedPath);
+        }
+        finally { File.Delete(configPath); }
+    }
+
     // ─────────────────────────── helpers ───────────────────────────
 
     /// <summary>
@@ -310,7 +331,7 @@ public sealed class SoulseekReleaseModeSelectionTest
             "ApplySoulseekOperationShape",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
 
-        return (string)method.Invoke(null, [configJson, destinationFolderId, mode])!;
+        return (string)method.Invoke(null, [configJson, destinationFolderId, mode, "/library/AltB"])!;
     }
 
     private static string? ReadPreference(string json)

@@ -19,9 +19,9 @@ public sealed class SpotifyClient
         _logger = logger;
     }
 
-    public async Task<List<SpotifyTrackInfo>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken)
+    public async Task<List<SpotifyTrackInfo>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken, bool required = false)
     {
-        var summaries = await _pathfinderMetadataClient.SearchTracksAsync(query, limit, cancellationToken);
+        var summaries = await _pathfinderMetadataClient.SearchTracksAsync(query, limit, cancellationToken, required);
         if (summaries.Count == 0)
         {
             return new List<SpotifyTrackInfo>();
@@ -45,7 +45,7 @@ public sealed class SpotifyClient
         return summaries.Select(ToTrackInfo).ToList();
     }
 
-    public async Task<SpotifyTrackInfo> EnrichTrackWithPathfinderAsync(SpotifyTrackInfo track, CancellationToken cancellationToken)
+    public async Task<SpotifyTrackInfo> EnrichTrackWithPathfinderAsync(SpotifyTrackInfo track, CancellationToken cancellationToken, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(track.TrackId))
         {
@@ -64,6 +64,7 @@ public sealed class SpotifyClient
                 hydrateTracks: false);
             if (metadata == null || metadata.TrackList.Count == 0)
             {
+                if (required) throw new InvalidDataException("Spotify did not return the requested recording details.");
                 return track;
             }
 
@@ -72,7 +73,7 @@ public sealed class SpotifyClient
                 ?? metadata.TrackList[0];
             ApplySummary(track, summary);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !required)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {

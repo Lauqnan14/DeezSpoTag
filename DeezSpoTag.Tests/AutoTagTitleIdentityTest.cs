@@ -67,12 +67,6 @@ public sealed class AutoTagTitleIdentityTest
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.RestoreTrustedCoreIdentity not found.");
 
-    private static readonly MethodInfo AddResolvedIdentityIfMissingMethod =
-        typeof(LocalAutoTagRunner).GetMethod(
-            "AddResolvedIdentityIfMissing",
-            BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("LocalAutoTagRunner.AddResolvedIdentityIfMissing not found.");
-
     [Fact]
     public void TrustedCoreIdentity_IsRestoredAfterExternalResolution()
     {
@@ -138,23 +132,42 @@ public sealed class AutoTagTitleIdentityTest
     }
 
     [Fact]
-    public void ResolvedIdentity_FillsMissingIdsWithoutReplacingExistingIds()
+    public void PreparedNativeIdentitiesRemainSeparateFromEmbeddedTrackIds()
     {
+        var type = typeof(LocalAutoTagRunner);
+        var plan = Activator.CreateInstance(type.GetNestedType("AutoTagRunPlan", BindingFlags.NonPublic)!, nonPublic: true)!;
+        var context = Activator.CreateInstance(type.GetNestedType("AutoTagFileRunContext", BindingFlags.NonPublic)!, nonPublic: true)!;
+        context.GetType().GetProperty("Plan")!.SetValue(context, plan);
         var info = new AutoTagAudioInfo
         {
             Tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["SPOTIFY_TRACK_ID"] = ["4DRdx3ZYIeQY7Hqy4qpAEu"]
-            }
+                { ["SPOTIFY_TRACK_ID"] = ["4DRdx3ZYIeQY7Hqy4qpAEu"] }
         };
-
-        AddResolvedIdentityIfMissingMethod.Invoke(null, [info, "SPOTIFY_TRACK_ID", "wrong-id"]);
-        AddResolvedIdentityIfMissingMethod.Invoke(null, [info, "DEEZER_TRACK_ID", "2938015811"]);
-        AddResolvedIdentityIfMissingMethod.Invoke(null, [info, "TIDAL_TRACK_ID", " "]);
-
+        ((System.Collections.IDictionary)plan.GetType().GetProperty("ResolvedManualInfo")!.GetValue(plan)!).Add(0, info);
+        var selected = new AutoTagTrack { Title = "Song", Album = "Selected Album", Artists = ["Artist"] };
+        var frozenType = type.GetNestedType("ManualReleaseIdentity", BindingFlags.NonPublic)!;
+        var frozen = frozenType.GetMethod("FromTrack")!.Invoke(null, [selected]);
+        ((System.Collections.IDictionary)plan.GetType().GetProperty("FrozenManualReleases")!.GetValue(plan)!).Add(0, frozen);
+        var native = new ProviderIdentityPayload("deezer", "2938015811", "12345", "12345", null, null, null, true);
+        var matches = new List<(string Platform, AutoTagMatchResult Match)>
+        {
+            ("deezer", new AutoTagMatchResult { Track = selected, ProviderIdentity = native }),
+            ("spotify", new AutoTagMatchResult
+            {
+                Track = new AutoTagTrack { Title = "Song", Album = "Different Album", Artists = ["Artist"] },
+                ProviderIdentity = new ProviderIdentityPayload("spotify", "wrong-id", null, null, null, null, null, true)
+            })
+        };
+        type.GetMethod("ConfirmPreparedReleaseIdentities", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [context, matches]);
         Assert.Equal(["4DRdx3ZYIeQY7Hqy4qpAEu"], info.Tags["SPOTIFY_TRACK_ID"]);
-        Assert.Equal(["2938015811"], info.Tags["DEEZER_TRACK_ID"]);
+        Assert.False(info.Tags.ContainsKey("DEEZER_TRACK_ID"));
         Assert.False(info.Tags.ContainsKey("TIDAL_TRACK_ID"));
+        object?[] arguments = [0, "deezer", null];
+        Assert.True((bool)plan.GetType().GetMethod("TryGetConfirmedProviderIdentity")!.Invoke(plan, arguments)!);
+        Assert.Equal("2938015811", Assert.IsType<ProviderIdentityPayload>(arguments[2]).TrackId);
+        arguments = [0, "spotify", null];
+        Assert.False((bool)plan.GetType().GetMethod("TryGetConfirmedProviderIdentity")!.Invoke(plan, arguments)!);
     }
 
     [Theory]

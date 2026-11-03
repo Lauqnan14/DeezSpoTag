@@ -81,7 +81,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
             ? "us"
             : settings.AppleMusic.Storefront;
-        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token, confirmedIdentity);
+        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token, confirmedIdentity,
+            useConfirmedIdentityOnly: IsManualEnrichment(config));
 
         if (wantsCatalogMetadata && !string.IsNullOrWhiteSpace(appleIdentity?.AppleId))
         {
@@ -329,7 +330,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string storefront,
         DeezSpoTagSettings settings,
         CancellationToken token,
-        ProviderIdentityPayload? confirmedIdentity = null)
+        ProviderIdentityPayload? confirmedIdentity = null,
+        bool useConfirmedIdentityOnly = false)
     {
         try
         {
@@ -341,6 +343,20 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         ? confirmedIdentity
                         : null;
             var persistedAppleId = appleConfirmed?.TrackId;
+            if (useConfirmedIdentityOnly)
+            {
+                if (string.IsNullOrWhiteSpace(persistedAppleId)) return null;
+                return TrackIdentityResolution.Empty(new TrackIdentityResolutionRequest(
+                    SourcePlatform: "apple", SourceUrl: appleConfirmed?.Url, Title: track.Title,
+                    Artist: artist, Album: track.Album, Isrc: track.Isrc,
+                    DurationMs: track.Duration.HasValue ? (int)Math.Round(track.Duration.Value.TotalMilliseconds) : null,
+                    AppleId: persistedAppleId)) with
+                {
+                    AppleUrl = appleConfirmed?.Url,
+                    AppleAlbumId = appleConfirmed?.ReleaseId ?? appleConfirmed?.AlbumId,
+                    AppleArtistName = artist
+                };
+            }
             var identity = await _trackIdentityResolver.ResolveAsync(
                 new TrackIdentityResolutionRequest(
                     SourcePlatform: null,

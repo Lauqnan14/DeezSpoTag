@@ -47,6 +47,9 @@ public static class DownloadStagingFileOwnership
     public static bool HasOwnedStagingAudio(DownloadQueueItem item, string downloadRoot)
         => ResolveOwnedStagingAudioFiles(item, downloadRoot).Count > 0;
 
+    public static bool IsKnownAudioExtension(string? extension)
+        => !string.IsNullOrWhiteSpace(extension) && AudioExtensions.Contains(extension);
+
     public static bool OwnsAnyPath(
         DownloadQueueItem item,
         string downloadRoot,
@@ -147,6 +150,7 @@ public static class DownloadStagingFileOwnership
                     AddAudioPath(root, "AcquiredAudioPath", downloadRoot, requireExisting, files);
                     AddPayloadFileEntries(root, "files", downloadRoot, requireExisting, files);
                     AddPayloadFileEntries(root, "Files", downloadRoot, requireExisting, files);
+                    AddAcquiredSoulseekAudioWithoutExtension(root, downloadRoot, files);
                 }
             }
             catch (JsonException)
@@ -156,6 +160,75 @@ public static class DownloadStagingFileOwnership
         }
 
         AddFinalDestinationAudioPaths(finalDestinationsJson, downloadRoot, requireExisting, files);
+    }
+
+    /// <summary>
+    ///     Accepts an acquired Soulseek file whose local path lost its extension.
+    /// </summary>
+    /// <remarks>
+    ///     The peer path is the evidence that the file is audio. An extensionless path is not accepted
+    ///     unless that remote extension is a known audio type and the local file is actually there, so a
+    ///     missing download cannot invent ownership of a non-audio name.
+    /// </remarks>
+    private static void AddAcquiredSoulseekAudioWithoutExtension(
+        JsonElement root,
+        string downloadRoot,
+        ISet<string> files)
+    {
+        if (!TryReadBoolean(root, "AudioAcquired", "audioAcquired"))
+        {
+            return;
+        }
+
+        if (!TryReadString(root, "SoulseekRemotePath", "soulseekRemotePath", out var remotePath))
+        {
+            return;
+        }
+
+        var remoteExtension = Path.GetExtension(remotePath.Replace('\\', '/'));
+        if (!IsKnownAudioExtension(remoteExtension))
+        {
+            return;
+        }
+
+        AddExtensionlessAcquiredPath(root, "filePath", downloadRoot, files);
+        AddExtensionlessAcquiredPath(root, "FilePath", downloadRoot, files);
+        AddExtensionlessAcquiredPath(root, "acquiredAudioPath", downloadRoot, files);
+        AddExtensionlessAcquiredPath(root, "AcquiredAudioPath", downloadRoot, files);
+    }
+
+    private static void AddExtensionlessAcquiredPath(
+        JsonElement source,
+        string propertyName,
+        string downloadRoot,
+        ISet<string> files)
+    {
+        if (!TryGetPropertyIgnoreCase(source, propertyName, out var value)
+            || value.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        var path = value.GetString();
+        if (string.IsNullOrWhiteSpace(path)
+            || IsKnownAudioExtension(Path.GetExtension(path))
+            || !IsPathUnderRoot(downloadRoot, path)
+            || AnimatedArtworkNaming.IsAnimatedArtworkSidecar(path))
+        {
+            return;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(path);
+        if (string.IsNullOrWhiteSpace(ioPath) || !FileExists(ioPath))
+        {
+            return;
+        }
+
+        var normalized = NormalizePath(ioPath);
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            files.Add(normalized);
+        }
     }
 
     private static void AddPayloadFileEntries(

@@ -15,6 +15,67 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagDownloadMoveServicePayloadPathTest
 {
+    [Fact]
+    public void MaterializedRuntimePathsRetainTheirExplicitRenameChain()
+    {
+        var root = Path.Join(Path.GetTempPath(), "soulseek-template-chain-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        try
+        {
+            var config = Path.Join(root, "run.json");
+            var original = Path.Join(root, "old.flac");
+            var intermediate = Path.Join(root, "middle.flac");
+            var final = Path.Join(root, "final.flac");
+            File.WriteAllText(config, JsonSerializer.Serialize(new { targetFiles = new[] { original } }));
+            var method = typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner).GetMethod("ReplaceTargetPathInRuntimeConfig", BindingFlags.NonPublic | BindingFlags.Static)!;
+            method.Invoke(null, [config, original, intermediate]);
+            method.Invoke(null, [config, intermediate, final]);
+            using var doc = JsonDocument.Parse(File.ReadAllText(config));
+            Assert.Equal(final, doc.RootElement.GetProperty("targetFiles")[0].GetString());
+            Assert.Equal(final, doc.RootElement.GetProperty("materializedPathTransitions").GetProperty(original).GetString());
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void FinalTemplatePathsKeepOwnedAudioAndArtworkInOneAlbumWithoutTouchingAnotherItem()
+    {
+        var root = Path.Join(Path.GetTempPath(), "soulseek-template-paths-" + Guid.NewGuid());
+        var oldDir = Path.Join(root, "Artist", "Provisional Album");
+        var newDir = Path.Join(root, "Artist", "1997 - Final Album");
+        Directory.CreateDirectory(oldDir); Directory.CreateDirectory(newDir);
+        try
+        {
+            var original = Path.Join(oldDir, "Artist - Old Title.flac");
+            var final = Path.Join(newDir, "07 - Final Title.flac");
+            var cover = Path.Join(oldDir, "cover.jpg");
+            File.WriteAllText(final, "verified audio"); File.WriteAllText(cover, "owned cover");
+            var payload = JsonSerializer.Serialize(new { FilePath = original, AcquiredAudioPath = original,
+                files = new[] { new { path = original }, new { path = cover } } });
+            var method = GetPrivateStaticMethod("RelocateOwnedStagingPaths");
+            var transitions = new Dictionary<string, string> { [original] = final };
+            var updated = (string)method.Invoke(null, [payload, root, transitions, "n"])!;
+            using var doc = JsonDocument.Parse(updated);
+            Assert.Equal(final, doc.RootElement.GetProperty("FilePath").GetString());
+            Assert.Equal(final, doc.RootElement.GetProperty("AcquiredAudioPath").GetString());
+            Assert.Equal(Path.Join(newDir, "cover.jpg"), doc.RootElement.GetProperty("files")[1].GetProperty("path").GetString());
+            Assert.True(File.Exists(Path.Join(newDir, "cover.jpg")));
+            Assert.False(File.Exists(cover));
+            var foreign = JsonSerializer.Serialize(new { FilePath = Path.Join(root, "Other Artist", "other.flac") });
+            Assert.Equal(foreign, (string)method.Invoke(null, [foreign, root, transitions, "n"])!);
+            var outside = new Dictionary<string, string> { [original] = Path.Join(Path.GetTempPath(), "foreign.flac") };
+            Assert.Equal(payload, (string)method.Invoke(null, [payload, root, outside, "n"])!);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void StagingTemplateRewritesLeaveMalformedUnrelatedPayloadsUntouched()
+    {
+        var method = GetPrivateStaticMethod("RelocateOwnedStagingPaths");
+        Assert.Equal("{", (string)method.Invoke(null, ["{", "/staging", new Dictionary<string, string>(), "n"])!);
+    }
+
     [Theory]
     [InlineData("completed", "running", true)]
     [InlineData("not_required", "pending", true)]

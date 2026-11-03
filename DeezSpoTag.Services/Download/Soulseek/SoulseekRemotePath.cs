@@ -23,6 +23,12 @@ public static class SoulseekRemotePath
         return prefix + string.Join('/', segments);
     }
 
+    public static bool AreEqual(string? left, string? right)
+    {
+        var normalized = Normalize(left);
+        return normalized.Length > 0 && string.Equals(normalized, Normalize(right), StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string GetDirectory(string? path)
     {
         var normalized = Normalize(path);

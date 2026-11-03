@@ -1427,20 +1427,18 @@
                             <label for="soulseekSearchTimeout">Search timeout (seconds)</label>
                             <input type="number" id="soulseekSearchTimeout" min="5" max="600" value="30" />
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="form-group">
                             <label for="soulseekMaxPeerQueue">Maximum peer queue length</label>
                             <input type="number" id="soulseekMaxPeerQueue" min="0" max="100000" value="5" />
                             <div class="warning-text">Peers with a longer queue are skipped.</div>
                         </div>
+                    </div>
+                    <div class="form-row">
                         <div class="form-group">
                             <label for="soulseekMinPeerUploadSpeed">Minimum peer upload speed (bytes/second)</label>
                             <input type="number" id="soulseekMinPeerUploadSpeed" min="0" value="0" />
                             <div class="warning-text">Leave at 0 to accept any advertised speed.</div>
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="form-group">
                             <label for="soulseekPeerCooldown">Peer cooldown (minutes)</label>
                             <input type="number" id="soulseekPeerCooldown" min="0" max="20160" value="60" />
@@ -1984,7 +1982,7 @@
                     <div class="form-label">Artists to merge</div>
                     <div class="artist-alias-picker">
                         <div class="artist-alias-search-wrap">
-                            <input type="text" id="artistAliasSearch" placeholder="Search library artists…" autocomplete="off">
+                            <input type="text" id="artistAliasSearch" placeholder="Search main and featured artists…" autocomplete="off">
                             <div id="artistAliasSearchResults" class="artist-alias-results" hidden></div>
                         </div>
                         <div class="artist-alias-free-text">
@@ -5819,7 +5817,7 @@ async function resetSettings() {
         if (!items.length) {
             const empty = document.createElement('div');
             empty.className = 'artist-alias-result-empty';
-            empty.textContent = query ? `No library artists match "${query}". Use the box below to add the name manually.` : 'Type to search library artists.';
+            empty.textContent = query ? `No main or featured artists match "${query}". Use the box below to add the name manually.` : 'Type to search main and featured artists.';
             searchResults.appendChild(empty);
             searchResults.hidden = false;
             return;
@@ -5827,7 +5825,7 @@ async function resetSettings() {
         items.forEach(item => {
             const row = document.createElement('div');
             row.className = 'artist-alias-result-item';
-            row.textContent = item.name;
+            row.textContent = item.role === 'featured' ? `${item.name} · featured` : item.name;
             row.addEventListener('click', () => {
                 addName(item.name);
                 searchResults.hidden = true;

@@ -34,6 +34,88 @@ public sealed class SoulseekUiGuardrailTest
     private static string AppSettings() => ReadRepoFile("DeezSpoTag.Web", "appsettings.json");
 
     [Fact]
+    public void ShazamQueueRetainsOriginAndUsesIntentRoutingEvenWhenCatalogAndPreferredEngineMatch()
+    {
+        var source = ReadRepoFile("DeezSpoTag.Web", "wwwroot", "js", "download-client.js");
+        var info = new System.Diagnostics.ProcessStartInfo("node")
+        { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        info.ArgumentList.Add("--input-type=module");
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardInput.Write("import vm from 'node:vm';import assert from 'node:assert/strict';\nconst source="
+            + System.Text.Json.JsonSerializer.Serialize(source) + ";\n" + """
+            const context={document:{addEventListener(){}},console,URL}; vm.createContext(context); vm.runInContext(source,context);
+            const client=context.DeezSpoTag.DownloadClient;
+            client.getPreferredEngineFromUi=()=> 'deezer'; client.getPreferredQualityForEngine=()=> 'FLAC';
+            assert.equal(client.buildIntentContext({metadata:{downloadOrigin:'shazam'}}).shouldUseIntentRouting('deezer'),true);
+            assert.equal(client.buildIntentContext({}).shouldUseIntentRouting('deezer'),false);
+            let body; client.apiFetch=async(_,opts)=>{body=JSON.parse(opts.body);return {ok:true,json:async()=>({queued:1})}};
+            client.handleIntentQueueResponse=()=>{};
+            try {await client.enqueueIntentWithPreference({sourceService:'deezer',sourceUrl:'https://www.deezer.com/track/123',
+              options:{metadata:{downloadOrigin:'shazam'}},intentContext:client.buildIntentContext({metadata:{downloadOrigin:'shazam'}}),notify(){},notifyQueue(){}});}catch{}
+            assert.equal(body.intents[0].downloadOrigin,'shazam');assert.equal(body.intents[0].sourceService,'deezer');
+            """);
+        process.StandardInput.Write("\nconst view=" + System.Text.Json.JsonSerializer.Serialize(ReadRepoFile("DeezSpoTag.Web","Views","Shazam","Results.cshtml")) + ";\n" + """
+            let directRequest;
+            client.getPreferredEngineFromUi=()=> 'soulseek';
+            client.enqueueIntentWithPreference=async(request)=>{directRequest=request;return {success:true}};
+            client.createQueueNotifier=()=>({notify(){},notifyQueue(){}});
+            context.window={DeezSpoTag:{Download:client}};
+            context.document.getElementById=()=>({value:'7'});
+            context.getPreferredEngine=async()=> 'soulseek';
+            context.resolveDownloadUrl=()=>{throw new Error('Direct Soulseek must not require a catalog match')};
+            context.notify=(message)=>{throw new Error(message)};
+            vm.runInContext(view.slice(view.indexOf('    const handleDownload ='),view.indexOf('    const warmPreviewIds ='))+';globalThis.handleTestDownload=handleDownload;',context);
+            const card={dataset:{title:'Song',artist:'Artist',shazamUrl:'https://www.shazam.com/song/123'},querySelector:()=>null};
+            await context.handleTestDownload({closest:()=>card,classList:{add(){},remove(){}},disabled:false});
+            assert.equal(directRequest.sourceService,'shazam');assert.equal(directRequest.destinationId,7);
+            assert.equal(directRequest.options.metadata.downloadOrigin,'shazam');assert.equal(directRequest.intentContext.preferredEngine,'soulseek');
+            """);
+        process.StandardInput.Close();
+        var output = process.StandardOutput.ReadToEnd(); var error = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(20000), "Download-origin browser test timed out.");
+        Assert.True(process.ExitCode == 0, error + output);
+        var view = ReadRepoFile("DeezSpoTag.Web", "Views", "Shazam", "Results.cshtml");
+        Assert.Contains("downloadOrigin: 'shazam'", view, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserPrioritizesFastEligiblePeersWithinUnchangedQualityGroups()
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("node")
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true,
+            RedirectStandardError = true, UseShellExecute = false
+        };
+        info.ArgumentList.Add("--input-type=module");
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardInput.Write("import vm from 'node:vm';import assert from 'node:assert/strict';\nconst source="
+            + System.Text.Json.JsonSerializer.Serialize(ClientScript()) + ";\n" + """
+            const rows=[
+              {id:'slow',quality:'FLAC',accepted:true,score:.99,peerUploadSpeed:2000000,peerQueueLength:0},
+              {id:'fast',quality:'FLAC',accepted:true,score:.80,peerUploadSpeed:8000000,peerQueueLength:0},
+              {id:'busy',quality:'FLAC',accepted:true,score:.90,peerUploadSpeed:8000000,peerQueueLength:3},
+              {id:'mp3',quality:'MP3_320',accepted:true,score:.70,peerUploadSpeed:2000000000,peerQueueLength:0},
+              {id:'rejected',quality:'FLAC',accepted:false,score:1,peerUploadSpeed:2100000000,peerQueueLength:0}];
+            const state={byId:new Map(rows.map(r=>[r.id,r])),groups:[{code:'FLAC'},{code:'MP3_320'}],resultFilter:'',acceptedOnly:false,resultSort:'score'};
+            const before=JSON.stringify(state.groups),context={state};vm.createContext(context);
+            for(const name of ['groupCodeOf','isCandidateEnabled','comparePeerPriority','acceptedRanking','candidatesFor']) {
+              const start=source.indexOf('    function '+name+'(');
+              if(start<0)continue;
+              const end=source.indexOf('\n    }',start)+6;
+              vm.runInContext(source.slice(start,end),context);
+            }
+            assert.deepEqual(Array.from(context.acceptedRanking(),r=>r.id),['fast','busy','slow','mp3']);
+            assert.deepEqual(Array.from(context.candidatesFor('FLAC'),r=>r.id),['fast','busy','slow','rejected']);
+            assert.equal(JSON.stringify(state.groups),before);
+            """);
+        process.StandardInput.Close();
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(20000), "Soulseek peer-order test timed out.");
+        Assert.True(process.ExitCode == 0, error + output);
+    }
+
+    [Fact]
     public void TheSearchPageOffersASoulseekTab()
     {
         var view = SearchView();
@@ -964,7 +1046,7 @@ public sealed class SoulseekUiGuardrailTest
         var script = ClientScript();
 
         Assert.Contains("const API_BASE = '/api/v1/soulseek';", script, System.StringComparison.Ordinal);
-        Assert.Contains("'/connection'", script, System.StringComparison.Ordinal);
+        Assert.Contains("'/connection?refresh=true'", script, System.StringComparison.Ordinal);
         Assert.Contains("'/searches'", script, System.StringComparison.Ordinal);
 
         // Queueing goes through the shared download client rather than this engine's own endpoint, so the
@@ -1477,6 +1559,87 @@ public sealed class SoulseekUiGuardrailTest
         Assert.Contains("outcome.Error", source, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void SearchWaitsForVerifiedLoginInsteadOfUsingStaleBrowserStatus(bool cachedUsable, bool verifiedUsable)
+    {
+        RunProgressScript($$"""
+            state.title = 'login verification test';
+            state.connection = { usable: {{cachedUsable.ToString().ToLowerInvariant()}} };
+            let completeProbe;
+            const probe = new Promise(resolve => { completeProbe = resolve; });
+            let checks = 0, searches = 0;
+            context.fetch = async (url, options) => {
+                if (url === '/api/v1/soulseek/connection?refresh=true') {
+                    checks++;
+                    await probe;
+                    return { ok:true, text:async () => JSON.stringify({ usable: {{verifiedUsable.ToString().ToLowerInvariant()}}, state:'checked' }) };
+                }
+                assert.equal(url, '/api/v1/soulseek/searches', 'Search must never connect or log in automatically.');
+                assert.equal(options.method, 'POST');
+                searches++;
+                return { ok:true, text:async () => '{}' };
+            };
+            const pending = window.Soulseek.runSearch();
+            assert.equal(checks, 1, 'Search must verify the current login.');
+            assert.equal(searches, 0, 'No search may start before login is verified.');
+            completeProbe();
+            await pending;
+            assert.equal(searches, {{(verifiedUsable ? 1 : 0)}}, 'Only the verified logged-in state may start work.');
+            assert.equal(state.connection.usable, {{verifiedUsable.ToString().ToLowerInvariant()}});
+            """);
+    }
+
+    [Fact]
+    public void ConcurrentSearchClicksShareLoginProbeAndStartOnlyOneSearch()
+    {
+        RunProgressScript("""
+            state.title = 'concurrent login verification test';
+            state.connection = { usable:false };
+            let release;
+            const probe = new Promise(resolve => { release = resolve; });
+            let checks = 0, searches = 0;
+            context.fetch = async url => {
+                if (url === '/api/v1/soulseek/connection?refresh=true') {
+                    checks++; await probe;
+                    return { ok:true, text:async () => '{"usable":true,"state":"connected"}' };
+                }
+                assert.equal(url, '/api/v1/soulseek/searches');
+                searches++;
+                return { ok:true, text:async () => '{}' };
+            };
+            const first = window.Soulseek.runSearch();
+            const second = window.Soulseek.runSearch();
+            assert.equal(checks, 1);
+            release();
+            await Promise.all([first, second]);
+            assert.equal(searches, 1);
+            """);
+    }
+
+    [Fact]
+    public void BackgroundSearchRechecksPreviouslyInactiveLoginWithoutConnecting()
+    {
+        RunProgressScript("""
+            state.connection = { usable:false };
+            let checks = 0, searches = 0;
+            context.fetch = async url => {
+                if (url === '/api/v1/soulseek/connection?refresh=true') {
+                    checks++;
+                    return { ok:true, text:async () => '{"usable":true,"state":"connected"}' };
+                }
+                assert.equal(url, '/api/v1/soulseek/searches');
+                searches++;
+                return { ok:true, text:async () => '{}' };
+            };
+            await window.Soulseek.searchInBackground('background login verification test');
+            for (let i = 0; i < 30; i++) await Promise.resolve();
+            assert.ok(checks > 0);
+            assert.equal(searches, 1);
+            """);
+    }
+
     // Execute the shipped client with a fake clock and a minimal DOM; no production test exports or network.
     private static void RunProgressScript(string assertions)
     {
@@ -1504,7 +1667,7 @@ public sealed class SoulseekUiGuardrailTest
             };
             const context = {
                 window, Date: { now: () => now }, console,
-                document: { readyState: 'loading', addEventListener() {}, querySelector() { return null; },
+                document: { readyState: 'loading', addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
                     getElementById: id => elements.get(id) || null, createElement: () => new Element() },
                 fetch: async () => ({ ok: true, text: async () => '{}' })
             };

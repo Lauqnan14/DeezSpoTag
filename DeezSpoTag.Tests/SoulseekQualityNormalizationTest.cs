@@ -18,6 +18,20 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekQualityNormalizationTest
 {
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("fr-FR")]
+    public void SampleRateLabelUsesOneInvariantDecimalFormat(string culture)
+    {
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo(culture);
+            Assert.Contains("44.1kHz", SoulseekQuality.Normalize("track.flac", null, null, 16, 44100).Label);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = previous; }
+    }
+
     [Fact]
     public void LosslessWithoutDepthOrRate_UsesTheContainerTier_ConsistentWithSiblingEngines()
     {
@@ -68,12 +82,27 @@ public sealed class SoulseekQualityNormalizationTest
         // Soulseek has no ALAC code: an ALAC file is lossless, so it answers to LOSSLESS like WAV and APE do.
         // Its tier is CD lossless for the same reason - the shared alac tier belongs to Apple Music, and a
         // peer-supplied ALAC is just another 16-bit/44.1kHz lossless file here.
-        var quality = SoulseekQuality.Normalize("track.m4a", null, null);
+        var quality = SoulseekQuality.Normalize("track.alac", null, null);
 
         Assert.Equal("LOSSLESS", quality.Code);
         Assert.Equal(QualityCatalog.CdLossless, quality.TierValue);
         Assert.Equal(QualityCatalog.GetLibraryFolderCanonicalRank(QualityCatalog.CdLossless), quality.CanonicalRank);
         Assert.True(quality.IsLossless);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(128)]
+    [InlineData(256)]
+    [InlineData(512)]
+    [InlineData(1411)]
+    public void M4aWithoutCodecEvidenceNeverClaimsLossless(int? bitrate)
+    {
+        var quality = SoulseekQuality.Normalize("track.m4a", null, bitrate, 24, 96000);
+        Assert.True(quality.IsUnknown);
+        Assert.False(quality.IsLossless);
+        Assert.Null(quality.CanonicalRank);
     }
 
     [Fact]
@@ -85,16 +114,14 @@ public sealed class SoulseekQualityNormalizationTest
     }
 
     [Theory]
-    // Bands are lower-bound "320 class" style, matching DeliveredAudioQualityGuard's existing
-    // "5"/"HIGH"/"3" => BitrateKbps >= 256 rule, so Soulseek and the other engines agree on what
-    // counts as 320 kbps.
+    // Soulseek's explicit bitrate choices must not round a candidate up into a higher requested band.
     [InlineData(320, "MP3_320")]
-    [InlineData(300, "MP3_320")]
-    [InlineData(256, "MP3_320")]
-    [InlineData(255, "MP3_256")]
-    [InlineData(192, "MP3_256")]
-    [InlineData(191, "MP3_192")]
-    [InlineData(160, "MP3_192")]
+    [InlineData(300, "MP3_256")]
+    [InlineData(256, "MP3_256")]
+    [InlineData(255, "MP3_192")]
+    [InlineData(192, "MP3_192")]
+    [InlineData(191, "MP3_128")]
+    [InlineData(160, "MP3_128")]
     [InlineData(159, "MP3_128")]
     [InlineData(128, "MP3_128")]
     public void Mp3BitrateSelectsTheMatchingCode(int bitrate, string expectedCode)
@@ -130,18 +157,18 @@ public sealed class SoulseekQualityNormalizationTest
         var tier128 = QualityCatalog.GetLibraryFolderCanonicalRank(QualityCatalog.Mp3_128);
 
         var at192 = SoulseekQuality.Normalize("track.mp3", null, 192);
-        var at160 = SoulseekQuality.Normalize("track.mp3", null, 160);
+        var at256 = SoulseekQuality.Normalize("track.mp3", null, 256);
         var at128 = SoulseekQuality.Normalize("track.mp3", null, 128);
 
-        Assert.Equal("MP3_256", at192.Code);
+        Assert.Equal("MP3_192", at192.Code);
         Assert.Equal(QualityCatalog.Mp3_320, at192.TierValue);
         Assert.Equal(tier320, at192.CanonicalRank);
         Assert.Equal("MP3 192 kbps", at192.Label);
 
-        Assert.Equal("MP3_192", at160.Code);
-        Assert.Equal(QualityCatalog.Mp3_320, at160.TierValue);
-        Assert.Equal(tier320, at160.CanonicalRank);
-        Assert.Equal("MP3 160 kbps", at160.Label);
+        Assert.Equal("MP3_256", at256.Code);
+        Assert.Equal(QualityCatalog.Mp3_320, at256.TierValue);
+        Assert.Equal(tier320, at256.CanonicalRank);
+        Assert.Equal("MP3 256 kbps", at256.Label);
 
         Assert.Equal(QualityCatalog.Mp3_128, at128.TierValue);
         Assert.Equal(tier128, at128.CanonicalRank);
@@ -351,6 +378,29 @@ public sealed class SoulseekQualityNormalizationTest
         }
 
         Assert.Empty(DownloadSourceOrder.ResolveEnabledSoulseekQualities(custom));
+    }
+
+    [Fact]
+    public void ExplicitSoulseekSearchStillHasGroupsWhenTheEngineIsExcludedFromCustomOrder()
+    {
+        var settings = new Core.Models.Settings.DeezSpoTagSettings { Service = "custom" };
+        settings.DownloadEngineOrder = Core.Models.Settings.DownloadEngineOrderSettings.CreateDefault();
+        settings.DownloadEngineOrder.Enabled = true;
+        foreach (var engine in settings.DownloadEngineOrder.Engines)
+        {
+            engine.Enabled = engine.Engine != "soulseek";
+            if (engine.Engine == "soulseek")
+            {
+                foreach (var quality in engine.Qualities)
+                {
+                    quality.Enabled = quality.Quality is "FLAC" or "FLAC_HI_RES";
+                }
+            }
+        }
+
+        var browser = DownloadSourceOrder.ResolveSoulseekBrowserQualities(settings);
+        Assert.Equal(new[] { "FLAC_HI_RES", "FLAC" }, browser);
+        Assert.Equal(browser, DownloadSourceOrder.ResolveDisplayQualityGroups(browser));
     }
 
     /// <summary>

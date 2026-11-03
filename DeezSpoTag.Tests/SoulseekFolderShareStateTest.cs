@@ -139,6 +139,7 @@ public sealed class SoulseekFolderShareStateTest
     [Fact]
     public void PathComparisonPreservesCaseSoRealDifferencesAreVisible()
     {
+        if (OperatingSystem.IsWindows()) return;
         // The filesystem may be case sensitive, so folding case could hide a genuine mismatch.
         var diff = SoulseekShareConfiguration.Diff(
             [new SoulseekDesiredShare(1, "/srv/Music")],
@@ -181,8 +182,8 @@ public sealed class SoulseekFolderShareStateTest
             [],
             skipped: [(7, "no_path")]);
 
-        Assert.Contains(diff.Diagnostics, d => d.Code == "folders_skipped");
-        Assert.Contains(diff.Diagnostics, d => d is { Code: "folder_skipped", FolderId: 7 });
+        Assert.Single(diff.Diagnostics.Where(d => d.Code == "folder_skipped" && d.FolderId == 7));
+        Assert.DoesNotContain(diff.Diagnostics, d => d.Code == "folders_skipped");
     }
 
     [Fact]
@@ -229,11 +230,38 @@ public sealed class SoulseekFolderShareStateTest
     {
         var controller = ReadRepoFile("DeezSpoTag.Web", "Controllers", "Api", "SoulseekFolderShareApiController.cs");
 
-        // The three state-changing endpoints -- sync, scan and per-folder scan -- carry the tighter policy; the
-        // class as a whole carries the default one.
-        Assert.Equal(3, CountOccurrences(controller, "[EnableRateLimiting(\"SensitiveWrites\")]"));
+        // All five writes, including folder settings and the toggle, carry the tighter policy.
+        Assert.Equal(5, CountOccurrences(controller, "[EnableRateLimiting(\"SensitiveWrites\")]"));
         Assert.Contains("[EnableRateLimiting(\"DefaultApi\")]", controller);
     }
+
+    [Theory]
+    [InlineData(@"C:\Music\", "c:/music")]
+    [InlineData(@"\\nas\Music", "//NAS/music/")]
+    public void WindowsPathCasingDoesNotCreateFalseShareDrift(string desired, string actual)
+    {
+        var diff = SoulseekShareConfiguration.Diff([new SoulseekDesiredShare(1, desired)], [new SoulseekActualShare("music", actual)]);
+        Assert.Empty(diff.MissingFromSlskd);
+        Assert.Empty(diff.UnexpectedlyShared);
+    }
+
+    [Theory]
+    [InlineData("/music\n/private")]
+    [InlineData("/music\r/private")]
+    [InlineData("/music\0/private")]
+    [InlineData("/music\u2028/private")]
+    public void InvalidYamlValuesAreRefusedRatherThanSilentlyChangingThePath(string path)
+    {
+        Assert.Throws<SoulseekShareConfigurationException>(() => SoulseekShareConfiguration.Generate([new SoulseekDesiredShare(1, path)]));
+        Assert.Throws<SoulseekShareConfigurationException>(() => SoulseekShareConfiguration.ApplyDirectories("", [path]));
+        Assert.Throws<SoulseekShareConfigurationException>(() => SoulseekShareConfiguration.Generate([new SoulseekDesiredShare(1, "/music", ExcludeFilters: [path])]));
+    }
+
+    [Theory]
+    [InlineData("Library]other")]
+    [InlineData("[Library")]
+    public void AliasBracketSyntaxCannotChangeTheSharedPath(string alias)
+        => Assert.Throws<SoulseekShareConfigurationException>(() => SoulseekShareConfiguration.Generate([new SoulseekDesiredShare(1, "/music", alias)]));
 
     [Fact]
     public void ShareSyncNeverMutatesTheRemoteConfiguration()

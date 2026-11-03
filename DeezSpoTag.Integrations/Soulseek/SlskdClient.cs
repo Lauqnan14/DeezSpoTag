@@ -22,6 +22,7 @@ namespace DeezSpoTag.Integrations.Soulseek;
 /// </remarks>
 public sealed class SlskdClient : ISlskdClient
 {
+    private const string ItemsProperty = "items";
     private const string ApiKeyHeader = "X-API-Key";
     private const int MaxDiagnosticBodyLength = 512;
 
@@ -41,9 +42,33 @@ public sealed class SlskdClient : ISlskdClient
         _logger = logger;
     }
 
+    /// <summary>The shared diagnosis for an unresponsive Soulseek server session.</summary>
+    public const string ServerUnresponsiveMessage = "The Soulseek server is not responding. Reconnect Soulseek before retrying.";
+
     /// <inheritdoc />
     public async Task<SlskdServerState> GetServerStateAsync(SlskdCredentials credentials, CancellationToken cancellationToken = default)
-        => ParseServerState(await ReadElementAsync(credentials, HttpMethod.Get, "server", null, cancellationToken).ConfigureAwait(false));
+    {
+        var state = ParseServerState(await ReadElementAsync(credentials, HttpMethod.Get, "server", null, cancellationToken).ConfigureAwait(false));
+        if (!state.IsConnected || !state.IsLoggedIn) return state;
+        try
+        {
+            var username = state.Username;
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                var application = await ReadElementAsync(credentials, HttpMethod.Get, "application", null, cancellationToken).ConfigureAwait(false);
+                if (SlskdJson.Find(application, "user") is { } user) username = SlskdJson.ReadString(user, "username");
+            }
+            if (string.IsNullOrWhiteSpace(username)) throw new SlskdApiException(503, null, "slskd did not identify its logged-in user.");
+            // Unlike /server's socket flags, this endpoint awaits an actual Soulseek server reply.
+            var status = await ReadElementAsync(credentials, HttpMethod.Get, $"users/{Uri.EscapeDataString(username)}/status", null, cancellationToken).ConfigureAwait(false);
+            if (SlskdJson.Find(status, "presence") is null) throw new SlskdApiException(503, null, "slskd returned no server presence response.");
+            return state with { Username = username };
+        }
+        catch (SlskdApiException ex) when (!ex.IsUnauthorized)
+        {
+            throw new SlskdApiException(503, "server_unresponsive", ServerUnresponsiveMessage, ex);
+        }
+    }
 
     /// <inheritdoc />
     public async Task<SlskdServerState> ConnectAsync(SlskdCredentials credentials, CancellationToken cancellationToken = default)
@@ -88,7 +113,7 @@ public sealed class SlskdClient : ISlskdClient
         // slskd returns either a bare array or an id-keyed object.
         var entries = element.Value.ValueKind == JsonValueKind.Array
             ? element.Value.EnumerateArray().ToList()
-            : SlskdJson.ReadArray(element.Value, "searches", "items");
+            : SlskdJson.ReadArray(element.Value, "searches", ItemsProperty);
         return entries.Select(SlskdJson.ReadSearch).ToList();
     }
 
@@ -104,7 +129,7 @@ public sealed class SlskdClient : ISlskdClient
 
         var entries = element.Value.ValueKind == JsonValueKind.Array
             ? element.Value.EnumerateArray().ToList()
-            : SlskdJson.ReadArray(element.Value, "responses", "items");
+            : SlskdJson.ReadArray(element.Value, "responses", ItemsProperty);
         return entries.Select(SlskdJson.ReadSearchResponse).ToList();
     }
 
@@ -134,10 +159,14 @@ public sealed class SlskdClient : ISlskdClient
         return new SlskdUserStatus
         {
             Username = username,
-            IsOnline = SlskdJson.ReadBool(value, false, "isOnline", "online"),
+            // A successful peer-info response proves the peer answered. slskd's Info DTO has no online flag.
+            IsOnline = SlskdJson.ReadBool(value, true, "isOnline", "online"),
             QueueLength = SlskdJson.ReadLong(value, 0, "queueLength"),
             UploadSpeed = SlskdJson.ReadLong(value, 0, "uploadSpeed"),
-            FreeUploadSlots = SlskdJson.ReadNullableLong(value, "freeUploadSlots")
+            // UploadSlots is the total, not the free count. The native boolean proves at least one slot.
+            FreeUploadSlots = SlskdJson.Find(value, "hasFreeUploadSlot") is not null
+                ? (SlskdJson.ReadBool(value, false, "hasFreeUploadSlot") ? 1 : 0)
+                : SlskdJson.ReadNullableLong(value, "freeUploadSlots")
         };
     }
 
@@ -169,7 +198,7 @@ public sealed class SlskdClient : ISlskdClient
         }
         else
         {
-            var payload = JsonSerializer.Serialize(new SlskdDirectoryRequest { Directory = directory }, RequestJsonOptions);
+            var payload = JsonSerializer.Serialize(new SlskdDirectoryRequest { Directory = directory.Replace('/', '\\') }, RequestJsonOptions);
             var element = await TryReadElementAsync(credentials, HttpMethod.Post, $"users/{escaped}/directory", payload, cancellationToken)
                 .ConfigureAwait(false);
             directories = element is null ? [] : ParseDirectories(element.Value);
@@ -191,7 +220,7 @@ public sealed class SlskdClient : ISlskdClient
             return [];
         }
 
-        var payload = JsonSerializer.Serialize(downloads, RequestJsonOptions);
+        var payload = JsonSerializer.Serialize(downloads.Select(download => download with { Filename = download.Filename.Replace('/', '\\') }), RequestJsonOptions);
         var path = $"transfers/downloads/{Uri.EscapeDataString(username)}";
         var element = await ReadElementAsync(credentials, HttpMethod.Post, path, payload, cancellationToken).ConfigureAwait(false);
         return ParseTransfers(element);
@@ -239,7 +268,10 @@ public sealed class SlskdClient : ISlskdClient
 
         var path = $"transfers/downloads/{Uri.EscapeDataString(username)}/{transferId}/position";
         var element = await TryReadElementAsync(credentials, HttpMethod.Get, path, null, cancellationToken).ConfigureAwait(false);
-        return element is null ? null : SlskdJson.ReadInt(element.Value, 0, "placeInQueue", "position", "value");
+        if (element is not { } position) return null;
+        return position.ValueKind == JsonValueKind.Number && position.TryGetInt32(out var numericPosition)
+            ? numericPosition
+            : SlskdJson.ReadInt(position, 0, "placeInQueue", "position", "value");
     }
 
     /// <inheritdoc />
@@ -282,7 +314,7 @@ public sealed class SlskdClient : ISlskdClient
                 .ToList();
         }
 
-        return SlskdJson.ReadArray(element.Value, "shares", "items").Select(value => SlskdJson.ReadShare(value)).ToList();
+        return SlskdJson.ReadArray(element.Value, "shares", ItemsProperty).Select(value => SlskdJson.ReadShare(value)).ToList();
     }
 
     /// <inheritdoc />
@@ -309,7 +341,7 @@ public sealed class SlskdClient : ISlskdClient
     {
         var entries = element.ValueKind == JsonValueKind.Array
             ? element.EnumerateArray().ToList()
-            : SlskdJson.ReadArray(element, "directories", "items", "contents");
+            : SlskdJson.ReadArray(element, "directories", ItemsProperty, "contents");
         return entries.Select(SlskdJson.ReadDirectory).ToList();
     }
 
@@ -323,7 +355,7 @@ public sealed class SlskdClient : ISlskdClient
     ///     make the engine watch something that does not exist.
     /// </remarks>
     private static readonly string[] TransferContainerNames =
-        ["enqueued", "transfers", "downloads", "items", "files", "directories", "groups"];
+        ["enqueued", "transfers", "downloads", ItemsProperty, "files", "directories", "groups"];
 
     private static IReadOnlyList<SlskdTransfer> ParseTransfers(JsonElement element)
     {
@@ -567,15 +599,26 @@ public sealed class SlskdClient : ISlskdClient
         }
     }
 
-    private static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
+        // ResponseHeadersRead ends HttpClient's timeout at the headers. Give the body its own bounded read.
+        using var bodyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bodyTimeout.CancelAfter(_httpClient.Timeout == Timeout.InfiniteTimeSpan
+            ? SlskdIntegrationServiceExtensions.DefaultTimeout : _httpClient.Timeout);
         try
         {
-            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return await response.Content.ReadAsStringAsync(bodyTimeout.Token).ConfigureAwait(false);
         }
-        catch (HttpRequestException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return string.Empty;
+            // With ResponseHeadersRead the headers arrive fast and the body may not; a stalled body read is
+            // the same outage a slow send is, so it carries the same typed answer instead of a bare
+            // TaskCanceledException that reads like the caller cancelled themselves.
+            throw new SlskdApiException(0, null, "slskd did not respond in time.");
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new SlskdApiException(0, null, "slskd response could not be read.", ex);
         }
     }
 

@@ -140,15 +140,44 @@ public sealed class SoulseekShareService : ISoulseekShareService
             return false;
         }
 
-        await _repository.RecordShareScanStartedAsync(cancellationToken).ConfigureAwait(false);
+        // The claim is atomic in the repository, so only one caller at a time starts here. A scan already
+        // running keeps its own record: this call simply reports that it did not - and did not need to -
+        // start one.
+        var startedAt = DateTimeOffset.UtcNow;
+        if (!await _repository.RecordShareScanStartedAsync(cancellationToken, startedAt).ConfigureAwait(false))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("A Soulseek share rescan was requested while one was already running.");
+            }
+
+            return false;
+        }
+
+        using var scanTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        scanTimeout.CancelAfter(TimeSpan.FromMinutes(2));
         try
         {
-            await _client.RescanSharesAsync(credentials, cancellationToken).ConfigureAwait(false);
-            var shares = await _client.ListSharesAsync(credentials, cancellationToken).ConfigureAwait(false);
+            await _client.RescanSharesAsync(credentials, scanTimeout.Token).ConfigureAwait(false);
+            var shares = await _client.ListSharesAsync(credentials, scanTimeout.Token).ConfigureAwait(false);
             var fileCount = shares.Sum(share => (long)(share.Files ?? 0));
-            await _repository.RecordShareScanCompletedAsync(shares.Count, fileCount, error: null, cancellationToken)
+            await _repository.RecordShareScanCompletedAsync(shares.Count, fileCount, error: null, scanTimeout.Token, startedAt)
                 .ConfigureAwait(false);
             return true;
+        }
+        catch (OperationCanceledException rescanCancelled)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(rescanCancelled, "The Soulseek share rescan was cancelled.");
+            }
+
+            // Left alone, the row would read "running" for the rest of the process even though nothing is
+            // scanning and nothing will record a completion. It is finished - badly, but finished.
+            await RecordFailedScanAsync(startedAt, cancellationToken.IsCancellationRequested
+                ? "The share rescan was cancelled." : "The share rescan timed out.").ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested) throw;
+            return false;
         }
         catch (SlskdApiException ex)
         {
@@ -157,8 +186,37 @@ public sealed class SoulseekShareService : ISoulseekShareService
                 _logger.LogDebug(ex, "Could not start a Soulseek share rescan.");
             }
 
-            await _repository.RecordShareScanCompletedAsync(0, 0, ex.Message, CancellationToken.None).ConfigureAwait(false);
+            await RecordFailedScanAsync(startedAt, "Could not request a share rescan from slskd.").ConfigureAwait(false);
             return false;
+        }
+        catch (Exception rescanFailure) when (rescanFailure is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Error))
+            {
+                _logger.LogError(rescanFailure, "The Soulseek share rescan failed.");
+            }
+
+            // The same hang applies to any other failure: slskd unreachable, a bad response shape. The
+            // message shown in the panel is fixed text; the cause is in the log above.
+            await RecordFailedScanAsync(startedAt, "The share rescan failed.").ConfigureAwait(false);
+            return false;
+        }
+    }
+
+    private async Task RecordFailedScanAsync(DateTimeOffset startedAt, string message)
+    {
+        try
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await _repository.RecordShareScanCompletedAsync(0, 0, message, cleanup.Token, startedAt).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not record the failed Soulseek share rescan; its lease will expire.");
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Recording the failed Soulseek share rescan timed out; its lease will expire.");
         }
     }
 

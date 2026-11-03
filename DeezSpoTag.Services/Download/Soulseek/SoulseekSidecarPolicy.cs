@@ -131,6 +131,69 @@ public static class SoulseekSidecarPolicy
     public static bool IsFetchable(string? role)
         => !string.IsNullOrWhiteSpace(role) && FetchableRoles.Contains(role);
 
+    public static bool UsesPeerSidecars(DeezSpoTag.Services.Download.Shared.EngineQueueItemBase item)
+        => string.Equals(item.DownloadOrigin, "shazam", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Select one front cover and lyrics belonging to this track, from its exact peer directory.</summary>
+    public static IReadOnlyList<string> SelectForTrack(
+        string audioPath, string title, string artist, IEnumerable<string> paths, bool artwork, bool lyrics)
+    {
+        var directory = SoulseekRemotePath.GetDirectory(audioPath);
+        var siblings = paths.Select(SoulseekRemotePath.Normalize)
+            .Where(path => SoulseekRemotePath.IsDirectChildOf(path, directory)
+                && !path.Split('/').Any(part => part is "." or ".."))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var result = new List<string>();
+        if (artwork)
+        {
+            var cover = siblings.Where(path => Classify(path) == Cover)
+                .Select(path => (Path: path, Rank: CoverRank(path)))
+                .Where(item => item.Rank < int.MaxValue)
+                .OrderBy(item => item.Rank).ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (cover.Path is not null) result.Add(cover.Path);
+        }
+        if (lyrics)
+        {
+            var audioStem = NormalizeStem(audioPath, remoteFile: true);
+            var song = NormalizeStem(title);
+            var creditedSong = NormalizeStem(artist + " " + title);
+            var matches = siblings.Where(path => Classify(path) == Lyrics)
+                .Where(path => {
+                    var stem = NormalizeStem(path, remoteFile: true);
+                    return stem == audioStem || stem == song || stem == creditedSong;
+                });
+            // Keep at most one lyric file per format; never take another track's words or a cue sheet.
+            result.AddRange(matches.GroupBy(path => Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).First()));
+        }
+        return result;
+    }
+
+    private static int CoverRank(string path)
+    {
+        var name = Path.GetFileNameWithoutExtension(SoulseekRemotePath.GetLeaf(path)).ToLowerInvariant();
+        var words = System.Text.RegularExpressions.Regex.Split(name, @"[^\p{L}\p{N}]+", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromMilliseconds(100));
+        if (words.Any(word => word is "back" or "rear" or "disc" or "cd" or "booklet" or "inlay" or "tray" or "backcover" or "coverback" or "discart")) return int.MaxValue;
+        if (words.Any(word => word is "front" or "frontcover" or "coverfront")) return 0;
+        if (words.Any(word => word is "cover" or "folder" or "albumart" or "artwork")) return 1;
+        return 2;
+    }
+
+    private static string NormalizeStem(string value, bool remoteFile = false)
+    {
+        // Titles need not have an extension. Only strip known audio/lyric suffixes from remote filenames.
+        var leaf = remoteFile ? SoulseekRemotePath.GetLeaf(value) : value;
+        var isTextLyrics = remoteFile && Path.GetExtension(leaf).Equals(".txt", StringComparison.OrdinalIgnoreCase);
+        if (remoteFile && new[] { ".flac", ".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aiff", ".lrc", ".ttml", ".txt" }
+            .Contains(Path.GetExtension(leaf), StringComparer.OrdinalIgnoreCase))
+            leaf = Path.GetFileNameWithoutExtension(leaf);
+        if (isTextLyrics) leaf = System.Text.RegularExpressions.Regex.Replace(leaf, @"[\s_-]+lyrics$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+        leaf = System.Text.RegularExpressions.Regex.Replace(leaf, @"^\d+[.\s_-]+", "", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromMilliseconds(100));
+        return new string(leaf.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+    }
+
     private static string NormalizeExtension(string? extension)
     {
         var normalized = (extension ?? string.Empty).Trim();

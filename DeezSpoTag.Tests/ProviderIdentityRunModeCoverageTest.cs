@@ -219,21 +219,24 @@ public sealed class ProviderIdentityRunModeCoverageTest
     }
 
     [Fact]
-    public void ManualEnrichmentCentralIdentityResolution_StaysConfinedToTheManualPass()
+    public void ExternalEnrichmentIdentityPreparationIsSharedAndConfinedToExternalRuns()
     {
         var orchestration = PartialSourceReader.ReadTypeSource(
             "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.RunOrchestration.cs");
-        var callIndex = orchestration.IndexOf("ApplyCentralIdentityForManualEnrichmentAsync(", StringComparison.Ordinal);
-        Assert.True(callIndex >= 0, "the manual enrichment identity resolution is missing");
-        var gateIndex = orchestration.LastIndexOf("isManualEnrichment && firstManualPass", callIndex, StringComparison.Ordinal);
-        Assert.True(gateIndex >= 0 && gateIndex < callIndex, "central identity resolution must stay gated on the manual pass");
-        Assert.True(
-            orchestration.IndexOf("RestoreTrustedCoreIdentity(", gateIndex, StringComparison.Ordinal) < callIndex,
-            "trusted core identity must be restored before central identity resolution");
-
+        var callIndex = orchestration.IndexOf("await PrepareExternalFileEnrichmentAsync(", StringComparison.Ordinal);
+        Assert.True(callIndex >= 0, "external enrichment preparation is missing");
+        var gateIndex = orchestration.LastIndexOf("if (IsManualEnrichment(plan.Config))", callIndex, StringComparison.Ordinal);
+        Assert.True(gateIndex >= 0 && gateIndex < callIndex, "identity preparation must stay gated on external runs");
+        var prepareIndex = orchestration.IndexOf("private async Task PrepareExternalFileEnrichmentAsync(", StringComparison.Ordinal);
+        var restoreIndex = orchestration.IndexOf("RestoreTrustedCoreIdentity(", prepareIndex, StringComparison.Ordinal);
+        var providerIndex = orchestration.IndexOf("for (var platformIndex", prepareIndex, StringComparison.Ordinal);
+        Assert.True(restoreIndex > prepareIndex && restoreIndex < providerIndex,
+            "trusted core identity must be restored before provider identity acquisition");
+        Assert.Contains("selected.ProviderIdentity = identity;", orchestration, StringComparison.Ordinal);
         var matching = PartialSourceReader.ReadTypeSource(
             "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.PlatformMatching.cs");
-        Assert.Contains("private async Task ApplyCentralIdentityForManualEnrichmentAsync(", matching, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyCentralIdentityForManualEnrichmentAsync(", matching, StringComparison.Ordinal);
+        Assert.Contains("context.Plan.ExternalMatchResults.TryGetValue", matching, StringComparison.Ordinal);
     }
 
     private static void AssertStandardRunIsAdmitted()

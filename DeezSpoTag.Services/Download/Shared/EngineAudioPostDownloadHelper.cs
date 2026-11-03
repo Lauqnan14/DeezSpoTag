@@ -2555,6 +2555,7 @@ public static partial class EngineAudioPostDownloadHelper
     private static string? ResolvePeerLyricsPath(PrefetchExecutionContext execution)
     {
         if (execution.Request.Payload is not SoulseekQueueItem soulseek
+            || !SoulseekSidecarPolicy.UsesPeerSidecars(soulseek)
             || string.IsNullOrWhiteSpace(soulseek.SoulseekPeerLyricsPath))
         {
             return null;
@@ -2583,6 +2584,7 @@ public static partial class EngineAudioPostDownloadHelper
     private static string? ResolvePeerArtworkPath(PrefetchExecutionContext execution)
     {
         if (execution.Request.Payload is not SoulseekQueueItem soulseek
+            || !SoulseekSidecarPolicy.UsesPeerSidecars(soulseek)
             || string.IsNullOrWhiteSpace(soulseek.SoulseekPeerArtworkPath))
         {
             return null;

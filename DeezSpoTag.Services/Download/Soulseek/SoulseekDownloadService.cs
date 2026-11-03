@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models.Soulseek;
 using DeezSpoTag.Integrations.Soulseek;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -253,6 +254,15 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
                 cancellationToken)
             .ConfigureAwait(false);
 
+        // Re-read durable policy for every new enqueue, including a selection that sat in the queue.
+        // Recovery above is deliberately exempt: it monitors a transfer we already own, not new work.
+        var policy = await _peerPolicy.EvaluateBeforeTransferAsync(username, cancellationToken).ConfigureAwait(false);
+        if (!policy.Accepted || _peerPolicy.IsBlockedFilename(remotePath))
+        {
+            throw new SoulseekTransferException(
+                $"The peer policy refused the transfer: {policy.Reason ?? "blocked_filename_pattern"}.", username);
+        }
+
         _ = await _credentials.GetCredentialsAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new SoulseekUnavailableException("Soulseek is not configured.");
 
@@ -460,8 +470,10 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
         var ownership = await RequireOwnedAudioAsync(payload, acquiredPath, cancellationToken).ConfigureAwait(false);
         // The destination is read before anything is written, because the payload is updated to the promoted
         // path at the end and reading it afterwards would compare the file with itself.
-        var destination = ResolveDestination(payload.FilePath);
         var source = DownloadPathResolver.ResolveIoPath(acquiredPath);
+        // The filename template has no extension. Copying the peer file onto that path drops .flac, and every
+        // later stage then treats an acquired download as if the audio were missing.
+        var destination = AppendMissingSourceAudioExtension(ResolveDestination(payload.FilePath), source);
 
         if (string.IsNullOrWhiteSpace(destination))
         {
@@ -626,6 +638,32 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
         return configured.Length == 0 ? string.Empty : DownloadPathResolver.ResolveIoPath(configured);
     }
 
+    /// <summary>
+    ///     Keeps the peer file's audio extension when the template destination was stored without one.
+    /// </summary>
+    /// <remarks>
+    ///     A destination that already names an audio extension is left alone: the template won, and replacing
+    ///     it would turn an expected <c>.flac</c> into whatever the peer happened to send. A title that merely
+    ///     contains a dot is not an extension, so it still receives the source extension.
+    /// </remarks>
+    private static string AppendMissingSourceAudioExtension(string destination, string source)
+    {
+        if (string.IsNullOrWhiteSpace(destination) || string.IsNullOrWhiteSpace(source))
+        {
+            return destination;
+        }
+
+        if (DownloadStagingFileOwnership.IsKnownAudioExtension(Path.GetExtension(destination)))
+        {
+            return destination;
+        }
+
+        var sourceExtension = Path.GetExtension(source);
+        return DownloadStagingFileOwnership.IsKnownAudioExtension(sourceExtension)
+            ? destination + sourceExtension
+            : destination;
+    }
+
     private static bool PathsEqual(string left, string right)
     {
         try
@@ -669,11 +707,11 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
         var claims = await _repository.GetSourceClaimsForTransferAsync(transferId, token).ConfigureAwait(false);
         if (record is null || !string.Equals(record.QueueUuid, payload.Id, StringComparison.Ordinal)
             || !string.Equals(record.Username, payload.SoulseekUsername, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(record.Filename, payload.SoulseekRemotePath, StringComparison.OrdinalIgnoreCase)
+            || !SoulseekRemotePath.AreEqual(record.Filename, payload.SoulseekRemotePath)
             || !(record.Verified && PathsEqual(record.ExpectedPath ?? string.Empty, path)
                 || claims.Any(claim => claim.QueueUuid == payload.Id
                     && string.Equals(claim.Username, record.Username, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(claim.Filename, record.Filename, StringComparison.OrdinalIgnoreCase)
+                    && SoulseekRemotePath.AreEqual(claim.Filename, record.Filename)
                     && PathsEqual(claim.Path, path))))
             throw new SoulseekTransferMonitoringException("The audio path does not belong to this Soulseek queue item.");
         return record;
@@ -1055,7 +1093,7 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
         var mine = claims.Where(claim => claim.OwnershipId == ownershipId).ToList();
         if (mine.Count == 0
             || mine.Any(claim => !string.Equals(claim.Username, username, StringComparison.OrdinalIgnoreCase)
-                                  || !PathsEqual(claim.Filename, remotePath)))
+                                  || !SoulseekRemotePath.AreEqual(claim.Filename, remotePath)))
         {
             throw new SoulseekTransferMonitoringException(
                 $"The reserved Soulseek download paths for queue {queueUuid} no longer match {username}/{remotePath}, so they were not attached to transfer {transferId}.");
@@ -1233,7 +1271,7 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
         {
             var matchesPinnedSource = !pinned
                 || (string.Equals(claim.Username, request.Username, StringComparison.OrdinalIgnoreCase)
-                    && PathsEqual(claim.Filename, request.RemotePath));
+                    && SoulseekRemotePath.AreEqual(claim.Filename, request.RemotePath));
             var isUnrecorded = claim.TransferId is null
                 || !recorded.Any(row => row.TransferId == claim.TransferId);
             return matchesPinnedSource && isUnrecorded;
@@ -1245,10 +1283,50 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
 
         var started = await FindStartedTransferAsync(reservation.Username, reservation.Filename, queueUuid, cancellationToken)
             .ConfigureAwait(false);
+        if (started is null && reservation.TransferId is null)
+        {
+            // Keep the original ownership and peer/file identity. slskd serializes enqueue per peer
+            // and rejects an already-active filename, so repeating this exact request cannot create
+            // a concurrent transfer. Never search for a substitute or release an uncertain claim.
+            var size = pinned && request.RemoteSizeBytes > 0 ? request.RemoteSizeBytes : 0;
+            if (size == 0)
+            {
+                foreach (var search in await _repository.GetSearchesForQueueAsync(queueUuid, cancellationToken).ConfigureAwait(false))
+                {
+                    var candidates = await _repository.GetCandidatesAsync(search.SearchId, cancellationToken).ConfigureAwait(false);
+                    var original = candidates.FirstOrDefault(candidate => candidate.Accepted && candidate.Size > 0
+                        && string.Equals(candidate.Username, reservation.Username, StringComparison.OrdinalIgnoreCase)
+                        && SoulseekRemotePath.AreEqual(candidate.Filename, reservation.Filename));
+                    if (original is not null) { size = original.Size; break; }
+                }
+            }
+            if (size > 0)
+            {
+                var ownedPaths = claims.Where(claim => claim.OwnershipId == reservation.OwnershipId).ToList();
+                if (ownedPaths.Any(claim => File.Exists(claim.Path) || Directory.Exists(claim.Path)))
+                    throw new SoulseekTransferMonitoringException("The unconfirmed Soulseek transfer has an occupied reserved path; no replacement transfer was started.");
+                var policy = await _peerPolicy.EvaluateBeforeTransferAsync(reservation.Username, cancellationToken).ConfigureAwait(false);
+                var eligibility = _connection is null ? null : await _connection.GetEligibilityAsync(cancellationToken).ConfigureAwait(false);
+                if (!policy.Accepted || _peerPolicy.IsBlockedFilename(reservation.Filename) || eligibility is { IsUsable: false })
+                    throw new SoulseekTransferMonitoringException("The reserved Soulseek file cannot be retried under the current connection or peer policy.");
+                try
+                {
+                    var id = await _transfer.EnqueueAsync(reservation.Username, reservation.Filename, size, cancellationToken).ConfigureAwait(false);
+                    started = id is null
+                        ? await FindStartedTransferAsync(reservation.Username, reservation.Filename, queueUuid, cancellationToken).ConfigureAwait(false)
+                        : new SoulseekTransferStatus(id, reservation.Username, reservation.Filename, "queued", false, false, 0, size, 0, null, 0);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    started = await FindStartedTransferAsync(reservation.Username, reservation.Filename, queueUuid, cancellationToken).ConfigureAwait(false);
+                    if (started is null) throw new SoulseekTransferMonitoringException("The exact reserved Soulseek file still has no confirmed transfer; ownership was retained.", ex);
+                }
+            }
+        }
         if (started?.TransferId is not { } adoptedId
             || (reservation.TransferId is { } attachedId && attachedId != adoptedId)
             || !string.Equals(started.Username, reservation.Username, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(started.Filename, reservation.Filename, StringComparison.OrdinalIgnoreCase))
+            || !SoulseekRemotePath.AreEqual(started.Filename, reservation.Filename))
         {
             throw new SoulseekTransferMonitoringException(
                 "A previous Soulseek attempt still owns its download paths, but its transfer identity could not be established. No new transfer was started.");
@@ -1272,7 +1350,7 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
     /// <summary>Whether a recorded transfer is the exact peer file a reader chose.</summary>
     private static bool MatchesPinnedSelection(SoulseekDownloadRequest request, SoulseekTransferRecord candidate)
         => string.Equals(candidate.Username, request.Username, StringComparison.OrdinalIgnoreCase)
-           && PathsEqual(candidate.Filename, request.RemotePath);
+           && SoulseekRemotePath.AreEqual(candidate.Filename, request.RemotePath);
 
     }
 

@@ -136,10 +136,16 @@ public static class SoulseekRequestBuilder
         // the drawer, so a request that somehow arrives with sidecars while the settings are off still
         // downloads nothing extra.
         var sidecars = new List<string>();
-        if (soulseek.UsePeerArtwork || soulseek.UsePeerLyrics)
+        if (SoulseekSidecarPolicy.UsesPeerSidecars(item) && (soulseek.UsePeerArtwork || soulseek.UsePeerLyrics))
         {
             sidecars.AddRange(item.SoulseekSidecarRemotePaths
                 .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Where(path => SoulseekSidecarPolicy.Classify(path) switch
+                {
+                    SoulseekSidecarPolicy.Cover => soulseek.UsePeerArtwork,
+                    SoulseekSidecarPolicy.Lyrics => soulseek.UsePeerLyrics,
+                    _ => false
+                })
                 .Select(path => path.Trim()));
         }
 

@@ -15,6 +15,27 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekFilenameParserTest
 {
+    [Theory]
+    [InlineData("Prince - 1999.mp3", "1999", "Prince")]
+    [InlineData("Prince - 1999 (1982).mp3", "1999", "Prince")]
+    [InlineData("1999.mp3", "1999", null)]
+    [InlineData("19871989.flac", "19871989", null)]
+    [InlineData("deadbeef.flac", "deadbeef", null)]
+    [InlineData("Artist - Song (1:05:30).flac", "Song", "Artist")]
+    [InlineData("Artist - Song [125:30].flac", "Song", "Artist")]
+    [InlineData("Artist - Summer of 1999.mp3", "Summer of 1999", "Artist")]
+    public void NumericTitlesAndLongDurationMarkersAreParsedWithoutLosingIdentity(string filename, string title, string? artist)
+    {
+        var facts = SoulseekFilenameParser.Parse(filename);
+        Assert.Equal(title, facts.Title);
+        Assert.Equal(artist, facts.Artist);
+        Assert.False(facts.IsJunk);
+    }
+
+    [Fact]
+    public void ConventionalHexDigestRemainsJunkRatherThanInventedMetadata()
+        => Assert.True(SoulseekFilenameParser.Parse("0123456789abcdef0123456789abcdef.flac").IsJunk);
+
     /// <summary>
     ///     The four-part shape: artist, album, track number, title.
     /// </summary>

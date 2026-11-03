@@ -176,7 +176,9 @@ public sealed class SoulseekConnectionService : ISoulseekConnectionService
     public async Task<SoulseekConnectionStatus> EnsureAvailableAsync(CancellationToken cancellationToken = default)
     {
         var status = await GetStatusAsync(force: true, cancellationToken).ConfigureAwait(false);
-        if (status.IsUsable || status.State != SoulseekConnectionState.Disconnected)
+        var unresponsive = status.State == SoulseekConnectionState.Unavailable
+            && status.LastError == SlskdClient.ServerUnresponsiveMessage;
+        if (status.IsUsable || (status.State != SoulseekConnectionState.Disconnected && !unresponsive))
         {
             return status;
         }
@@ -189,6 +191,12 @@ public sealed class SoulseekConnectionService : ISoulseekConnectionService
 
         try
         {
+            // This is the explicit Connect action; eligibility checks never undo a user logout.
+            if (unresponsive)
+            {
+                await _client.DisconnectAsync(credentials, "Resetting an unresponsive Soulseek server connection.", cancellationToken).ConfigureAwait(false);
+                Invalidate();
+            }
             await _client.ConnectAsync(credentials, cancellationToken).ConfigureAwait(false);
         }
         catch (SlskdApiException ex)

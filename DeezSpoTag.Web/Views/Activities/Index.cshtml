@@ -7090,9 +7090,30 @@ function readQueueItemText(item, candidates) {
     return '';
 }
 
+function isUnusableQueueQualityLabel(value) {
+    return String(value || '').trim().toLowerCase() === 'quality unverified';
+}
+
+function readKnownQueueQuality(item, keys) {
+    const value = readQueueItemText(item, keys);
+    return !value || isUnusableQueueQualityLabel(value) ? '' : value;
+}
+
 function resolveQueueRawQuality(item, engineHint) {
+    // Delivered quality is the file that actually arrived. "Quality unverified" is what gets
+    // stored when inspection cannot read the extension, and it must not hide that file.
+    const delivered = readKnownQueueQuality(item, [
+        'deliveredQuality',
+        'DeliveredQuality',
+        'acquiredDeliveredQuality',
+        'AcquiredDeliveredQuality'
+    ]);
+    if (delivered) {
+        return delivered;
+    }
+
     const quality = readQueueItemText(item, ['quality', 'Quality', 'bitrate', 'Bitrate']);
-    if (quality) {
+    if (quality && !isUnusableQueueQualityLabel(quality)) {
         return quality;
     }
 
@@ -7107,6 +7128,16 @@ function resolveQueueRawQuality(item, engineHint) {
         if (requestedQobuzQuality) {
             return requestedQobuzQuality;
         }
+    }
+
+    const requested = readKnownQueueQuality(item, [
+        'requestedQuality',
+        'RequestedQuality',
+        'resolvedQuality',
+        'ResolvedQuality'
+    ]);
+    if (requested) {
+        return requested;
     }
 
     return '';

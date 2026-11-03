@@ -2,6 +2,8 @@ using System;
 using System.Linq;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Soulseek;
+using DeezSpoTag.Services.Download.Shared;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -20,6 +22,26 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoulseekEngineRegistrationTest
 {
+    [Fact]
+    public void RegisteringSoulseekTwiceKeepsOneSweepAndPreservesOtherMaintenanceTasks()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IQueueMaintenanceTask, OtherMaintenanceTask>();
+        services.AddSoulseekDownloadEngine();
+        services.AddSoulseekDownloadEngine();
+        var tasks = services.Where(service => service.ServiceType == typeof(IQueueMaintenanceTask)).ToArray();
+        Assert.Equal(2, tasks.Length);
+        Assert.Single(tasks.Where(task => task.ImplementationType == typeof(SoulseekMaintenanceTask)));
+        Assert.Single(tasks.Where(task => task.ImplementationType == typeof(OtherMaintenanceTask)));
+    }
+
+    private sealed class OtherMaintenanceTask : IQueueMaintenanceTask
+    {
+        public string Engine => "other";
+        public System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken cancellationToken)
+            => System.Threading.Tasks.Task.CompletedTask;
+    }
+
     [Fact]
     public void EveryEnginePayloadTypeIsCreatedForItsEngine()
     {

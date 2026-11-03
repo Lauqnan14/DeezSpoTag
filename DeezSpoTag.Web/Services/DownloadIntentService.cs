@@ -1100,6 +1100,7 @@ public sealed class DownloadIntentService
         return new DownloadIntent
         {
             SourceService = ReadPayloadString(payload, "SourceService", "sourceService") ?? item.Engine,
+            DownloadOrigin = ReadPayloadString(payload, "DownloadOrigin", "downloadOrigin") ?? string.Empty,
             SourceUrl = ReadPayloadString(payload, "SourceUrl", "sourceUrl") ?? string.Empty,
             Url = ReadPayloadString(payload, "Url", "url") ?? string.Empty,
             PreferredEngine = ReadPayloadString(payload, "Engine", "engine") ?? item.Engine,
@@ -1505,6 +1506,18 @@ public sealed class DownloadIntentService
         EnqueueRoutingState routing,
         DeezSpoTagSettings settings)
     {
+        if (SoulseekPinnedCandidatePolicy.IsManualSelection(intent))
+        {
+            return new ResolvedEnqueueTarget(
+                SoulseekPlatform,
+                intent.Quality,
+                0,
+                false,
+                string.Empty,
+                (SoulseekPlatform, null, string.Empty, "queue-pending"),
+                ResolveVisiblePreResolutionSources(intent, settings, SoulseekPlatform, intent.Quality, intent.ContentType));
+        }
+
         var isAuto = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
             && (routing.IntentRequestsAuto || IsMultiEngineService(settings.Service));
         // A pinned Soulseek file is one file on one peer. Allowing a cross-engine fallback would let a failed
@@ -5980,6 +5993,7 @@ public sealed class DownloadIntentService
                 : string.Empty));
         payload.Engine = engine;
         payload.SourceService = string.IsNullOrWhiteSpace(intent.SourceService) ? engine : intent.SourceService;
+        payload.DownloadOrigin = intent.DownloadOrigin ?? string.Empty;
         payload.Quality = selectedQuality ?? ResolvePreferredQuality(settings, engine) ?? string.Empty;
         ApplyIntentMetadataForPayload(payload, intent);
         ApplyVisiblePayloadResolutionState(payload);
@@ -7513,7 +7527,7 @@ public sealed class DownloadIntentService
         where TPayload : class
     {
         ApplySourceSettingsSnapshot(payload, context.Settings);
-        var json = JsonSerializer.Serialize(payload);
+        var json = JsonSerializer.Serialize(payload, payload.GetType());
         var item = new DownloadQueueItem(
             Id: 0,
             QueueUuid: (string)payload!.GetType().GetProperty("Id")!.GetValue(payload)!,
@@ -7646,6 +7660,7 @@ public sealed class DownloadIntentService
     {
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QueueOrigin = "intent";
+        payload.DownloadOrigin = intent.DownloadOrigin ?? string.Empty;
         payload.SourceUrl = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null ? intent.SourceUrl : context.SourceUrl;
         if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null) payload.ResolvedSourceUrl = context.SourceUrl;
         payload.CollectionName = intent.Album ?? string.Empty;

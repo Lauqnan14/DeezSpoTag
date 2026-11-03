@@ -1031,17 +1031,30 @@
         button.disabled = true;
         try {
             const preferredEngine = await getPreferredEngine();
+            const options = { metadata: {
+                downloadOrigin: 'shazam', title: card.dataset.title || '', artist: card.dataset.artist || '',
+                album: card.dataset.album || '', isrc: card.dataset.isrc || '',
+                durationMs: Number(card.dataset.durationMs || 0),
+                displayCoverUrl: card.querySelector('.shz-art img')?.src || ''
+            }};
+            if (preferredEngine === 'soulseek') {
+                const client = window.DeezSpoTag.Download;
+                const notifier = client.createQueueNotifier(options, card.dataset.shazamUrl || '');
+                await client.enqueueIntentWithPreference({
+                    sourceService: 'shazam', sourceUrl: card.dataset.shazamUrl || '',
+                    url: card.dataset.shazamUrl || '', options,
+                    destinationId: Number(document.getElementById('shzDownloadDestination')?.value) || null,
+                    intentContext: client.buildIntentContext(options),
+                    notify: notifier.notify, notifyQueue: notifier.notifyQueue
+                });
+                return;
+            }
             const url = await resolveDownloadUrl(card, preferredEngine);
             if (!url) {
                 notify('No downloadable source available for the selected download engine.', 'warning');
                 return;
             }
-            await window.DeezSpoTag.Download.addToQueue(url, 0, null, {
-                metadata: {
-                    title: card.dataset.title || '',
-                    artist: card.dataset.artist || ''
-                }
-            });
+            await window.DeezSpoTag.Download.addToQueue(url, 0, null, options);
         } catch (error) {
             notify(error?.message || 'Download failed.', 'error');
         } finally {

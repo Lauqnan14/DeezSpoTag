@@ -32,8 +32,13 @@ public sealed class DeezerMatcher
         _logger = logger;
     }
 
-    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken)
+    public Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken)
+        => _client.WithRequiredResultsAsync(config.PreferAvailableRelease,
+            () => MatchCoreAsync(info, config, deezerConfig, cancellationToken));
+
+    private async Task<AutoTagMatchResult?> MatchCoreAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken)
     {
+        AutoTagMatchResult? availableRelease = null;
         var effectiveInfo = BuildEffectiveInfo(info);
 
         if (deezerConfig.MatchById)
@@ -47,6 +52,7 @@ public sealed class DeezerMatcher
                     byId!.MatchStrategy = "id";
                     return byId;
                 }
+                if (config.PreferAvailableRelease) availableRelease ??= byId;
             }
         }
 
@@ -58,6 +64,7 @@ public sealed class DeezerMatcher
                 byIsrc!.MatchStrategy = "isrc";
                 return byIsrc;
             }
+            if (config.PreferAvailableRelease) availableRelease ??= byIsrc;
         }
 
         var byMetadata = await TryMatchByMetadataAsync(effectiveInfo, config, deezerConfig, cancellationToken);
@@ -66,11 +73,12 @@ public sealed class DeezerMatcher
             byMetadata!.MatchStrategy = "text";
             return byMetadata;
         }
+        if (config.PreferAvailableRelease) availableRelease ??= byMetadata;
 
         var bySearch = await TryMatchBySearchAsync(effectiveInfo, config, deezerConfig, cancellationToken);
         if (!IsPreferredRelease(bySearch, config))
         {
-            return null;
+            return config.PreferAvailableRelease ? availableRelease ?? bySearch : null;
         }
 
         bySearch!.MatchStrategy = "text";
@@ -117,7 +125,7 @@ public sealed class DeezerMatcher
                 track = ToTrackInfo(full);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_client.RequiredResults)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -148,7 +156,7 @@ public sealed class DeezerMatcher
                 ? await TryBuildMatchFromCandidatesAsync(info, tracks, config, deezerConfig, cancellationToken)
                 : null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_client.RequiredResults)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -209,7 +217,7 @@ public sealed class DeezerMatcher
                     return matchResult;
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && !_client.RequiredResults)
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -228,6 +236,7 @@ public sealed class DeezerMatcher
         DeezerConfig deezerConfig,
         CancellationToken cancellationToken)
     {
+        AutoTagMatchResult? availableRelease = null;
         var remaining = tracks.ToList();
         while (remaining.Count > 0)
         {
@@ -244,7 +253,7 @@ public sealed class DeezerMatcher
                 matchArtist: true);
             if (match == null)
             {
-                return null;
+                return config.PreferAvailableRelease ? availableRelease : null;
             }
 
             var resolved = await BuildMatchResultAsync(match.Track, match.Accuracy, deezerConfig, cancellationToken);
@@ -253,10 +262,11 @@ public sealed class DeezerMatcher
                 return resolved;
             }
 
+            if (config.PreferAvailableRelease) availableRelease ??= resolved;
             remaining.Remove(match.Track);
         }
 
-        return null;
+        return config.PreferAvailableRelease ? availableRelease : null;
     }
 
     private static AutoTagAudioInfo BuildEffectiveInfo(AutoTagAudioInfo info)
@@ -467,7 +477,7 @@ public sealed class DeezerMatcher
             track.Copyright ??= Normalize(full.Copyright);
             ApplyContributorRoles(track, full.Contributors);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_client.RequiredResults)
         {
             _logger.LogWarning(ex, "Failed extending Deezer track ID {TrackId}.", trackId);
         }
@@ -497,7 +507,7 @@ public sealed class DeezerMatcher
             track.Barcode ??= Normalize(album.Upc);
             track.Copyright ??= Normalize(album.Copyright);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_client.RequiredResults)
         {
             _logger.LogWarning(ex, "Failed extending Deezer album ID {AlbumId}.", releaseId);
         }

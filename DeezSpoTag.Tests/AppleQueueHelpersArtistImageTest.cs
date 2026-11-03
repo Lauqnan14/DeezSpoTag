@@ -11,6 +11,38 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AppleQueueHelpersArtistImageTest
 {
+    [Theory]
+    [InlineData("The Notorious B.I.G.", "5499810")]
+    [InlineData("2 Chainz", "294142934")]
+    public async Task ArtistPageUsesTheRequestedArtistsPortraitInsteadOfRelatedArtists(string artist, string artistId)
+    {
+        var factory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Host == "itunes.apple.com")
+                return Json(System.Text.Json.JsonSerializer.Serialize(new { results = new[] { new { artistName = artist, artistLinkUrl = "https://music.apple.com/us/artist/example/" + artistId } } }));
+            return Html("""
+                <html><body><img src="https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages/other/related.png/500x500bb.jpg">
+                <script id="serialized-server-data" type="application/json">
+                {"data":[{"data":{"sections":[{"items":[{"id":"ARTIST_ID","contentDescriptor":{"kind":"artist","identifiers":{"storeAdamID":"ARTIST_ID"}},"circleArtwork":{"dictionary":{"width":1200,"height":1200,"url":"https://is1-ssl.mzstatic.com/image/thumb/Features/correct/portrait.png/{w}x{h}bb.jpg"}}}]}]}}]}
+                </script></body></html>
+                """.Replace("ARTIST_ID", artistId, StringComparison.Ordinal));
+        }));
+
+        var image = await AppleQueueHelpers.ResolveItunesArtistImageAsync(factory, artist, 1198, NullLogger.Instance, CancellationToken.None);
+        Assert.NotNull(image);
+        Assert.Contains("/correct/portrait.png/", image, StringComparison.Ordinal);
+        Assert.DoesNotContain("related.png", image, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ArtistPageWithOnlyRelatedArtistPicturesDoesNotReturnTheirPortrait()
+    {
+        var factory = new StubHttpClientFactory(new StubHttpMessageHandler(request => request.RequestUri!.Host == "itunes.apple.com"
+            ? Json("""{"results":[{"artistName":"Missing Primary Portrait","artistLinkUrl":"https://music.apple.com/us/artist/example/123456"}]}""")
+            : Html("""<html><img src="https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages/other/related.png/500x500bb.jpg"></html>""")));
+        Assert.Null(await AppleQueueHelpers.ResolveItunesArtistImageAsync(factory, "Missing Primary Portrait", 1198, NullLogger.Instance, CancellationToken.None));
+    }
+
     [Fact]
     public async Task ResolveItunesArtistImageAsync_ReturnsNull_ForNonSquareCardImage()
     {

@@ -25,6 +25,82 @@ public sealed class SlskdClientContractTest
 {
     private const string ApiKey = "super-secret-api-key";
 
+    [Theory]
+    [InlineData("7", 7)]
+    [InlineData("{\"placeInQueue\":7}", 7)]
+    public async Task QueuePositionAcceptsSlskdsNumericResponse(string body, int expected)
+    {
+        using var http = new HttpClient(new RecordingHandler(_ => Json(body)));
+        var client = new SlskdClient(http, NullLogger<SlskdClient>.Instance);
+        Assert.Equal(expected, await client.GetDownloadPositionAsync(new SlskdCredentials("http://localhost:5030", ApiKey), "peer", Guid.NewGuid()));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PeerInfoUsesTheActualFreeSlotFieldWithoutInventingSpeed(bool free)
+    {
+        var body = "{\"hasFreeUploadSlot\":" + free.ToString().ToLowerInvariant() + ",\"uploadSlots\":5,\"queueLength\":3}";
+        using var http = new HttpClient(new RecordingHandler(_ => Json(body)));
+        var client = new SlskdClient(http, NullLogger<SlskdClient>.Instance);
+        var info = await client.GetUserStatusAsync(new SlskdCredentials("http://localhost:5030", ApiKey), "peer");
+        Assert.NotNull(info);
+        Assert.True(info.IsOnline);
+        Assert.Equal(free ? 1L : 0L, info.FreeUploadSlots);
+        Assert.Equal(3L, info.QueueLength);
+        Assert.Equal(0L, info.UploadSpeed);
+    }
+
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetServerStateAsync_VerifiesAServerRoundTripInsteadOfTrustingTheSocketFlag(bool stalled)
+    {
+        var paths = new List<string>();
+        var handler = new RecordingHandler(request =>
+        {
+            paths.Add(request.RequestUri!.AbsolutePath);
+            return request.RequestUri.AbsolutePath switch
+            {
+                "/api/v0/server" => Json("{\"isConnected\":true,\"isLoggedIn\":true}"),
+                "/api/v0/application" => Json("{\"user\":{\"username\":\"listener\"}}"),
+                "/api/v0/users/listener/status" => stalled
+                    ? new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("The wait timed out after 5000 milliseconds") }
+                    : Json("{\"presence\":\"Online\"}"),
+                _ => throw new InvalidOperationException("Unexpected probe")
+            };
+        });
+        var client = CreateClient(handler);
+        if (stalled)
+        {
+            var error = await Assert.ThrowsAsync<SlskdApiException>(() => client.GetServerStateAsync(new SlskdCredentials("http://localhost:5030", ApiKey)));
+            Assert.Equal(503, error.StatusCode);
+        }
+        else
+        {
+            var state = await client.GetServerStateAsync(new SlskdCredentials("http://localhost:5030", ApiKey));
+            Assert.True(state.IsConnected && state.IsLoggedIn);
+            Assert.Equal("listener", state.Username);
+        }
+        Assert.Equal(new[] { "/api/v0/server", "/api/v0/application", "/api/v0/users/listener/status" }, paths);
+    }
+
+    [Theory]
+    [InlineData("Music/Album/track.flac", "Music\\Album\\track.flac")]
+    [InlineData("@@share/Music/track.flac", "@@share\\Music\\track.flac")]
+    public async Task RemotePaths_UseSoulseekSeparatorsAtTheHttpBoundary(string path, string expected)
+    {
+        var handler = new RecordingHandler(_ => Json("[]"));
+        var client = CreateClient(handler);
+        var credentials = new SlskdCredentials("http://localhost:5030", ApiKey);
+        await client.BrowseUserDirectoryAsync(credentials, "peer", path);
+        using (var body = System.Text.Json.JsonDocument.Parse(handler.Body))
+            Assert.Equal(expected, body.RootElement.GetProperty("directory").GetString());
+        await client.EnqueueDownloadsAsync(credentials, "peer", [new SlskdQueueDownload { Filename = path, Size = 123 }]);
+        using (var body = System.Text.Json.JsonDocument.Parse(handler.Body))
+            Assert.Equal(expected, body.RootElement[0].GetProperty("filename").GetString());
+    }
 
     [Fact]
     public async Task SecurityRequestFailureLog_SanitizesPathAndRetainsRequestCredentials()
@@ -91,15 +167,21 @@ public sealed class SlskdClientContractTest
     [Fact]
     public async Task GetServerStateAsync_SendsApiKeyAsHeaderAndNeverInTheUrl()
     {
-        var handler = new RecordingHandler(_ => Json("""
+        var paths = new List<Uri>();
+        var handler = new RecordingHandler(request =>
+        {
+            paths.Add(request.RequestUri!);
+            if (request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal)) return Json("{\"presence\":\"Online\"}");
+            return Json("""
             { "isConnected": true, "isLoggedIn": true, "username": "listener", "state": "Connected,LoggedIn" }
-            """));
+            """);
+        });
 
         var client = CreateClient(handler);
         var state = await client.GetServerStateAsync(new SlskdCredentials("http://localhost:5030", ApiKey));
 
         Assert.Equal(HttpMethod.Get, handler.Method);
-        Assert.Equal("http://localhost:5030/api/v0/server", handler.RequestUri!.ToString());
+        Assert.Equal("http://localhost:5030/api/v0/server", paths[0].ToString());
         Assert.Equal(ApiKey, Assert.Single(handler.ApiKeyHeaderValues));
         Assert.DoesNotContain(ApiKey, handler.RequestUri!.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain(ApiKey, handler.Body, StringComparison.Ordinal);
@@ -521,6 +603,7 @@ public sealed class SlskdClientContractTest
 
     [Theory]
     // slskd's TransferStates bit field, taken from its own TransferStateCategories.
+    [InlineData(0, false, false, false, false, "unknown")]
     [InlineData(2, false, true, false, false, "queued")]
     [InlineData(8, true, false, false, false, "in_progress")]
     [InlineData(48, false, false, true, false, "completed")]
@@ -561,6 +644,38 @@ public sealed class SlskdClientContractTest
 
     private static SlskdClient CreateClient(HttpMessageHandler handler)
         => new(new HttpClient(handler), NullLogger<SlskdClient>.Instance);
+
+    [Fact]
+    public async Task ResponseBodyTimeoutIsBoundedAndReportedAsTransportFailure()
+    {
+        using var http = new HttpClient(new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StalledBody() })) { Timeout = TimeSpan.FromMilliseconds(150) };
+        var client = new SlskdClient(http, NullLogger<SlskdClient>.Instance);
+        var failure = await Assert.ThrowsAsync<SlskdApiException>(() =>
+            client.GetServerStateAsync(new SlskdCredentials("http://localhost:5030", ApiKey)).WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("in time", failure.Message);
+        Assert.DoesNotContain(ApiKey, failure.Message);
+    }
+
+    [Fact]
+    public async Task CallerCancellationDuringBodyReadIsNotMisreportedAsAnOutage()
+    {
+        using var http = new HttpClient(new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StalledBody() })) { Timeout = TimeSpan.FromSeconds(5) };
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+        var client = new SlskdClient(http, NullLogger<SlskdClient>.Instance);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.GetServerStateAsync(new SlskdCredentials("http://localhost:5030", ApiKey), cancellation.Token));
+    }
+
+    private sealed class StalledBody : HttpContent
+    {
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+        protected override Task SerializeToStreamAsync(System.IO.Stream stream, TransportContext? context)
+            => throw new InvalidOperationException("A body read must supply cancellation.");
+        protected override Task SerializeToStreamAsync(System.IO.Stream stream, TransportContext? context, CancellationToken cancellationToken)
+            => Task.Delay(Timeout.Infinite, cancellationToken);
+    }
 
     private static HttpResponseMessage Json(string body)
         => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };

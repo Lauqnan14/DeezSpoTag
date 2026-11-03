@@ -47,7 +47,9 @@ public sealed class SoulseekApiSurfaceTest
         var loginProbe = ReadRepoFile("DeezSpoTag.Web", "Services", "SoulseekConnectionService.cs");
 
         Assert.Contains("HttpMethod.Get, \"server\"", client, StringComparison.Ordinal);
-        Assert.Contains("new Uri(baseUri, \"api/v0/server\")", loginProbe, StringComparison.Ordinal);
+        Assert.Contains("adapter.GetServerStateAsync", loginProbe, StringComparison.Ordinal);
+        Assert.Contains("HttpMethod.Get, \"application\"", client, StringComparison.Ordinal);
+        Assert.Contains("/status\"", client, StringComparison.Ordinal);
         Assert.DoesNotContain("server/state", client, StringComparison.Ordinal);
         Assert.DoesNotContain("server/state", loginProbe, StringComparison.Ordinal);
     }
@@ -662,6 +664,42 @@ public sealed class SoulseekApiSurfaceTest
 [Collection("Settings Config Isolation")]
 public sealed class SoulseekBrowseEndpointBehaviorTest : IDisposable
 {
+    [Theory]
+    [InlineData("peer", null)]
+    [InlineData(null, "Album/Track.flac")]
+    [InlineData("peer\nother", "Album/Track.flac")]
+    [InlineData("peer", "Album/Track\n.flac")]
+    [InlineData("peer", "Album/../Track.flac")]
+    public async Task MalformedSingleFilePinIsRefusedBeforeBrowsing(string? username, string? path)
+    {
+        var request = new QueueSoulseekDownloadRequest("Artist", "Track", Username: username, RemotePath: path);
+        Assert.IsType<BadRequestObjectResult>(await Controller().QueueDownload(request, CancellationToken.None));
+        Assert.Equal(0, _search.CallCount);
+    }
+
+    [Fact]
+    public async Task SingleFileAdmissionChecksTheFreshDirectoryAndRejectsStaleSize()
+    {
+        _search.Result = [new SlskdDirectory { Directory = "Album", Files = [Raw("Track.flac")] }];
+        var request = new QueueSoulseekDownloadRequest("Artist", "Track", Username: " peer ", RemotePath: @"Album\Track.flac", RemoteSizeBytes: 12);
+        var result = Assert.IsType<ConflictObjectResult>(await Controller().QueueDownload(request, CancellationToken.None));
+        Assert.Equal("remote_size_changed", Serialize(result.Value).GetProperty("reasonCode").GetString());
+        Assert.Equal("peer", _search.RequestedUsername);
+        Assert.Equal("Album", _search.RequestedDirectory);
+        Assert.Equal(1, _search.CallCount);
+    }
+
+    [Fact]
+    public async Task SingleFileAdmissionRejectsAMissingOrLockedFile()
+    {
+        var request = new QueueSoulseekDownloadRequest("Artist", "Track", Username: "peer", RemotePath: "Album/Track.flac");
+        Assert.IsType<ConflictObjectResult>(await Controller().QueueDownload(request, CancellationToken.None));
+        var file = Raw("Track.flac") with { IsLocked = true };
+        _search.Result = [new SlskdDirectory { Directory = "Album", Files = [file] }];
+        var result = Assert.IsType<UnprocessableEntityObjectResult>(await Controller().QueueDownload(request, CancellationToken.None));
+        Assert.Equal("file_locked", Serialize(result.Value).GetProperty("reasonCode").GetString());
+    }
+
     private readonly string _tempRoot;
     private readonly string _previousConfigDir;
     private readonly string _previousDataDir;

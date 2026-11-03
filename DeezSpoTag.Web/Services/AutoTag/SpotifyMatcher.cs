@@ -37,8 +37,9 @@ public sealed class SpotifyMatcher
         var candidates = new List<SpotifyCandidate>();
         if (!string.IsNullOrWhiteSpace(seededTrackId))
         {
-            var byTrackId = await GetTrackIdCandidateAsync(seededTrackId, info, cancellationToken);
-            if (byTrackId != null && MatchesKnownReleasePreference(byTrackId, config.PreferredReleaseType))
+            var byTrackId = await GetTrackIdCandidateAsync(seededTrackId, info, cancellationToken, config.PreferAvailableRelease);
+            if (byTrackId != null && MatchesKnownReleasePreference(byTrackId, config.PreferredReleaseType)
+                && (!config.PreferAvailableRelease || AutoTagReleaseCategory.Resolve(byTrackId.ReleaseType, byTrackId.TrackTotal) is not null))
             {
                 return new AutoTagMatchResult
                 {
@@ -50,17 +51,18 @@ public sealed class SpotifyMatcher
 
             // A valid embedded Spotify ID is authoritative. If it cannot be
             // resolved, do not replace it with a potentially different search result.
-            return null;
+            if (!config.PreferAvailableRelease || byTrackId is null) return null;
+            candidates.Add(new SpotifyCandidate(byTrackId, IsrcAuthority + 1));
         }
 
         if (!string.IsNullOrWhiteSpace(info.Isrc))
         {
-            var isrcResults = await _client.SearchTracksAsync($"isrc:{info.Isrc}", 20, cancellationToken);
+            var isrcResults = await _client.SearchTracksAsync($"isrc:{info.Isrc}", 20, cancellationToken, config.PreferAvailableRelease);
             candidates.AddRange(isrcResults.Select(track => new SpotifyCandidate(track, IsrcAuthority)));
         }
 
         var query = $"{info.Artist} {OneTaggerMatching.CleanTitle(info.Title)}";
-        var tracks = await _client.SearchTracksAsync(query, 20, cancellationToken);
+        var tracks = await _client.SearchTracksAsync(query, 20, cancellationToken, config.PreferAvailableRelease);
         candidates.AddRange(tracks.Select(track => new SpotifyCandidate(track, SearchAuthority)));
         var match = SelectBestCandidate(info, candidates, config);
 
@@ -69,7 +71,7 @@ public sealed class SpotifyMatcher
             return null;
         }
 
-        var enriched = await EnrichOrKeepAsync(match.Track.Track, seededTrackId, info, cancellationToken);
+        var enriched = await EnrichOrKeepAsync(match.Track.Track, seededTrackId, info, cancellationToken, config.PreferAvailableRelease);
         return new AutoTagMatchResult
         {
             Accuracy = match.Accuracy,
@@ -110,17 +112,13 @@ public sealed class SpotifyMatcher
     {
         var compatibleTracks = candidates
             .Where(candidate => HasCompatibleArtistIdentity(info, candidate.Track.Artists, config))
-            .Where(candidate => AutoTagReleaseCategory.MatchesPreference(
-                candidate.Track.ReleaseType,
-                candidate.Track.TrackTotal,
-                config.PreferredReleaseType))
             .ToList();
         if (compatibleTracks.Count == 0)
         {
             return null;
         }
 
-        return OneTaggerMatching.MatchTrack(
+        return AutoTagMatchSelection.MatchPreferredTrack(
             info,
             compatibleTracks,
             config,
@@ -130,7 +128,7 @@ public sealed class SpotifyMatcher
                 candidate => candidate.Track.Artists,
                 candidate => candidate.Track.Duration,
                 candidate => candidate.Track.ReleaseDate),
-            matchArtist: true);
+            candidate => candidate.Track.ReleaseType, candidate => candidate.Track.TrackTotal);
     }
 
     private static List<SpotifyCandidate> DeduplicateCandidates(IReadOnlyList<SpotifyCandidate> candidates)
@@ -202,7 +200,7 @@ public sealed class SpotifyMatcher
         return AutoTagSimilarity.NormalizeText(value);
     }
 
-    private async Task<SpotifyTrackInfo?> GetTrackIdCandidateAsync(string trackId, AutoTagAudioInfo info, CancellationToken cancellationToken)
+    private async Task<SpotifyTrackInfo?> GetTrackIdCandidateAsync(string trackId, AutoTagAudioInfo info, CancellationToken cancellationToken, bool required = false)
     {
         var seeded = new SpotifyTrackInfo
         {
@@ -211,7 +209,7 @@ public sealed class SpotifyMatcher
             Isrc = info.Isrc
         };
 
-        var enriched = await EnrichOrKeepAsync(seeded, trackId, info, cancellationToken);
+        var enriched = await EnrichOrKeepAsync(seeded, trackId, info, cancellationToken, required);
         return string.IsNullOrWhiteSpace(enriched.TrackId) ? null : enriched;
     }
 
@@ -219,15 +217,15 @@ public sealed class SpotifyMatcher
         SpotifyTrackInfo track,
         string? preferredTrackId,
         AutoTagAudioInfo source,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool required = false)
     {
         try
         {
             using var enrichmentTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             enrichmentTimeout.CancelAfter(IdEnrichmentTimeout);
-            track = await _client.EnrichTrackWithPathfinderAsync(track, enrichmentTimeout.Token);
+            track = await _client.EnrichTrackWithPathfinderAsync(track, enrichmentTimeout.Token, required);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && !required)
         {
             // A known Spotify ID is already a match. Pathfinder/librespot enrichment
             // is best-effort and must not fail the file when those backends stall.
