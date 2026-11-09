@@ -247,6 +247,19 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("VerificationRetryServiceTest", fixture.Calls[1]);
     }
 
+    [Fact]
+    public async Task VersionProperties_SelectVersionAndPublishingChecks()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        await fixture.CommitFileAsync("Directory.Build.props", "<Project><PropertyGroup><VersionRevision>7</VersionRevision></PropertyGroup></Project>");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.AppVersionChannelTest.", fixture.Calls[1]);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.PublishingWorkflowGuardrailTest.", fixture.Calls[1]);
+        Assert.DoesNotContain("AutoTag", fixture.Calls[1]);
+    }
+
     [Theory]
     [InlineData("DeezSpoTag.Web/Services/ShazamDiscoveryService.cs")]
     [InlineData("DeezSpoTag.Web/Services/ShazamRecognitionService.cs")]

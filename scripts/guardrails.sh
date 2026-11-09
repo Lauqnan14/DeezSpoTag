@@ -127,6 +127,8 @@ if [[ "$MODE" == "changed" ]]; then
         continue ;;
       DeezSpoTag.Core/Models/AudioFeaturesBase.cs|DeezSpoTag.Core/Models/Settings/TagSettings.cs|DeezSpoTag.Core/Models/Settings/UnifiedTagConfig.cs|DeezSpoTag.Web/Services/DownloadTagSettingsConverter.cs|DeezSpoTag.Web/Services/DownloadTagSettingsResolver.cs|DeezSpoTag.Web/Services/TaggingProfileCanonicalizer.cs|DeezSpoTag.Web/Services/TaggingProfileSettingsMapper.cs|DeezSpoTag.Web/Controllers/Api/TaggingProfilesApiController.cs)
         add_tests_matching '^(AutoTagCreditRole|AutoTagCreditRoleFileRoundTrip|TaggingProfileCanonicalizer|TaggingProfileSettingsMapper|AutoTagConfigBuilder|AutoTagProviderCapabilityContract)Test$' ;;
+      Directory.Build.props)
+        add_tests_matching '^(AppVersionChannel|PublishingWorkflowGuardrail)Test$' ;;
       *.md|.gitignore|LICENSE*|docs/*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
       *.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico)
