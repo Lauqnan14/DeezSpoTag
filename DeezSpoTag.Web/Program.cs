@@ -2080,13 +2080,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWidevineLicenseClient>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDecryptor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
-        services.AddSingleton<DeezSpoTag.Web.Services.IDownloadIntentBackgroundQueue, DeezSpoTag.Web.Services.DownloadIntentBackgroundQueue>();
         services.AddScoped<DeezSpoTag.Services.Download.Queue.IQueuedDownloadPayloadResolver, DeezSpoTag.Web.Services.DownloadIntentQueuedPayloadResolver>();
-        services.AddSingleton<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Download intent background queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.ManualUnavailableRetryService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.ManualUnavailableRetryService>(
             services,

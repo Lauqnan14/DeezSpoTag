@@ -12,6 +12,45 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadQueuePreResolutionRepositoryTest
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeezerResponseConfirmsOnlyPersistedQueueRowsBeforeMatching(bool persisted)
+    {
+        await using var context = CreateContext();
+        var item = CreateQueueItem("visible-before-match", "qobuz", "{\"ResolutionStatus\":\"pending\"}");
+        if (persisted)
+            await context.QueueRepository.EnqueueAsync(item, skipDuplicateCheck: true, CancellationToken.None);
+
+        var type = typeof(DeezSpoTag.Web.Controllers.Api.DeezerDownloadApiController);
+        var controller = (Microsoft.AspNetCore.Mvc.ControllerBase)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
+        const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        type.GetField("_queueRepository", fields)!.SetValue(controller, context.QueueRepository);
+        type.GetField("_logger", fields)!.SetValue(controller,
+            NullLogger<DeezSpoTag.Web.Controllers.Api.DeezerDownloadApiController>.Instance);
+        var accumulatorType = type.GetNestedType("AddWithSettingsAccumulator", System.Reflection.BindingFlags.NonPublic)!;
+        var accumulator = Activator.CreateInstance(accumulatorType, nonPublic: true)!;
+        ((List<string>)accumulatorType.GetProperty("Queued")!.GetValue(accumulator)!).Add(item.QueueUuid);
+        var result = await (Task<Microsoft.AspNetCore.Mvc.IActionResult>)type.GetMethod("BuildAddWithSettingsResultAsync", fields)!
+            .Invoke(controller, [Array.Empty<string>(), accumulator, CancellationToken.None])!;
+        var response = Assert.IsAssignableFrom<Microsoft.AspNetCore.Mvc.ObjectResult>(result);
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(response.Value);
+        Assert.Equal(persisted ? 200 : 400, response.StatusCode);
+        Assert.Equal(persisted, body.GetProperty("success").GetBoolean());
+        Assert.False(body.TryGetProperty("deferred", out _));
+        if (persisted)
+        {
+            Assert.Equal(item.QueueUuid, body.GetProperty("downloadId").GetString());
+            Assert.Equal(1, body.GetProperty("downloadIds").GetArrayLength());
+            var stored = await context.QueueRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
+            Assert.NotNull(stored);
+            Assert.Equal("queued", stored!.Status);
+            Assert.Contains("pending", stored.PayloadJson!, StringComparison.Ordinal);
+        }
+        else
+            Assert.False(body.TryGetProperty("downloadId", out _));
+    }
+
     [Fact]
     public async Task TryUpdateQueuedPayloadIfCurrentAsync_UpdatesPayloadAndEngineWhenPayloadMatches()
     {

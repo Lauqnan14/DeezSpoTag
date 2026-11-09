@@ -281,14 +281,7 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
-        => EnqueueCoreAsync(
-            intent,
-            preferIsrcOnly,
-            allowManualQueueDuringEnrichment: true,
-            blockRules,
-            allowAutomaticSecondaryQuality: true,
-            "queued",
-            cancellationToken);
+        => EnqueueManualVisibleAsync(intent, cancellationToken, preferIsrcOnly, blockRules);
 
     public Task<DownloadIntentResult> EnqueueEnhancementBatchAsync(
         DownloadIntent intent,
@@ -316,7 +309,7 @@ public sealed class DownloadIntentService
         }
 
         EnqueuePreparation preparation;
-        try { preparation = await PrepareEnqueueAsync(intent, applyManualDownloadPreference: true, cancellationToken); }
+        try { preparation = await PrepareEnqueueAsync(intent, applyManualDownloadPreference: true, cancellationToken, deferRecordingMatch: true); }
         catch (InvalidOperationException ex) when (intent.SourceService is "ytmusic" or "youtube")
         {
             return new DownloadIntentResult { Success = false, Message = ex.Message, Engine = string.Empty,
@@ -2026,7 +2019,8 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool applyManualDownloadPreference,
         CancellationToken cancellationToken,
-        QueueSourceSettingsSnapshot? sourceSettingsSnapshot = null)
+        QueueSourceSettingsSnapshot? sourceSettingsSnapshot = null,
+        bool deferRecordingMatch = false)
     {
         var settings = _settingsService.LoadSettings();
         if (sourceSettingsSnapshot?.HasValues == true)
@@ -2042,13 +2036,18 @@ public sealed class DownloadIntentService
             intent.Cover = intent.DisplayCoverUrl = string.Empty;
             intent.SourceUrl = "https://music.youtube.com/watch?v=" + youtubeId;
             intent.SpotifyId = intent.DeezerId = intent.QobuzId = intent.TidalId = intent.AmazonId = intent.AppleId = intent.Isrc = "";
-            var identity = await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
-            if (identity is null || !identity.Candidates.Any(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id)))
+            // Manual admission persists the unresolved item first. The queue resolver calls
+            // this same preparation with matching enabled and retains the identity checks.
+            if (!deferRecordingMatch)
             {
-                _logger.LogWarning("YouTube recording {VideoId} could not be resolved. Catalog results: {Results}",
-                    youtubeId, identity is null ? "no resolution" : string.Join(", ", identity.Candidates.Select(candidate =>
-                        candidate.Platform + ": " + candidate.Reason)));
-                throw new InvalidOperationException("Could not find a verified match for this YouTube Music song. Nothing was queued.");
+                var identity = await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
+                if (identity is null || !identity.Candidates.Any(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id)))
+                {
+                    _logger.LogWarning("YouTube recording {VideoId} could not be resolved. Catalog results: {Results}",
+                        youtubeId, identity is null ? "no resolution" : string.Join(", ", identity.Candidates.Select(candidate =>
+                            candidate.Platform + ": " + candidate.Reason)));
+                    throw new InvalidOperationException("Could not find a verified match for this YouTube Music song. Download blocked.");
+                }
             }
         }
         NormalizeEnqueueSettings(settings);

@@ -22,6 +22,21 @@ public sealed class DeezerDownloadApiControllerPreferenceTest
         ?? throw new InvalidOperationException("ShouldBypassDirectDeezerRouting method not found.");
 
     [Fact]
+    public void AllResolvedDownloadsUseThePersistedQueueBeforeMatching()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root != null && !System.IO.File.Exists(System.IO.Path.Combine(root.FullName, "DeezSpoTag.Web", "Program.cs")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var source = System.IO.File.ReadAllText(System.IO.Path.Combine(root!.FullName,
+            "DeezSpoTag.Web", "Controllers", "Api", "DeezerDownloadApiController.cs"));
+        Assert.Contains("_intentService.EnqueueManualVisibleAsync(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_backgroundQueue.Enqueue(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("deferred = true", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IDownloadIntentBackgroundQueue", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ParseInputMetadata_ReadsPreferredEngine()
     {
         using var document = JsonDocument.Parse(

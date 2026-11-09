@@ -680,12 +680,14 @@ DeezSpoTag.DownloadClient = {
         linkType,
         logMessage = 'awaiting background intent resolution'
     }) {
-        if (!result?.deferred) {
+        if (!result?.deferred || result.downloadId
+            || (Array.isArray(result.downloadIds) && result.downloadIds.length > 0)
+            || (Array.isArray(result.queued) && result.queued.length > 0)) {
             return null;
         }
 
         const deferredCount = Number.isFinite(result.deferredCount) ? result.deferredCount : 1;
-        const resolvedMessage = `Matching pending for ${deferredCount} item(s); not yet added to the download queue.`;
+        const resolvedMessage = `Status pending for ${deferredCount} download request(s). Check Downloads for the current status.`;
         const parsedUrl = this.tryParseAbsoluteUrl(url);
         if (parsedUrl && this.hostMatches(parsedUrl.hostname, ['youtube.com', 'youtu.be'])) {
             if (!options?.silent) {
@@ -1364,7 +1366,6 @@ DeezSpoTag.DownloadClient = {
                 bitrate,
                 userId: this.getCurrentUserId(),
                 destinationFolderId: destinationId,
-                queueInBackground: true,
                 metadata: Object.keys(metadata).length > 0
                     ? metadata
                     : undefined
@@ -1804,7 +1805,7 @@ DeezSpoTag.DownloadClient = {
         return `Successfully added ${results.queuedItems} item(s) to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${skippedSummary}${failedSummary}`;
     },
     buildDeferredBatchQueueMessage(results) {
-        return `Matching pending for ${results.deferred} item(s); not yet added to the download queue.`;
+        return `Status pending for ${results.deferred} download request(s). Check Downloads for the current status.`;
     },
     buildSkippedBatchQueueMessage(results) {
         const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);

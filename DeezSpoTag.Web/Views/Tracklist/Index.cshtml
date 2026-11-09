@@ -8162,7 +8162,7 @@ async function downloadTracks(trackElements, triggerButton) {
                     action: { label: 'View', href: activitiesDownloadsTabHref }
                 });
             } else if (deferredCount > 0) {
-                const message = `Matching pending for ${deferredCount} track(s); not yet added to the download queue.` +
+                const message = `Status pending for ${deferredCount} download request(s). Check Downloads for the current status.` +
                     `${alreadyQueuedCount > 0 ? ` (${alreadyQueuedCount} already queued)` : ''}` +
                     `${boomplayUnmatchedCount > 0 ? ` (${boomplayUnmatchedCount} skipped: no Deezer match)` : ''}` +
                     `${errorCount > 0 ? ` (${errorCount} failed)` : ''}`;
@@ -8473,7 +8473,7 @@ async function downloadTracks(trackElements, triggerButton) {
                 action: { label: 'View', href: activitiesDownloadsTabHref }
             });
         } else if (deferredCount > 0) {
-            const message = `Matching pending for ${deferredCount} track(s); not yet added to the download queue.`;
+            const message = `Status pending for ${deferredCount} download request(s). Check Downloads for the current status.`;
             showTracklistToast(message, 'warning', {
                 action: { label: 'View', href: activitiesDownloadsTabHref }
             });

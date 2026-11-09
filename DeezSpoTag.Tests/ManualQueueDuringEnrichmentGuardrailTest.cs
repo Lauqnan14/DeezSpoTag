@@ -31,9 +31,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTest
         {
             ReadSource("DeezSpoTag.Web", "Controllers", "ArtistController.cs"),
             ReadSource("DeezSpoTag.Web", "Controllers", "TracklistController.cs"),
-            ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AppleDownloadApiController.cs"),
-            ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DeezerDownloadApiController.cs"),
-            ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentBackgroundService.cs")
+            ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AppleDownloadApiController.cs")
         };
 
         foreach (var source in manualSources)
@@ -41,10 +39,11 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTest
             Assert.Contains("EnqueueManualAsync", source, StringComparison.Ordinal);
         }
 
-        Assert.Contains(
-            "EnqueueManualVisibleAsync",
-            ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DownloadIntentApiController.cs"),
-            StringComparison.Ordinal);
+        foreach (var controller in new[] { "DeezerDownloadApiController.cs", "DownloadIntentApiController.cs" })
+        {
+            Assert.Contains("EnqueueManualVisibleAsync",
+                ReadSource("DeezSpoTag.Web", "Controllers", "Api", controller), StringComparison.Ordinal);
+        }
     }
 
     [Fact]

@@ -24,7 +24,7 @@ public sealed class NotificationPreferenceWiringTest
     [Fact]
     public async System.Threading.Tasks.Task UnresolvedYouTubeRecordingIsNotReportedAsABlocklistMatch()
     {
-        Assert.Contains("Could not find a verified match for this YouTube Music song. Nothing was queued.",
+        Assert.Contains("Could not find a verified match for this YouTube Music song. Download blocked.",
             ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs"), StringComparison.Ordinal);
         const string script = """
             const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
@@ -155,7 +155,7 @@ public sealed class NotificationPreferenceWiringTest
              assert(!notifications.some(n=>n.type==='success'));assert.equal(notifications.at(-1).message,response.message);
              notifications.length=0;response={success:true,queued:[],deferred:true,deferredCount:1};
              await context.HomeViewHelpers.downloadYouTubeBrowse(button);
-             assert.equal(notifications.at(-1).type,'warning');assert.match(notifications.at(-1).message,/not yet added/);
+             assert.equal(notifications.at(-1).type,'warning');assert.match(notifications.at(-1).message,/Check Downloads/);
             })().catch(error=>{console.error(error);process.exitCode=1;});
             """;
         await RunNotificationNodeAsync(script);
@@ -297,6 +297,37 @@ public sealed class NotificationPreferenceWiringTest
 
         throw new DirectoryNotFoundException("Could not resolve repository root.");
     }
+    [Fact]
+    public async System.Threading.Tasks.Task DeezerQueueConfirmationUsesPersistedIdsEvenWhenLegacyDeferredFlagIsPresent()
+    {
+        const string script = """
+            const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
+            const context={document:{addEventListener(){}},console,URL,setTimeout,clearTimeout};
+            context.globalThis=context;vm.createContext(context);
+            vm.runInContext(fs.readFileSync('DeezSpoTag.Web/wwwroot/js/download-client.js','utf8'),context);
+            const client=context.DeezSpoTagDownload,seen=[];
+            client.logDownloadEvent=()=>{};client.clearPendingDownload=()=>{};client.removePendingQueueIfNeeded=()=>{};
+            client.apiFetch=async()=>({ok:true,json:async()=>response});
+            client.getCurrentUserId=()=>null;
+            client.showQueueToast=(message,type)=>seen.push({message,type});
+            client.notifyAppleAware=(_kind,message,type)=>seen.push({message,type});
+            const request={url:'https://www.deezer.com/track/123',bitrate:9,destinationId:17,
+                options:{},intentContext:{},notifyQueue:(message,type)=>seen.push({message,type})};
+            let response={success:true,deferred:true,deferredCount:1,downloadId:'saved-id',downloadIds:['saved-id']};
+            (async()=>{
+                const result=await client.handleDeezerDownload(request);
+                assert.equal(result.success,true);assert.equal(result.downloadId,'saved-id');
+                assert.equal(seen.length,1);assert.equal(seen[0].type,'success');assert.match(seen[0].message,/Added 1/);
+                seen.length=0;response={success:true,deferred:true,deferredCount:1,downloadIds:[]};
+                const pending=await client.handleDeezerDownload(request);
+                assert.equal(pending.success,false);assert(!seen.some(item=>item.type==='success'));
+                assert(!seen.some(item=>/Matching pending|not yet added/.test(item.message)));
+                assert(!/Matching pending|not yet added/.test(client.buildDeferredBatchQueueMessage({deferred:2})));
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        await RunNotificationNodeAsync(script);
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task OnlyPersistedQueueEntriesUseTheOriginalGreenToast()
     {

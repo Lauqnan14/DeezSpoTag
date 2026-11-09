@@ -26,6 +26,34 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DownloadIntentFallbackParityTest
 {
+    [Fact]
+    public async Task VisibleYouTubePreparationDoesNotMatchBeforeQueueInsertion()
+    {
+        var root = Path.Join(Path.GetTempPath(), "visible-youtube-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var resolver = new CountingFailingIdentityResolver();
+            var service = CreateService(resolver);
+            var intent = new DownloadIntent
+            {
+                SourceService = "ytmusic", SourceUrl = "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+                Title = "Song", Artist = "Artist", DestinationFolderId = 17,
+                DeezerId = "untrusted", Cover = "https://example.invalid/video-still.jpg"
+            };
+            var method = typeof(DownloadIntentService).GetMethod("PrepareEnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            Assert.Contains(method.GetParameters(), parameter => parameter.Name == "deferRecordingMatch");
+            await (Task)method.Invoke(service, [intent, true, CancellationToken.None, null, true])!;
+            Assert.Equal(0, resolver.CallCount);
+            Assert.Equal("ytmusic", intent.SourceService);
+            Assert.Equal("https://music.youtube.com/watch?v=dQw4w9WgXcQ", intent.SourceUrl);
+            Assert.True(string.IsNullOrEmpty(intent.DeezerId));
+            Assert.True(string.IsNullOrEmpty(intent.Cover));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

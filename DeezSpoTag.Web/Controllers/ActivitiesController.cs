@@ -902,10 +902,10 @@ public class ActivitiesController : Controller
         }
         catch (JsonException) { return null; }
 
-        var outcomes = plan.Count > 0
+        IEnumerable<FallbackAttempt?> outcomes = plan.Count > 0
             ? plan.Where(step => step is not null).Select(step => history.LastOrDefault(attempt => attempt is not null
-                && string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase))).ToList()
-            : history.TakeLast(1).ToList();
+                && string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase)))
+            : history.TakeLast(1);
         if (outcomes.Any(attempt => attempt?.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired
             or FallbackFailureClassifier.AuthenticationRequired))
             return "Session verification needed";
