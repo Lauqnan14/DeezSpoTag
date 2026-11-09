@@ -6,7 +6,9 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -185,6 +187,48 @@ public sealed class PlexPlaylistSyncContentTest
         {
             File.Delete(posterPath);
         }
+    }
+
+    [Fact]
+    public async Task MissingPlexPlaylistIsCreatedBeforeMembershipWrite()
+    {
+        using var handler = new PlaylistSyncHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+        var target = new PlexPlaylistSyncTarget(
+            client,
+            _ => Task.FromResult<PlexTargetConnection?>(new PlexTargetConnection("http://plex.local:32400", "token", "machine")));
+        var bindings = new List<(string Service, string PlaylistId)>();
+        var engine = new PlaylistSyncEngine(
+            new PlaylistSyncTargetRegistry(new[] { target }),
+            (_, _, _) => Task.FromResult<string?>(null),
+            (service, _, playlistId, _) =>
+            {
+                bindings.Add((service, playlistId!));
+                return Task.CompletedTask;
+            });
+
+        var outcome = await engine.SyncAsync(
+            "plex",
+            "Tiktok Hits Kenya 2026",
+            "Kenya",
+            new[] { "11", "22" },
+            appendMissingOnly: false,
+            new PlaylistSyncBinding("spotify", "0kTF1EqlOPbHOMGfNK5XhM"));
+
+        Assert.True(outcome.Success, outcome.Message);
+        Assert.Equal("900", outcome.PlaylistId);
+        Assert.True(handler.CreateRequested);
+        Assert.Equal(("plex", "900"), Assert.Single(bindings));
+        Assert.DoesNotContain("failed to create", outcome.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+        var empty = await target.CreateMissingPlaylistAsync(
+            "Tiktok Hits Kenya 2026",
+            null,
+            Array.Empty<string>(),
+            CancellationToken.None);
+        Assert.Null(empty);
+        Assert.Equal(1, handler.RequestedUrls.Count(url => url.Contains("/playlists?", StringComparison.Ordinal) && url.Contains("title=", StringComparison.Ordinal)));
     }
 
     private sealed class PlaylistPosterHandler(byte[] expectedBytes) : HttpMessageHandler

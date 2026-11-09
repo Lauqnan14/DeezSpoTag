@@ -74,15 +74,51 @@ public sealed class NavidromePlaylistSyncTarget : IPlaylistSyncTarget
         };
     }
 
-    public async Task<string?> CreatePlaylistAsync(
+    private string? _createFailureDetail;
+
+    public string? CreateFailureDetail => _createFailureDetail;
+
+    public Task<string?> CreatePlaylistAsync(
         string name,
         string? description,
         CancellationToken cancellationToken)
+        => CreateMissingPlaylistAsync(name, description, Array.Empty<string>(), cancellationToken);
+
+    public async Task<string?> CreateMissingPlaylistAsync(
+        string name,
+        string? description,
+        IReadOnlyList<string> orderedItemIds,
+        CancellationToken cancellationToken)
     {
-        // Navidrome creates and fills in one call, so an empty playlist is not a useful
-        // intermediate. WriteMembershipAsync performs the create; this reports the absence so the
-        // engine does not treat it as a failure.
-        return null;
+        _createFailureDetail = null;
+        var navidrome = await _connection(cancellationToken);
+        if (navidrome is null)
+        {
+            _createFailureDetail = "Navidrome is not configured.";
+            return null;
+        }
+
+        if (orderedItemIds.Count == 0)
+        {
+            _createFailureDetail = "Navidrome cannot create a playlist until it has tracks to put in it.";
+            return null;
+        }
+
+        var playlistId = await _client.CreateOrUpdatePlaylistAsync(
+            navidrome,
+            name,
+            orderedItemIds,
+            existingPlaylistId: null,
+            appendMissingOnly: false,
+            cancellationToken,
+            playlistComment: description);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            _createFailureDetail = "Navidrome did not return a playlist id.";
+            return null;
+        }
+
+        return playlistId;
     }
 
     public async Task<TargetPlaylistItemsRead> ReadItemIdsAsync(string playlistId, CancellationToken cancellationToken)

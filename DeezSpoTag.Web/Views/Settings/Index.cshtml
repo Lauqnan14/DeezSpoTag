@@ -1797,13 +1797,13 @@
 	                <div class="form-row-3">
                     <div class="form-group">
                         <label for="watchPollIntervalSeconds">Watch Interval (seconds)</label>
-                        <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">
-                        <div class="warning-text" data-tooltip-target="watchPollIntervalSeconds">The countdown starts after every complete Watchlist run. The next run begins only after this interval, runs never overlap, and every monitored item is included in each run.</div>
+                        <input type="number" id="watchPollIntervalSeconds" min="21600" max="86400" value="21600">
+                        <div class="warning-text" data-tooltip-target="watchPollIntervalSeconds">Minimum 6 hours (21600 seconds) between snapshot fetches. Finished batches of 50 keep releasing the next batch and syncing until this interval is up. The next snapshot waits until the current batch has finished downloading and been imported.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxItemsPerRun">Max Missing Tracks Queued Per Run</label>
                         <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
-                        <div class="warning-text">Watchlist waits until the missing table reaches this quota before queueing, then admits tracks in playlist order. An album already in that batch is never cut off mid-album, so the queue can go slightly over. If every monitored playlist and artist still cannot fill the quota, the available tracks are queued anyway.</div>
+                        <div class="warning-text">Each batch queues up to this many missing tracks. When that batch has downloaded, the next batch is queued from the same missing list. An album already in a batch is never cut off mid-album, so a batch can go slightly over. Fewer than this many remaining tracks are still queued.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>
@@ -5412,7 +5412,7 @@ function collectFormData() {
         mvFileFormat: getValue('mvFileFormat', baseSettings.mvFileFormat || '{ArtistName} - {VideoName} [{ReleaseYear}]'),
 
         watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
-        watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
+        watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 21600),
         watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
         watchMaxReleasesPerArtist: getNumber('watchMaxReleasesPerArtist', baseSettings.watchMaxReleasesPerArtist ?? 50),
         watchMaxTracksPerPlaylistCheck: getNumber('watchMaxTracksPerPlaylistCheck', baseSettings.watchMaxTracksPerPlaylistCheck ?? 50),

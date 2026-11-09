@@ -140,7 +140,11 @@ public sealed class PlaylistSyncEngine
         var playlistId = lookup.Value;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            playlistId = await target.CreatePlaylistAsync(playlistName, playlistDescription, cancellationToken);
+            playlistId = await target.CreateMissingPlaylistAsync(
+                playlistName,
+                playlistDescription,
+                orderedItemIds,
+                cancellationToken);
             if (string.IsNullOrWhiteSpace(playlistId))
             {
                 // A destination that can say WHY is worth saying. The common case this exists for is

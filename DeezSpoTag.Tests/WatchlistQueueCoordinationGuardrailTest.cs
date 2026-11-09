@@ -120,7 +120,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
 
         Assert.Contains("_runSignal.Request(WatchlistWakeReason.Reconciliation)", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WaitForFullRunDeadlineAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("cycleCompletedUtc + GetWatchInterval()", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("var completionAnchorUtc = batchGate.LastBatchCompletedUtc ?? cycleCompletedUtc;", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("var nextCycleUtc = completionAnchorUtc + GetWatchInterval();", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("_runLock", hostedSource, StringComparison.Ordinal);
     }
 

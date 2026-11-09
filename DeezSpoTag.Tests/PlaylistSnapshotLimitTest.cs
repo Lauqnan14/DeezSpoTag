@@ -172,6 +172,78 @@ public sealed class PlaylistSnapshotLimitTest
     }
 
     [Fact]
+    public async Task TruncatedSnapshotDoesNotDeleteTracksOrTargetMembershipOutsideTheWindow()
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            await repository.AddPlaylistWatchlistAsync(
+                "unsupported",
+                "partial-window",
+                new PlaylistWatchlistMetadataInput("Partial", null, null, 2));
+            await repository.UpdatePlaylistWatchTrackVerificationsAsync(
+                "unsupported",
+                "partial-window",
+                [
+                    new PlaylistWatchTrackVerification("inside", null, "missing"),
+                    new PlaylistWatchTrackVerification("outside", 9, "verified")
+                ]);
+            await repository.ReplacePlaylistWatchTargetMembershipAsync(
+                "unsupported",
+                "partial-window",
+                "plex",
+                "plex-list",
+                [new PlaylistWatchTargetMembership("outside", 9, "item-outside")]);
+
+            var reconciler = fixture.MeasurementTestServices.GetRequiredService<PlaylistWatchReconciler>();
+            var playlist = await repository.GetPlaylistWatchlistAsync();
+            var watched = playlist.Single(item => item.SourceId == "partial-window");
+            var prepared = await reconciler.PreparePlaylistSnapshotAsync(watched, null, CancellationToken.None);
+            var window = new[]
+            {
+                new PlaylistTrackCandidate(
+                    "inside",
+                    "ISRC-INSIDE",
+                    "Inside",
+                    "Artist",
+                    "Album",
+                    null,
+                    180000,
+                    false,
+                    Array.Empty<string>(),
+                    SourcePosition: 1)
+            };
+            prepared = prepared with
+            {
+                Candidates = window,
+                SnapshotId = "snap-partial",
+                Name = "Partial",
+                TrackCount = 2,
+                IsComplete = false,
+                IsAuthoritativeEmpty = false,
+                SourceItemsObserved = 1,
+                IdentityRevision = PlaylistCandidateContract.BuildIdentityRevision("unsupported", window),
+                WasExpanded = true,
+                FailureCode = null
+            };
+
+            var result = await reconciler.ReconcilePlaylistAsync(watched, CancellationToken.None, preparedSnapshot: prepared);
+
+            Assert.True(result.Success, result.Message);
+            var statuses = await repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "partial-window");
+            Assert.Contains(statuses, row => row.TrackSourceId == "outside");
+            Assert.Contains(statuses, row => row.TrackSourceId == "inside");
+            Assert.Equal(1, await repository.GetPlaylistWatchTargetCountAsync("plex", "plex-list"));
+        }
+        finally
+        {
+            await fixture.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public void PartialSnapshotsCannotAuthoriseDeletion()
     {
         var source = EngineSource();

@@ -42,8 +42,11 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         var settingsView = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
 
         Assert.Contains("data-tooltip-target=\"watchPollIntervalSeconds\"", settingsView, StringComparison.Ordinal);
-        Assert.Contains("countdown starts after every complete Watchlist run", settingsView, StringComparison.Ordinal);
-        Assert.Contains("every monitored item is included in each run", settingsView, StringComparison.Ordinal);
+        Assert.Contains("min=\"21600\"", settingsView, StringComparison.Ordinal);
+        Assert.Contains("value=\"21600\"", settingsView, StringComparison.Ordinal);
+        Assert.Contains("Minimum 6 hours (21600 seconds) between snapshot fetches.", settingsView, StringComparison.Ordinal);
+        Assert.Contains("Finished batches of 50 keep releasing the next batch and syncing", settingsView, StringComparison.Ordinal);
+        Assert.Contains("current batch has finished downloading and been imported", settingsView, StringComparison.Ordinal);
     }
 
     private const string WatchMaxItemsPerRunName = "WatchMaxItemsPerRun";
@@ -98,6 +101,19 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
 
         var persisted = _settingsService.LoadSettings();
         Assert.Equal(new[] { AppearsOnGroup, CompilationGroup, SingleGroup }, persisted.WatchedArtistAlbumGroup);
+    }
+
+    [Fact]
+    public void SaveSettings_WatchIntervalBelowSixHours_RestoresMinimum()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchPollIntervalSeconds = 3600;
+
+        _settingsService.SaveSettings(settings);
+
+        var persisted = _settingsService.LoadSettings();
+        Assert.Equal(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings.MinimumWatchPollIntervalSeconds, persisted.WatchPollIntervalSeconds);
+        Assert.Equal(6 * 60 * 60, persisted.WatchPollIntervalSeconds);
     }
 
     [Fact]
@@ -346,7 +362,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(", source, StringComparison.Ordinal);
         Assert.Contains("artworkInspection?.Changed == true", source, StringComparison.Ordinal);
-        Assert.Contains("ApplyKnownTargetMembershipInlineAsync", source, StringComparison.Ordinal);
+        Assert.Contains("SchedulePlaylistTargetSyncAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncPlaylistAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildMediaSyncNotReadyStatus", source, StringComparison.Ordinal);
         Assert.DoesNotContain("media_sync_not_ready_", source, StringComparison.Ordinal);
@@ -366,7 +382,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadDedupeService.cs"));
 
-        Assert.Contains("selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
+        Assert.Contains(": await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
         Assert.Contains("queueOptions,", source, StringComparison.Ordinal);
         Assert.Contains("GetRequiredService<DownloadDedupeService>()", source, StringComparison.Ordinal);
         Assert.Contains("DownloadDedupeService.FromDownloadIntent", source, StringComparison.Ordinal);
@@ -391,17 +407,17 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.DoesNotContain("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
         Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
         Assert.True(
-            source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal)
+            source.IndexOf(": await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal)
             < source.IndexOf("UpsertPlaylistWatchMissingTracksAsync(", StringComparison.Ordinal),
             "Missing-track selection must populate the durable missing-track ledger.");
         Assert.True(
             source.IndexOf("UpsertPlaylistWatchMissingTracksAsync(", StringComparison.Ordinal)
-            < source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal),
-            "Inline target apply must run after the current snapshot has populated the missing-track ledger.");
+            < source.IndexOf("SchedulePlaylistTargetSyncAsync(", StringComparison.Ordinal),
+            "Watchlist sync is scheduled only after the current snapshot has populated the missing-track ledger.");
         Assert.True(
             source.IndexOf("public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(", StringComparison.Ordinal)
-            > source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal),
-            "Queue admission must use the cached missing-track ledger after snapshot reconciliation.");
+            > source.IndexOf("SchedulePlaylistTargetSyncAsync(", StringComparison.Ordinal),
+            "Queue admission must use the cached missing-track ledger and must not wait for target sync.");
         Assert.DoesNotContain("AdmitMissing" + "TrackRowsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode.QueueMissingOnly", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
@@ -425,7 +441,8 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.Contains("WatchlistPlaylistState.Incomplete", engine, StringComparison.Ordinal);
         Assert.Contains("WatchQueueStopReason.Incomplete", engine, StringComparison.Ordinal);
         Assert.Contains("remainingQueueableTracks > 0", engine, StringComparison.Ordinal);
-        Assert.Contains("hasIncompleteTargetSync", engine, StringComparison.Ordinal);
+        Assert.Contains("SchedulePlaylistTargetSyncAsync", engine, StringComparison.Ordinal);
+        Assert.DoesNotContain("hasIncompleteTargetSync", engine, StringComparison.Ordinal);
         Assert.Contains("Incomplete,", admission, StringComparison.Ordinal);
         Assert.DoesNotContain("const visitFinished =", ui, StringComparison.Ordinal);
         Assert.DoesNotContain("presentation?.hasIncompleteSync && visitFinished", ui, StringComparison.Ordinal);
@@ -439,14 +456,15 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
 
         Assert.Contains("PlaylistSyncDisabledDownloadMonitoringMessage", source, StringComparison.Ordinal);
         Assert.Contains("\"Playlist sync disabled; continuing with download monitoring.\"", source, StringComparison.Ordinal);
-        Assert.Contains("? await WatchlistPerformanceMeasurement.TimeAsync(\"target_membership\", () => ApplyKnownTargetMembershipInlineAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("await SchedulePlaylistTargetSyncAsync(", source, StringComparison.Ordinal);
         Assert.Contains("var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;", source, StringComparison.Ordinal);
         Assert.Contains("NoTargetServerSelectedMessage", source, StringComparison.Ordinal);
-        Assert.Contains("EnqueueWatchlistPlaylistSyncJobAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("No playlist sync targets configured", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await WatchlistPerformanceMeasurement.TimeAsync(\"target_membership\", () => ApplyKnownTargetMembershipInlineAsync(", source, StringComparison.Ordinal);
 
-        var syncCallIndex = source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal);
+        var syncCallIndex = source.IndexOf("SchedulePlaylistTargetSyncAsync(", StringComparison.Ordinal);
         var queueAdmissionIndex = source.IndexOf("public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(", StringComparison.Ordinal);
         Assert.True(syncCallIndex >= 0);
         Assert.True(queueAdmissionIndex > syncCallIndex);
@@ -660,8 +678,9 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.DoesNotContain("\"sync_incomplete\"", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("\"sync_failed\"", watchSource, StringComparison.Ordinal);
         Assert.Contains("var success = queueResult.FailedCount == 0", watchSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyKnownTargetMembershipInlineAsync", watchSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyArtworkInlineForTargetAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("SchedulePlaylistTargetSyncAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("ScheduleArtworkForTargetAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("await WatchlistPerformanceMeasurement.TimeAsync(\"target_membership\", () => ApplyKnownTargetMembershipInlineAsync(", watchSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("WatchlistPlaylistState.WaitingForTargetSync", watchSource, StringComparison.Ordinal);

@@ -308,8 +308,16 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             }
 
             var verification = await RefreshAndVerifyRequestedIdentitiesAsync(job, cancellationToken);
-            if (verification.NewMappings > 0)
+            if (verification.ChangedTrackIds.Count > 0)
             {
+                foreach (var trackId in verification.ChangedTrackIds)
+                {
+                    await _repository.EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+                        trackId,
+                        job.TargetService,
+                        cancellationToken);
+                }
+
                 _watchlistRunSignal?.Request(WatchlistWakeReason.TargetSync);
             }
 
@@ -404,7 +412,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 NewMappings: 0,
                 RemainingPaths: job.ChangedFilePaths,
                 RemainingTrackIds: [],
-                Error: $"{job.TargetService} could not resolve local track IDs for the queued library paths.");
+                Error: $"{job.TargetService} could not resolve local track IDs for the queued library paths.",
+                ChangedTrackIds: []);
         }
 
         var before = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
@@ -424,7 +433,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 NewMappings: 0,
                 RemainingPaths: job.ChangedFilePaths,
                 RemainingTrackIds: trackIds.Order().ToList(),
-                Error: fetch.Error ?? $"{job.TargetService} target identity fetch failed.");
+                Error: fetch.Error ?? $"{job.TargetService} target identity fetch failed.",
+                ChangedTrackIds: []);
         }
 
         var mapped = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
@@ -452,12 +462,18 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 unresolvedPaths.Count);
         }
 
+        var changedTrackIds = mapped
+            .Where(entry => !before.TryGetValue(entry.Key, out var previousId)
+                || !string.Equals(previousId, entry.Value, StringComparison.Ordinal))
+            .Select(static entry => entry.Key)
+            .ToList();
         return new IdentityVerificationResult(
             IsComplete: remainingTrackIds.Count == 0 && unresolvedPaths.Count == 0,
-            NewMappings: CountChangedMappings(before, mapped),
+            NewMappings: changedTrackIds.Count,
             RemainingPaths: remainingPaths,
             RemainingTrackIds: remainingTrackIds,
-            Error: $"{job.TargetService} is still missing {remainingTrackIds.Count} requested track IDs.");
+            Error: $"{job.TargetService} is still missing {remainingTrackIds.Count} requested track IDs.",
+            ChangedTrackIds: changedTrackIds);
     }
 
     internal static int CountChangedMappings(
@@ -519,5 +535,6 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         int NewMappings,
         IReadOnlyList<string> RemainingPaths,
         IReadOnlyList<long> RemainingTrackIds,
-        string Error);
+        string Error,
+        IReadOnlyList<long> ChangedTrackIds);
 }

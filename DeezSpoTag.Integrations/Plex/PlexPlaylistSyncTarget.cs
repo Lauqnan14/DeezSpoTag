@@ -74,15 +74,51 @@ public sealed class PlexPlaylistSyncTarget : IPlaylistSyncTarget
             : TargetPlaylistLookup<string>.Found(match.Id);
     }
 
-    public async Task<string?> CreatePlaylistAsync(
+    private string? _createFailureDetail;
+
+    public string? CreateFailureDetail => _createFailureDetail;
+
+    public Task<string?> CreatePlaylistAsync(
         string name,
         string? description,
         CancellationToken cancellationToken)
+        => CreateMissingPlaylistAsync(name, description, Array.Empty<string>(), cancellationToken);
+
+    public async Task<string?> CreateMissingPlaylistAsync(
+        string name,
+        string? description,
+        IReadOnlyList<string> orderedItemIds,
+        CancellationToken cancellationToken)
     {
-        // Plex creates and fills a playlist in one call, so an empty playlist is not useful here.
-        // The engine reaches this only for a brand new target, and WriteMembershipAsync performs
-        // the create; returning null here would make the engine report a creation failure.
-        return null;
+        _createFailureDetail = null;
+        var plex = await _connection(cancellationToken);
+        if (plex is null)
+        {
+            _createFailureDetail = PlexConnectionNotConfiguredMessage;
+            return null;
+        }
+
+        if (orderedItemIds.Count == 0)
+        {
+            _createFailureDetail = "Plex cannot create a playlist until it has tracks to put in it.";
+            return null;
+        }
+
+        var created = await _client.CreateOrUpdatePlaylistAsync(
+            plex.Url,
+            plex.Token,
+            plex.MachineIdentifier,
+            name,
+            orderedItemIds,
+            options: new PlexApiClient.PlaylistUpsertOptions(AppendMissingOnly: false),
+            cancellationToken: cancellationToken);
+        if (string.IsNullOrWhiteSpace(created.PlaylistId))
+        {
+            _createFailureDetail = "Plex did not return a playlist id.";
+            return null;
+        }
+
+        return created.PlaylistId;
     }
 
     public async Task<TargetPlaylistItemsRead> ReadItemIdsAsync(string playlistId, CancellationToken cancellationToken)

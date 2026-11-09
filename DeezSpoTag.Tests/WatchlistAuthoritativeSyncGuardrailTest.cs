@@ -329,9 +329,11 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTest
             "Playlist artwork must be cached before initial target synchronization.",
             engine,
             StringComparison.Ordinal);
-        Assert.Contains("ApplyKnownTargetMembershipInlineAsync", engine, StringComparison.Ordinal);
-        Assert.Contains("SyncAvailablePlaylistTracksAsync", engine, StringComparison.Ordinal);
-        Assert.Contains("ApplyArtworkInlineForTargetAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("SchedulePlaylistTargetSyncAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("ScheduleArtworkForTargetAsync", engine, StringComparison.Ordinal);
+        Assert.DoesNotContain("await WatchlistPerformanceMeasurement.TimeAsync(\"target_membership\", () => ApplyKnownTargetMembershipInlineAsync(", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueMembershipJobsForNewlyResolvedIdentityAsync", File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "MediaServerRefreshOutboxService.cs")), StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkToTargetAsync", engine, StringComparison.Ordinal);
         Assert.Contains("EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync", engine, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobAsync", engine, StringComparison.Ordinal);

@@ -68,6 +68,43 @@ public sealed class PlatformPlaylistSyncTargetTest
                 request => Assert.Equal(HttpMethod.Post, request.Method));
     }
 
+    [Fact]
+    public async Task NavidromeCreatesAMissingPlaylistWhenLibraryTracksExist()
+    {
+        using var handler = new FakeHandler((request, _) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/getPlaylists.view", StringComparison.Ordinal))
+            {
+                return (HttpStatusCode.OK, "{\"subsonic-response\":{\"status\":\"ok\",\"playlists\":{}}}");
+            }
+
+            if (path.EndsWith("/createPlaylist.view", StringComparison.Ordinal))
+            {
+                return (HttpStatusCode.OK, "{\"subsonic-response\":{\"status\":\"ok\",\"playlist\":{\"id\":\"nav-1\",\"name\":\"Kenyan Afro Hits\"}}}");
+            }
+
+            return (HttpStatusCode.NotFound, "{}");
+        });
+        using var http = new HttpClient(handler);
+        var target = LibraryTarget("navidrome", http);
+
+        var created = await target.CreateMissingPlaylistAsync(
+            "Kenyan Afro Hits",
+            null,
+            new[] { "song-1", "song-2" },
+            CancellationToken.None);
+        var withoutTracks = await target.CreateMissingPlaylistAsync(
+            "Kenyan Afro Hits",
+            null,
+            Array.Empty<string>(),
+            CancellationToken.None);
+
+        Assert.Equal("nav-1", created);
+        Assert.Null(withoutTracks);
+        Assert.Contains(handler.Requests, request => request.Url.Contains("/createPlaylist.view", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("jellyfin", true)]
     [InlineData("jellyfin", false)]

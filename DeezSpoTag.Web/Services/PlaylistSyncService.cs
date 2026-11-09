@@ -2551,8 +2551,9 @@ public sealed class PlaylistSyncService
                 StringComparer.OrdinalIgnoreCase);
         return eligibleTracks
             .Where(track => localTrackIdBySourceId.ContainsKey(track.SourceTrackId))
-            .Select(track => (verifiedLocalTrackStatuses is null ? track : track with
-                { VerifiedLocalTrackId = localTrackIdBySourceId[track.SourceTrackId] }, localTrackIdBySourceId[track.SourceTrackId]))
+            .Select(track => (
+                track with { VerifiedLocalTrackId = localTrackIdBySourceId[track.SourceTrackId] },
+                localTrackIdBySourceId[track.SourceTrackId]))
             .ToList();
     }
 

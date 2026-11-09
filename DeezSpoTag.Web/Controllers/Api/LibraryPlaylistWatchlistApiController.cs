@@ -1297,7 +1297,7 @@ public partial class WatchlistApiController : ControllerBase
         return Ok(targets.Select(target => new
         {
             value = target,
-            kind = _playlistSyncTargetRegistry.Find(target)?.TargetKind.ToString().ToLowerInvariant()
+            kind = _playlistSyncTargetRegistry?.Find(target)?.TargetKind.ToString().ToLowerInvariant()
                    ?? (PlaylistTargetPresentation.IsLibraryServer(target)
                        ? PlaylistTargetPresentation.LibraryKind
                        : PlaylistTargetPresentation.PlatformKind),

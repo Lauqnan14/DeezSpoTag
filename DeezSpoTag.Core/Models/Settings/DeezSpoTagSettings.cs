@@ -287,7 +287,9 @@ public class DeezSpoTagSettings
 
     // Watchlist settings
     public bool WatchEnabled { get; set; } = false;
-    public int WatchPollIntervalSeconds { get; set; } = 3600;
+    public const int MinimumWatchPollIntervalSeconds = 6 * 60 * 60;
+
+    public int WatchPollIntervalSeconds { get; set; } = MinimumWatchPollIntervalSeconds;
     public int WatchMaxItemsPerRun { get; set; } = 50;
     public int WatchMaxReleasesPerArtist { get; set; } = 50;
     public int WatchMaxTracksPerPlaylistCheck { get; set; } = 50;

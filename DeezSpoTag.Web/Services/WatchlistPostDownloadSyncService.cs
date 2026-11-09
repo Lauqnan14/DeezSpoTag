@@ -655,6 +655,19 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Obsolete("Target server is no longer selected.");
             }
 
+            // Target calls wait for the existing server-id fetch to store an id. An empty track
+            // list, or a library track that is not yet indexed, must not create or update a playlist.
+            if (!await repository.PlaylistHasStoredTargetIdentityAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    request.TargetService,
+                    cancellationToken))
+            {
+                return SyncAttemptOutcome.Retry(
+                    "Waiting for a stored server id before target sync.",
+                    SyncFailureClass.IdentityMiss);
+            }
+
             if (IsArtworkJob(request.TrackId))
             {
                 var revision = request.TrackId[ArtworkJobTrackIdPrefix.Length..].Trim();

@@ -1143,7 +1143,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         SettingsFixTracker fixes)
     {
         ApplyFixIf(
-            settings.WatchPollIntervalSeconds < 1,
+            settings.WatchPollIntervalSeconds < DeezSpoTagSettings.MinimumWatchPollIntervalSeconds,
             () => settings.WatchPollIntervalSeconds = defaultSettings.WatchPollIntervalSeconds,
             fixes,
             nameof(settings.WatchPollIntervalSeconds));

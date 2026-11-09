@@ -12006,6 +12006,44 @@ LIMIT 1;";
             await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetInt32(9));
     }
 
+    public async Task<string> GetLibraryIdentityWatermarkAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT
+    (SELECT COUNT(*) FROM track) || ':' ||
+    (SELECT COALESCE(MAX(id), 0) FROM track) || ':' ||
+    (SELECT COALESCE(MAX(updated_at), '') FROM track) || ':' ||
+    (SELECT COUNT(*) FROM audio_file) || ':' ||
+    (SELECT COALESCE(MAX(id), 0) FROM audio_file) || ':' ||
+    (SELECT COALESCE(MAX(mtime), '') FROM audio_file);";
+        await using var command = new SqliteCommand(sql, connection);
+        return (await command.ExecuteScalarAsync(cancellationToken))?.ToString() ?? "0:0::0:0:";
+    }
+
+    public async Task UpdatePlaylistCandidateLibraryWatermarkAsync(
+        string source,
+        string sourceId,
+        string identityRevision,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE playlist_track_candidate_cache
+SET identity_revision = @identityRevision
+WHERE source = @source AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("identityRevision", identityRevision);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task UpsertPlaylistTrackCandidateCacheAsync(
         string source,
         string sourceId,
@@ -13756,7 +13794,13 @@ ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
     candidate_revision=COALESCE(excluded.candidate_revision, playlist_watch_missing_track.candidate_revision),
     provider_readiness_revision=COALESCE(excluded.provider_readiness_revision, playlist_watch_missing_track.provider_readiness_revision),
     status=CASE
-        WHEN lower(playlist_watch_missing_track.status) IN ('queued', 'downloading', 'unavailable', 'blocked') THEN playlist_watch_missing_track.status
+        WHEN lower(playlist_watch_missing_track.status) IN ('queued', 'downloading', 'blocked') THEN playlist_watch_missing_track.status
+        WHEN lower(playlist_watch_missing_track.status) = 'unavailable' AND EXISTS (
+            SELECT 1 FROM playlist_watch_track track
+            WHERE track.source=playlist_watch_missing_track.source
+              AND track.source_id=playlist_watch_missing_track.source_id
+              AND track.track_source_id=playlist_watch_missing_track.track_source_id
+              AND lower(track.status)='unavailable') THEN 'unavailable'
         ELSE 'missing'
     END,
     queue_uuid=CASE
@@ -13765,7 +13809,12 @@ ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
     END,
     last_error=NULL,
     retry_after_utc=CASE
-        WHEN lower(playlist_watch_missing_track.status) = 'unavailable' THEN playlist_watch_missing_track.retry_after_utc
+        WHEN lower(playlist_watch_missing_track.status) = 'unavailable' AND EXISTS (
+            SELECT 1 FROM playlist_watch_track track
+            WHERE track.source=playlist_watch_missing_track.source
+              AND track.source_id=playlist_watch_missing_track.source_id
+              AND track.track_source_id=playlist_watch_missing_track.track_source_id
+              AND lower(track.status)='unavailable') THEN playlist_watch_missing_track.retry_after_utc
         ELSE NULL
     END,
     updated_at=CURRENT_TIMESTAMP;";
@@ -13890,6 +13939,30 @@ ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0
         }
 
         return rows;
+    }
+
+    public async Task<int> CountDuePlaylistWatchMissingTracksAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COUNT(*)
+FROM playlist_watch_missing_track
+WHERE lower(status) IN ('missing', 'failed')
+  AND (retry_after_utc IS NULL OR datetime(retry_after_utc) <= datetime('now'));";
+        await using var command = new SqliteCommand(sql, connection);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
+    }
+
+    public async Task<bool> HasUnfinishedWatchlistFinalizationAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM watchlist_finalization_outbox
+WHERE lower(status) IN ('pending', 'retry', 'processing')
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     public async Task<int> ReopenOrphanedQueuedPlaylistWatchMissingTracksAsync(
@@ -14622,7 +14695,9 @@ SET status='pending',
 WHERE source=@source
   AND source_id=@sourceId
   AND lower(status)='unavailable'
-  AND COALESCE(unavailable_settings_fingerprint, '') <> @currentFingerprint;", connection);
+  AND (COALESCE(unavailable_settings_fingerprint, '') <> @currentFingerprint
+       OR unavailable_next_retry_utc IS NULL
+       OR datetime(unavailable_next_retry_utc) <= datetime('now'));", connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("currentFingerprint", currentFingerprint);
@@ -15802,7 +15877,7 @@ LIMIT 1;", connection);
             force: true,
             cancellationToken);
 
-    private async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistSyncJobsAsync(
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistSyncJobsAsync(
         string source,
         string playlistId,
         string snapshotId,
@@ -15833,6 +15908,37 @@ LIMIT 1;", connection);
             jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
         }
         return jobs;
+    }
+
+    public async Task<bool> PlaylistHasStoredTargetIdentityAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(targetService))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM playlist_watch_track t
+JOIN media_server_track_metadata meta
+  ON meta.track_id = t.local_track_id
+ AND lower(meta.service) = lower(@targetService)
+WHERE t.source = @source
+  AND t.source_id = @sourceId
+  AND t.local_track_id IS NOT NULL
+  AND trim(COALESCE(meta.target_item_id, '')) <> ''
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
@@ -15884,10 +15990,21 @@ JOIN (
                      AND trim(COALESCE(job.snapshot_id, '')) <> ''
                    ORDER BY job.updated_at DESC, job.id DESC
                    LIMIT 1)), ''),
+               NULLIF(trim((
+                   SELECT ws.snapshot_id
+                   FROM playlist_watch_state ws
+                   WHERE ws.source=t2.source AND ws.source_id=t2.source_id
+                   LIMIT 1)), ''),
+               NULLIF(trim((
+                   SELECT cache.snapshot_id
+                   FROM playlist_track_candidate_cache cache
+                   WHERE cache.source=t2.source AND cache.source_id=t2.source_id
+                   LIMIT 1)), ''),
                CASE
                    WHEN lower(@targetService)='plex' AND trim(@plexSnapshotId) <> '' THEN @plexSnapshotId
                    WHEN trim(@snapshotId) <> '' THEN @snapshotId
-                   ELSE NULL
+                   WHEN lower(@targetService)='plex' THEN 'stored-identity:plex-membership-v2'
+                   ELSE 'stored-identity'
                END
            ) AS catchup_snapshot_id
     FROM playlist_watch_track t2

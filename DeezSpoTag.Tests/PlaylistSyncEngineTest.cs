@@ -114,6 +114,32 @@ public sealed class PlaylistSyncEngineTest
 
         public int CreateCount { get; private set; }
 
+        public bool CreatesWithTracks { get; set; }
+
+        public IReadOnlyList<string>? CreatedItemIds { get; private set; }
+
+        public Task<string?> CreateMissingPlaylistAsync(
+            string name,
+            string? description,
+            IReadOnlyList<string> orderedItemIds,
+            CancellationToken cancellationToken)
+        {
+            if (!CreatesWithTracks)
+            {
+                return CreatePlaylistAsync(name, description, cancellationToken);
+            }
+
+            CreateCount++;
+            CreatedItemIds = orderedItemIds.ToList();
+            if (CreateFailsWith is not null)
+            {
+                return Task.FromResult<string?>(null);
+            }
+
+            _items["created"] = orderedItemIds.ToList();
+            return Task.FromResult<string?>("created");
+        }
+
         public int WriteCount { get; private set; }
 
         public PlaylistMembershipWrite? LastWrite { get; private set; }
@@ -378,6 +404,27 @@ public sealed class PlaylistSyncEngineTest
         Assert.True(outcome.Success);
         Assert.True(target.LastWrite!.AppendMissingOnly);
         Assert.Equal(0, outcome.RemovedCount);
+    }
+
+    [Fact]
+    public async Task Sync_CreatesAMissingPlaylistWithItsTracksBeforeReportingFailure()
+    {
+        var target = new FakeTarget("plex") { CreatesWithTracks = true };
+        var (engine, bindings) = Build(target);
+
+        var outcome = await engine.SyncAsync(
+            "plex",
+            "Tiktok Hits Kenya 2026",
+            null,
+            new[] { "11", "22" },
+            appendMissingOnly: false,
+            Binding);
+
+        Assert.True(outcome.Success);
+        Assert.Equal("created", outcome.PlaylistId);
+        Assert.Equal(new[] { "11", "22" }, target.CreatedItemIds);
+        Assert.Equal(("plex", "created"), Assert.Single(bindings));
+        Assert.DoesNotContain("failed to create", outcome.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

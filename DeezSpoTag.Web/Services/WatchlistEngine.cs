@@ -894,67 +894,6 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 RemainingQueueableTracks: 0);
         }
 
-        await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
-            source,
-            sourceId,
-            liveSnapshot.SnapshotId,
-            candidatesJson,
-            PlaylistCandidateContract.CurrentCacheSchemaVersion,
-            candidateIdentityRevision,
-            providerReadinessRevision,
-            candidateCacheComplete,
-            cancellationToken,
-            sourceItemsObserved: liveSnapshot.SourceItemsObserved ?? candidates.Count));
-
-        // Snapshot pipeline timing. Structured and free of credentials so the real distribution of
-        // head vs full-fetch cost per provider can be measured rather than estimated.
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Playlist snapshot phase completed. Source={Source} PlaylistId={PlaylistId} TrackCount={TrackCount} FetchedTrackCount={FetchedTrackCount} SnapshotComplete={SnapshotComplete} SnapshotReused={SnapshotReused} SnapshotChanged={SnapshotChanged} Truncated={Truncated} TotalSnapshotMs={TotalSnapshotMs}",
-                source,
-                sourceId,
-                liveTrackCount,
-                candidates.Count,
-                liveSnapshot.IsComplete,
-                !snapshotExpanded,
-                sourceChanged,
-                snapshotTruncated,
-                snapshotPhaseTimer.ElapsedMilliseconds);
-        }
-
-        if (liveSnapshot.IsComplete)
-        {
-            await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.RemovePlaylistWatchTracksNotInAsync(
-                source,
-                sourceId,
-                candidates.Select(candidate => candidate.TrackSourceId).ToList(),
-                cancellationToken));
-        }
-
-        await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.AddPlaylistWatchTracksAsync(
-            source,
-            sourceId,
-            candidates
-                .Select((candidate, index) => new PlaylistWatchTrackInsert(
-                    candidate.TrackSourceId,
-                    candidate.Isrc,
-                    candidate.SourcePosition ?? index + 1,
-                    candidate.Title,
-                    candidate.Artist,
-                    candidate.Album,
-                    candidate.DurationMs,
-                    candidate.CoverUrl,
-                    candidateIdentityRevision,
-                    liveSnapshot.SnapshotId,
-                    candidate.MappingStatus))
-                .ToList(),
-            cancellationToken));
-        var localTrackCount = await ResolveAndPersistLocalTrackIdentitiesAsync(
-            source,
-            sourceId,
-            candidates,
-            cancellationToken);
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
         var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
         var playlistNotificationLabel = string.IsNullOrWhiteSpace(currentPlaylist.Name)
@@ -974,13 +913,145 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             CandidateIdentityRevision = candidateIdentityRevision,
             ProviderReadinessRevision = providerReadinessRevision
         });
-        var selection = await SelectMissingPlaylistTracksAsync(
+        var libraryWatermark = await WatchlistPerformanceMeasurement.TimeAsync(
+            "library_watermark",
+            () => _libraryRepository.GetLibraryIdentityWatermarkAsync(cancellationToken));
+        var storedLibraryWatermark = PlaylistReconcileDelta.ReadLibraryWatermark(existingCandidateCache?.IdentityRevision);
+        if (sourceChanged || existingCandidateCache is null)
+        {
+            await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
+                source,
+                sourceId,
+                liveSnapshot.SnapshotId,
+                candidatesJson,
+                PlaylistCandidateContract.CurrentCacheSchemaVersion,
+                candidateIdentityRevision,
+                providerReadinessRevision,
+                candidateCacheComplete,
+                cancellationToken,
+                sourceItemsObserved: liveSnapshot.SourceItemsObserved ?? candidates.Count));
+        }
+        else
+        {
+            await _libraryRepository.UpdatePlaylistCandidateLibraryWatermarkAsync(
+                source,
+                sourceId,
+                candidateIdentityRevision,
+                cancellationToken);
+        }
+
+        // Snapshot pipeline timing. Structured and free of credentials so the real distribution of
+        // head vs full-fetch cost per provider can be measured rather than estimated.
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Playlist snapshot phase completed. Source={Source} PlaylistId={PlaylistId} TrackCount={TrackCount} FetchedTrackCount={FetchedTrackCount} SnapshotComplete={SnapshotComplete} SnapshotReused={SnapshotReused} SnapshotChanged={SnapshotChanged} Truncated={Truncated} TotalSnapshotMs={TotalSnapshotMs}",
+                source,
+                sourceId,
+                liveTrackCount,
+                candidates.Count,
+                liveSnapshot.IsComplete,
+                !snapshotExpanded,
+                sourceChanged,
+                snapshotTruncated,
+                snapshotPhaseTimer.ElapsedMilliseconds);
+        }
+
+        var storedStatuses = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
             source,
             sourceId,
-            candidates,
-            preference?.DestinationFolderId,
-            queueOptions,
-            cancellationToken);
+            cancellationToken));
+        var storedByTrackId = storedStatuses
+            .Where(static status => !string.IsNullOrWhiteSpace(status.TrackSourceId))
+            .GroupBy(static status => status.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var sameTrackSet = PlaylistReconcileDelta.SameTrackSet(
+            storedByTrackId.Keys,
+            candidates.Select(static candidate => candidate.TrackSourceId));
+        var libraryWatermarkMatches = PlaylistReconcileDelta.LibraryWatermarkMatches(storedLibraryWatermark, libraryWatermark);
+        var libraryChangedCandidates = storedByTrackId.Count == 0
+            ? candidates
+            : sameTrackSet && !sourceChanged && libraryWatermarkMatches
+                ? Array.Empty<PlaylistTrackCandidate>()
+                : await LibraryIdentityChangesAsync(source, candidates, storedByTrackId, cancellationToken);
+        WatchlistPerformanceMeasurement.Current?.Increment("library_identity_resolved", libraryWatermarkMatches && sameTrackSet && !sourceChanged ? 0 : libraryChangedCandidates.Count);
+        var availabilityFingerprint = BuildUnavailableSettingsFingerprint(queueOptions);
+        var recheckCandidates = candidates.Where(candidate => storedByTrackId.TryGetValue(candidate.TrackSourceId, out var status)
+            && string.Equals(status.Status, UnavailableStatus, StringComparison.OrdinalIgnoreCase)
+            && !IsAvailabilityRecheckWindowActive(status, availabilityFingerprint, DateTimeOffset.UtcNow)).ToList();
+        var recoveryRequired = existingCandidateCache is not null && string.IsNullOrEmpty(storedLibraryWatermark);
+        var sourceChanges = sourceChanged
+            ? PlaylistReconcileDelta.Changed(candidates,
+                existingCandidateCache is null ? [] : TryDeserializePlaylistTrackCandidates(existingCandidateCache.CandidatesJson) ?? [])
+            : Array.Empty<PlaylistTrackCandidate>();
+        var workCandidates = recoveryRequired || storedByTrackId.Count == 0
+            ? candidates
+            : PlaylistReconcileDelta.Combine(
+                PlaylistReconcileDelta.Combine(PlaylistReconcileDelta.Added(candidates, storedByTrackId.Keys), sourceChanges),
+                libraryChangedCandidates);
+        var selectionCandidates = PlaylistReconcileDelta.Combine(workCandidates, recheckCandidates);
+        var reuseStoredSelection = !recoveryRequired && selectionCandidates.Count == 0
+            && PlaylistReconcileDelta.CanReuseUnchangedSelection(
+                sourceChanged, liveSnapshot.IsComplete, snapshotTruncated, sameTrackSet,
+                libraryChangedCandidates.Count > 0);
+        WatchlistPerformanceMeasurement.Current?.Increment("tracks_reconciled", workCandidates.Count);
+        WatchlistPerformanceMeasurement.Current?.Increment("unchanged_selection_reused", reuseStoredSelection ? 1 : 0);
+
+        if (liveSnapshot.IsComplete)
+        {
+            if (!reuseStoredSelection)
+            {
+                await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.RemovePlaylistWatchTracksNotInAsync(
+                    source,
+                    sourceId,
+                    candidates.Select(candidate => candidate.TrackSourceId).ToList(),
+                    cancellationToken));
+            }
+        }
+
+        var tracksToPersist = workCandidates;
+        WatchlistPerformanceMeasurement.Current?.Increment("tracks_persisted", tracksToPersist.Count);
+        if (!reuseStoredSelection && tracksToPersist.Count > 0)
+        {
+            var positionByTrackId = candidates
+                .Select((candidate, index) => (candidate.TrackSourceId, Position: candidate.SourcePosition ?? index + 1))
+                .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(static group => group.Key, static group => group.First().Position, StringComparer.OrdinalIgnoreCase);
+            await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.AddPlaylistWatchTracksAsync(
+                source,
+                sourceId,
+                tracksToPersist
+                    .Select(candidate => new PlaylistWatchTrackInsert(
+                        candidate.TrackSourceId,
+                        candidate.Isrc,
+                        positionByTrackId.GetValueOrDefault(candidate.TrackSourceId, 0),
+                        candidate.Title,
+                        candidate.Artist,
+                        candidate.Album,
+                        candidate.DurationMs,
+                        candidate.CoverUrl,
+                        candidateIdentityRevision,
+                        liveSnapshot.SnapshotId,
+                        candidate.MappingStatus))
+                    .ToList(),
+                cancellationToken));
+        }
+        if (workCandidates.Count > 0)
+        {
+            await ResolveAndPersistLocalTrackIdentitiesAsync(source, sourceId, workCandidates, cancellationToken);
+        }
+        var localTrackCount = (await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(source, sourceId, cancellationToken))
+            .Count(static status => status.LocalTrackId is > 0
+                && string.Equals(status.IdentityStatus, "identity_verified", StringComparison.OrdinalIgnoreCase));
+        var selection = reuseStoredSelection || selectionCandidates.Count == 0
+            ? new PlaylistTrackSelection(new List<WatchIntentTrack>(), 0, localTrackCount, 0, 0, 0, 0)
+            : await SelectMissingPlaylistTracksAsync(
+                source,
+                sourceId,
+                selectionCandidates,
+                preference?.DestinationFolderId,
+                queueOptions,
+                cancellationToken);
         await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpsertPlaylistWatchMissingTracksAsync(
             source,
             sourceId,
@@ -1003,22 +1074,18 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             localTrackStatuses,
             ignoredTrackIds);
 
-        var visitSyncResult = hasConfiguredPlaylistSyncTargets
-            ? await WatchlistPerformanceMeasurement.TimeAsync("target_membership", () => ApplyKnownTargetMembershipInlineAsync(
+        if (hasConfiguredPlaylistSyncTargets)
+        {
+            await SchedulePlaylistTargetSyncAsync(
                 currentPlaylist,
                 preference,
-                candidates,
-                candidateIdentityRevision,
-                localTrackStatuses,
+                liveSnapshot.SnapshotId,
                 forceMediaServerSync,
-                cancellationToken,
-                reuseVerifiedLocalIdentities: true))
-            : null;
+                cancellationToken);
+        }
 
         var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;
         var syncRequestAccepted = !forcedSyncWithoutTargets;
-        var hasIncompleteTargetSync = visitSyncResult is { Success: false }
-            || visitSyncResult is { MissingTracks: > 0 };
         var hasOutstandingOperationalWork = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.HasOutstandingPlaylistWatchOperationalWorkAsync(
             source,
             sourceId,
@@ -1028,7 +1095,6 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         var hasOutstandingPlaylistWork = snapshotTruncated
             || selection.MissingTracks.Count > 0
             || remainingQueueableTracks > 0
-            || hasIncompleteTargetSync
             || hasOutstandingOperationalWork;
         var reconciliationMessage = (forcedSyncWithoutTargets
                 ? NoTargetServerSelectedMessage
@@ -1037,7 +1103,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 ? $"Playlist snapshot was truncated at {candidates.Count} of {liveTrackCount} track(s) by the configured snapshot limit; the collected window was reconciled and tracks beyond it were left untouched."
                 : null)
             ?? (hasConfiguredPlaylistSyncTargets
-                ? "Playlist snapshot reconciled and available local tracks were applied to selected target servers."
+                ? "Playlist snapshot reconciled. Target sync is scheduled under Watchlist after server track ids are available."
                 : PlaylistSyncDisabledDownloadMonitoringMessage);
         await UpdatePlaylistStateAsync(
             source,
@@ -1053,6 +1119,15 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             nextAttemptUtc: null,
             consecutiveFailures: syncRequestAccepted ? 0 : 1,
             cancellationToken);
+        if (syncRequestAccepted)
+        {
+            // Publish the completion marker last. A failure or cancellation before
+            // this write leaves a pending cache that the next pass must reconcile.
+            await _libraryRepository.UpdatePlaylistCandidateLibraryWatermarkAsync(
+                source, sourceId,
+                PlaylistReconcileDelta.WithLibraryWatermark(candidateIdentityRevision, libraryWatermark),
+                cancellationToken);
+        }
         return new PlaylistReconciliationResult(
             syncRequestAccepted,
             reconciliationMessage,
@@ -1063,7 +1138,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             QueuedTracks: 0,
             CompletedTracks: localTrackCount,
             FailedTracks: syncRequestAccepted ? 0 : 1,
-            SyncResult: visitSyncResult,
+            SyncResult: null,
             Deferred: false,
             AttemptedTracks: 0,
             QueueStopReason: (hasOutstandingPlaylistWork
@@ -1853,6 +1928,64 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         return artworkJob != null;
     }
 
+    private async Task SchedulePlaylistTargetSyncAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string? snapshotId,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var readyTargets = new List<string>();
+        foreach (var target in ResolveConfiguredPlaylistSyncTargets(preference))
+        {
+            if (await _libraryRepository.PlaylistHasStoredTargetIdentityAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    target,
+                    cancellationToken))
+            {
+                readyTargets.Add(target);
+            }
+        }
+
+        if (readyTargets.Count == 0)
+        {
+            return;
+        }
+
+        var jobs = new List<WatchlistSyncJobDto>();
+        foreach (var target in readyTargets)
+        {
+            jobs.AddRange(await WatchlistPerformanceMeasurement.TimeAsync(
+                "ledger_mutation",
+                () => _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    snapshotId ?? string.Empty,
+                    target,
+                    force,
+                    cancellationToken)));
+        }
+
+        var playlistSync = _serviceProvider.GetService<PlaylistSyncService>();
+        if (playlistSync != null)
+        {
+            foreach (var target in readyTargets)
+            {
+                await playlistSync.ScheduleArtworkForTargetAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    target,
+                    cancellationToken);
+            }
+        }
+
+        if (jobs.Count > 0)
+        {
+            _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
+        }
+    }
+
     private static bool HasConfiguredPlaylistSyncTargets(PlaylistWatchPreferenceDto? preference)
         => ResolveConfiguredPlaylistSyncTargets(preference).Count > 0;
 
@@ -1939,16 +2072,12 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
 
         if (HasConfiguredPlaylistSyncTargets(preference))
         {
-            var candidates = await GetCachedPlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
-            var statuses = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.GetPlaylistWatchTrackStatusesAsync(source, sourceId, cancellationToken));
-            await WatchlistPerformanceMeasurement.TimeAsync("target_membership", () => ApplyKnownTargetMembershipInlineAsync(
+            await SchedulePlaylistTargetSyncAsync(
                 currentPlaylist,
                 preference,
-                candidates,
                 currentPlaylist.SnapshotId,
-                statuses,
                 force: false,
-                cancellationToken));
+                cancellationToken);
         }
 
         return currentPlaylist;
@@ -2144,6 +2273,13 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             .Where(static item => !string.IsNullOrWhiteSpace(item.Isrc))
             .GroupBy(static item => item.Isrc!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+        await _libraryRepository.UpdatePlaylistWatchProgressAsync(
+            source,
+            sourceId,
+            "selecting_tracks",
+            0,
+            orderedCandidates.Count,
+            cancellationToken);
         var nowUtc = DateTimeOffset.UtcNow;
         var missingTracks = new List<WatchIntentTrack>();
         var ignoredCount = 0;
@@ -2156,13 +2292,6 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         {
             cancellationToken.ThrowIfCancellationRequested();
             candidateIndex++;
-            await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpdatePlaylistWatchProgressAsync(
-                source,
-                sourceId,
-                "selecting_tracks",
-                candidateIndex,
-                orderedCandidates.Count,
-                cancellationToken));
             if (!PlaylistCandidateContract.IsResolvable(source, candidate))
             {
                 continue;
@@ -2177,6 +2306,14 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             if (statusByTrackId.TryGetValue(candidate.TrackSourceId, out var reviewedStatus)
                 && string.Equals(reviewedStatus.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase))
             {
+                continue;
+            }
+
+            if (statusByTrackId.TryGetValue(candidate.TrackSourceId, out var verifiedLocal)
+                && verifiedLocal.LocalTrackId is > 0
+                && string.Equals(verifiedLocal.IdentityStatus, "identity_verified", StringComparison.OrdinalIgnoreCase))
+            {
+                localCount++;
                 continue;
             }
 
@@ -2263,7 +2400,177 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             }
         }
 
+        await _libraryRepository.UpdatePlaylistWatchProgressAsync(
+            source,
+            sourceId,
+            "selecting_tracks",
+            orderedCandidates.Count,
+            orderedCandidates.Count,
+            cancellationToken);
         return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount, claimedCount, blockedCount, recoveredClaimCount, unavailableCount);
+    }
+
+    internal static class PlaylistReconcileDelta
+    {
+        public static bool SameTrackSet(IEnumerable<string> storedTrackIds, IEnumerable<string> incomingTrackIds)
+        {
+            var stored = new HashSet<string>(storedTrackIds.Where(static id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
+            var incoming = new HashSet<string>(incomingTrackIds.Where(static id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
+            return stored.SetEquals(incoming);
+        }
+
+        public static IReadOnlyList<PlaylistTrackCandidate> Added(
+            IReadOnlyList<PlaylistTrackCandidate> incoming,
+            IEnumerable<string> storedTrackIds)
+        {
+            var stored = new HashSet<string>(storedTrackIds.Where(static id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
+            return incoming
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.TrackSourceId) && !stored.Contains(candidate.TrackSourceId))
+                .ToList();
+        }
+
+        public static IReadOnlyList<PlaylistTrackCandidate> Changed(
+            IReadOnlyList<PlaylistTrackCandidate> incoming,
+            IReadOnlyList<PlaylistTrackCandidate> previous)
+        {
+            var old = previous.Select((candidate, index) => candidate with { SourcePosition = candidate.SourcePosition ?? index + 1 })
+                .GroupBy(candidate => candidate.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => JsonSerializer.Serialize(group.First()), StringComparer.OrdinalIgnoreCase);
+            return incoming.Where((candidate, index) => !old.TryGetValue(candidate.TrackSourceId, out var prior)
+                || !string.Equals(prior, JsonSerializer.Serialize(candidate with
+                    { SourcePosition = candidate.SourcePosition ?? index + 1 }), StringComparison.Ordinal)).ToList();
+        }
+
+        public static IReadOnlyList<PlaylistTrackCandidate> Combine(
+            IReadOnlyList<PlaylistTrackCandidate> added,
+            IReadOnlyList<PlaylistTrackCandidate> changed)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var combined = new List<PlaylistTrackCandidate>(added.Count + changed.Count);
+            foreach (var candidate in added.Concat(changed))
+            {
+                if (!string.IsNullOrWhiteSpace(candidate.TrackSourceId) && seen.Add(candidate.TrackSourceId))
+                {
+                    combined.Add(candidate);
+                }
+            }
+
+            return combined;
+        }
+
+        public const string LibraryWatermarkMarker = "\nlib:";
+
+        public static string WithLibraryWatermark(string candidateIdentityRevision, string watermark)
+            => candidateIdentityRevision + LibraryWatermarkMarker + watermark;
+
+        public static string ReadLibraryWatermark(string? storedIdentityRevision)
+        {
+            if (string.IsNullOrEmpty(storedIdentityRevision))
+            {
+                return string.Empty;
+            }
+
+            var index = storedIdentityRevision.LastIndexOf(LibraryWatermarkMarker, StringComparison.Ordinal);
+            return index < 0
+                ? string.Empty
+                : storedIdentityRevision[(index + LibraryWatermarkMarker.Length)..];
+        }
+
+        public static bool LibraryWatermarkMatches(string storedWatermark, string currentWatermark)
+            => !string.IsNullOrEmpty(storedWatermark)
+                && string.Equals(storedWatermark, currentWatermark, StringComparison.Ordinal);
+
+        public static bool CanReuseUnchangedSelection(
+            bool sourceChanged,
+            bool snapshotComplete,
+            bool snapshotTruncated,
+            bool sameTrackSet,
+            bool libraryIdentityChanged)
+            => !sourceChanged
+                && snapshotComplete
+                && !snapshotTruncated
+                && sameTrackSet
+                && !libraryIdentityChanged;
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> LibraryIdentityChangesAsync(
+        string source,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        IReadOnlyDictionary<string, PlaylistWatchTrackStatusDto> storedByTrackId,
+        CancellationToken cancellationToken)
+    {
+        if (storedByTrackId.Count == 0)
+        {
+            return candidates;
+        }
+
+        var changed = new List<PlaylistTrackCandidate>();
+        var verifiedIds = storedByTrackId.Values
+            .Where(static status => status.LocalTrackId is > 0
+                && string.Equals(status.IdentityStatus, "identity_verified", StringComparison.OrdinalIgnoreCase))
+            .Select(static status => status.LocalTrackId!.Value)
+            .Distinct()
+            .ToList();
+        var missingVerifiedFiles = new HashSet<long>();
+        if (verifiedIds.Count > 0)
+        {
+            var paths = await _libraryRepository.GetTrackPrimaryFilePathsAsync(verifiedIds, cancellationToken);
+            foreach (var id in verifiedIds)
+            {
+                if (!paths.TryGetValue(id, out var path) || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                {
+                    missingVerifiedFiles.Add(id);
+                }
+            }
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (storedByTrackId.TryGetValue(candidate.TrackSourceId, out var status)
+                && status.LocalTrackId is > 0
+                && missingVerifiedFiles.Contains(status.LocalTrackId.Value))
+            {
+                changed.Add(candidate);
+            }
+        }
+
+        var unresolved = candidates
+            .Where(candidate => !storedByTrackId.TryGetValue(candidate.TrackSourceId, out var status)
+                || status.LocalTrackId is not > 0
+                || !string.Equals(status.IdentityStatus, "identity_verified", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (unresolved.Count == 0)
+        {
+            return changed;
+        }
+
+        var inputs = unresolved.Select(candidate =>
+        {
+            var identitySource = !string.IsNullOrWhiteSpace(candidate.DeezerId) ? DeezerSource : source;
+            var identityTrackId = !string.IsNullOrWhiteSpace(candidate.DeezerId) ? candidate.DeezerId : candidate.TrackSourceId;
+            return new LibraryRepository.LibraryExistenceInput(
+                candidate.Isrc,
+                candidate.Title,
+                candidate.Artist,
+                candidate.DurationMs,
+                identitySource,
+                identityTrackId!,
+                candidate.Album,
+                candidate.Explicit);
+        }).ToList();
+        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
+            inputs,
+            cancellationToken,
+            audioVariant: "stereo_preferred");
+        for (var index = 0; index < unresolved.Count && index < identities.Count; index++)
+        {
+            if (identities[index].LocalTrackId is > 0 && !identities[index].IsAmbiguous)
+            {
+                changed.Add(unresolved[index]);
+            }
+        }
+
+        return changed;
     }
 
     private async Task<int> ResolveAndPersistLocalTrackIdentitiesAsync(

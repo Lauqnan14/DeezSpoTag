@@ -119,6 +119,13 @@ public sealed record WatchlistRuntimeResetResult(
     LibraryRepository.WatchlistRuntimeCleanupResult Cleanup,
     WatchlistTriggerStatus TriggerStatus);
 
+public enum WatchlistWaitAction
+{
+    Wait,
+    ReleaseNextBatch,
+    StartSnapshotRun
+}
+
 public readonly record struct WatchlistBatchGate(
     bool HasActiveDownloads,
     DateTimeOffset? LastBatchCompletedUtc,
@@ -313,12 +320,37 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
     private static TimeSpan GetWatchInterval(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
-        var seconds = settings.WatchPollIntervalSeconds;
-        if (seconds < 1)
-        {
-            seconds = 1;
-        }
+        var seconds = Math.Max(
+            settings.WatchPollIntervalSeconds,
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings.MinimumWatchPollIntervalSeconds);
         return TimeSpan.FromSeconds(seconds);
+    }
+
+    /// <summary>
+    /// A snapshot fetch is at least six hours after the previous one, and it does not start while
+    /// the current 50-track batch is still downloading or waiting to be imported. Between snapshot
+    /// fetches, a finished imported batch releases the next 50 from the existing missing list.
+    /// </summary>
+    internal static WatchlistWaitAction DecideWaitAction(
+        DateTimeOffset nowUtc,
+        DateTimeOffset? nextSnapshotUtc,
+        bool batchBusy,
+        bool missingTracksRemain)
+    {
+        if (batchBusy)
+        {
+            return WatchlistWaitAction.Wait;
+        }
+
+        var snapshotDue = !nextSnapshotUtc.HasValue || nextSnapshotUtc.Value <= nowUtc;
+        if (snapshotDue)
+        {
+            return WatchlistWaitAction.StartSnapshotRun;
+        }
+
+        return missingTracksRemain
+            ? WatchlistWaitAction.ReleaseNextBatch
+            : WatchlistWaitAction.Wait;
     }
 
     private async Task WaitForFullRunDeadlineAsync(CancellationToken cancellationToken)
@@ -335,20 +367,39 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
             var scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
             var gate = await EvaluateBatchGateAsync(repository, scheduler?.CycleStartedUtc, cancellationToken);
-            if (gate.HasActiveDownloads)
+            var importPending = await repository.HasUnfinishedWatchlistFinalizationAsync(cancellationToken);
+            var missingTracksRemain = await repository.CountDuePlaylistWatchMissingTracksAsync(cancellationToken) > 0;
+            var action = DecideWaitAction(
+                DateTimeOffset.UtcNow,
+                scheduler?.NextCycleUtc,
+                gate.HasActiveDownloads || importPending,
+                missingTracksRemain);
+            if (action == WatchlistWaitAction.StartSnapshotRun)
             {
-                if (scheduler is not null
-                    && !string.Equals(scheduler.CycleStatus, "waiting_downloads", StringComparison.OrdinalIgnoreCase))
-                {
-                    await repository.UpdateWatchlistCycleStateAsync(
-                        PlaylistWatchType,
-                        "waiting_downloads",
-                        scheduler.CycleStartedUtc,
-                        cycleCompletedUtc: null,
-                        nextCycleUtc: null,
-                        cancellationToken);
-                }
+                return;
+            }
 
+            if (action == WatchlistWaitAction.ReleaseNextBatch)
+            {
+                await ReleaseNextAdmissionBatchAsync(repository, cancellationToken);
+                continue;
+            }
+
+            if ((gate.HasActiveDownloads || importPending)
+                && scheduler is not null
+                && !string.Equals(scheduler.CycleStatus, "waiting_downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                await repository.UpdateWatchlistCycleStateAsync(
+                    PlaylistWatchType,
+                    "waiting_downloads",
+                    scheduler.CycleStartedUtc,
+                    scheduler.CycleCompletedUtc,
+                    scheduler.NextCycleUtc,
+                    cancellationToken);
+            }
+
+            if (gate.HasActiveDownloads || importPending)
+            {
                 await ProcessWaitSignalAsync(
                     DateTimeOffset.UtcNow.AddSeconds(15),
                     TimeSpan.FromSeconds(15),
@@ -356,30 +407,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 continue;
             }
 
-            if (scheduler is not null
-                && string.Equals(scheduler.CycleStatus, "waiting_downloads", StringComparison.OrdinalIgnoreCase))
-            {
-                var completedUtc = gate.LastBatchCompletedUtc ?? DateTimeOffset.UtcNow;
-                var nextRunUtc = completedUtc + GetWatchInterval();
-                await repository.UpdateWatchlistCycleStateAsync(
-                    PlaylistWatchType,
-                    "completed",
-                    scheduler.CycleStartedUtc,
-                    completedUtc,
-                    nextRunUtc,
-                    cancellationToken);
-                scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
-            }
-
-            if (scheduler is null
-                || string.Equals(scheduler.CycleStatus, "running", StringComparison.OrdinalIgnoreCase)
-                || !scheduler.NextCycleUtc.HasValue
-                || scheduler.NextCycleUtc.Value <= DateTimeOffset.UtcNow)
+            if (scheduler?.NextCycleUtc is not { } deadlineUtc)
             {
                 return;
             }
-
-            var deadlineUtc = scheduler.NextCycleUtc.Value;
             var nextTargetSyncUtc = await repository.GetNextWatchlistSyncJobDueUtcAsync(cancellationToken);
             var wakeUtc = nextTargetSyncUtc.HasValue && nextTargetSyncUtc.Value < deadlineUtc
                 ? nextTargetSyncUtc.Value
@@ -390,6 +421,48 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 cancellationToken,
                 wakeUtc < deadlineUtc ? WatchlistWakeReason.TargetSync : WatchlistWakeReason.ScheduledRefresh);
         }
+    }
+
+    private async Task ReleaseNextAdmissionBatchAsync(
+        LibraryRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var sync = _serviceProvider.GetService<WatchlistPostDownloadSyncService>();
+        if (sync is not null)
+        {
+            await sync.ProcessFinalizationWorkAsync(cancellationToken);
+            await sync.ProcessTargetSyncWorkAsync(
+                TargetSyncBudget.DrainBounded(WatchlistSyncJobKind.All, 25),
+                cancellationToken);
+        }
+
+        if (await repository.HasUnfinishedWatchlistFinalizationAsync(cancellationToken))
+        {
+            await ProcessWaitSignalAsync(
+                DateTimeOffset.UtcNow.AddSeconds(15),
+                TimeSpan.FromSeconds(15),
+                cancellationToken);
+            return;
+        }
+
+        var settings = _serviceProvider.GetRequiredService<DeezSpoTagSettingsService>().LoadSettings();
+        var admission = _serviceProvider.GetRequiredService<WatchlistQueueAdmissionService>();
+        var reconciler = _serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+        var token = admission.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun));
+        try
+        {
+            var playlists = await repository.GetPlaylistWatchlistAsync(cancellationToken);
+            await reconciler.AdmitDueMissingTracksFromLedgerAsync(playlists, cancellationToken);
+        }
+        finally
+        {
+            admission.EndRun(token);
+        }
+
+        await ProcessWaitSignalAsync(
+            DateTimeOffset.UtcNow.AddSeconds(15),
+            TimeSpan.FromSeconds(15),
+            cancellationToken);
     }
 
     private async Task ProcessWaitSignalAsync(
@@ -827,17 +900,15 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 {
                     var batchGate = await EvaluateBatchGateAsync(repository, cycleStartedUtc, stoppingToken);
                     var completionAnchorUtc = batchGate.LastBatchCompletedUtc ?? cycleCompletedUtc;
-                    var nextCycleUtc = batchGate.LastBatchCompletedUtc.HasValue
-                        ? completionAnchorUtc + GetWatchInterval()
-                        : cycleCompletedUtc + GetWatchInterval();
+                    var nextCycleUtc = completionAnchorUtc + GetWatchInterval();
                     await repository.UpdateWatchlistCycleStateAsync(
                         PlaylistWatchType,
                         batchGate.HasActiveDownloads
                             ? "waiting_downloads"
                             : cycleCompleted ? "completed" : "failed",
                         cycleStartedUtc,
-                        batchGate.HasActiveDownloads ? null : completionAnchorUtc,
-                        batchGate.HasActiveDownloads ? null : nextCycleUtc,
+                        completionAnchorUtc,
+                        nextCycleUtc,
                         stoppingToken);
                 }
             }

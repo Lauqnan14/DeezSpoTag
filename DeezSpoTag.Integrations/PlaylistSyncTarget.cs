@@ -221,6 +221,18 @@ public interface IPlaylistSyncTarget
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Creates a missing playlist before its membership is read or written.
+    /// Destinations that can only create a playlist together with its tracks override this
+    /// and use <paramref name="orderedItemIds"/>. The default creates an empty playlist.
+    /// </summary>
+    Task<string?> CreateMissingPlaylistAsync(
+        string name,
+        string? description,
+        IReadOnlyList<string> orderedItemIds,
+        CancellationToken cancellationToken)
+        => CreatePlaylistAsync(name, description, cancellationToken);
+
+    /// <summary>
     /// Why the last <see cref="CreatePlaylistAsync"/> returned null, when the target can say.
     /// <para>
     /// A default of null keeps this off every other destination. It exists for the case where the

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Runtime;
@@ -754,6 +755,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             config,
             NullLogger<DownloadQueueRepository>.Instance);
 
+        var deferredServices = new DeferredServiceProvider();
         var playlistWatchService = new WatchlistEngine(
             _repository,
             new WatchlistEngine.PlaylistWatchPlatformServices
@@ -777,7 +779,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
                 ActivitiesRealtimeService = null!
             },
             _settingsService,
-            serviceProvider: null!,
+            serviceProvider: deferredServices,
             localIdentityResolver: new PassthroughLocalTrackAmbiguityResolver(),
             logger: _engineLogger);
 
@@ -802,11 +804,24 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         services.AddSingleton(_repository);
         services.AddSingleton(_queueRepository);
         services.AddSingleton(queueAdmission);
+        services.AddSingleton(new DownloadDedupeService(
+            _queueRepository,
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver()));
         services.AddSingleton(playlistWatchService);
         services.AddSingleton(new PlaylistWatchReconciler(playlistWatchService));
         services.AddSingleton(artistWatchService);
         services.AddSingleton(CreateProfileResolutionService());
         _provider = services.BuildServiceProvider();
+        deferredServices.Attach(_provider);
+    }
+
+    private sealed class DeferredServiceProvider : IServiceProvider
+    {
+        private IServiceProvider? _inner;
+        public void Attach(IServiceProvider inner) => _inner = inner;
+        public object? GetService(Type serviceType) => (_inner ?? throw new InvalidOperationException("Test services are not ready.")).GetService(serviceType);
     }
 
     public Task DisposeAsync()
@@ -827,6 +842,203 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
 
         return Task.CompletedTask;
     }
+
+    [Fact]
+    public async Task UnchangedLargePlaylistDoesNotReconcileEveryTrackAgain()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.PlaylistSnapshotTrackLimit = 3000;
+        settings.WatchUseSnapshotIdChecking = true;
+        _settingsService.SaveSettings(settings);
+        var candidates = Enumerable.Range(1, 3000).Select(index => new PlaylistTrackCandidate(
+            index.ToString(),
+            "ISRC" + index,
+            "Track " + index,
+            "Artist",
+            "Album",
+            null,
+            180000,
+            false,
+            Array.Empty<string>(),
+            SourcePosition: index)).ToList();
+        var playlist = await _repository.AddPlaylistWatchlistAsync(
+            "unsupported",
+            "large-unchanged",
+            new PlaylistWatchlistMetadataInput("Large", null, null, 3000));
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        var prepared = await reconciler.PreparePlaylistSnapshotAsync(playlist!, null, CancellationToken.None);
+        prepared = prepared with
+        {
+            Candidates = candidates,
+            SnapshotId = "snap-large",
+            Name = "Large",
+            TrackCount = 3000,
+            IsComplete = true,
+            IsAuthoritativeEmpty = false,
+            SourceItemsObserved = 3000,
+            IdentityRevision = PlaylistCandidateContract.BuildIdentityRevision("unsupported", candidates),
+            WasExpanded = true,
+            SnapshotTrackLimit = 3000
+        };
+
+        var first = await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: prepared);
+        Assert.True(first.Success, first.Message);
+        var firstSummary = LatestSummary();
+        Assert.Equal(3000L, Counter(firstSummary, "tracks_reconciled"));
+        Assert.Equal(0L, Counter(firstSummary, "unchanged_selection_reused"));
+
+        var second = await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: prepared);
+        Assert.True(second.Success, second.Message);
+        var secondSummary = LatestSummary();
+        Assert.Equal(0L, Counter(secondSummary, "tracks_reconciled"));
+        Assert.Equal(0L, Counter(secondSummary, "tracks_persisted"));
+        Assert.Equal(0L, Counter(secondSummary, "library_identity_resolved"));
+        Assert.False(secondSummary.ContainsKey("batch_identity_lookup_ms"));
+        Assert.Equal(1L, Counter(secondSummary, "unchanged_selection_reused"));
+        Assert.Equal(3000, (await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "large-unchanged")).Count);
+
+        var added = candidates.Concat(Enumerable.Range(3001, 10).Select(index => new PlaylistTrackCandidate(
+            index.ToString(),
+            "ISRC" + index,
+            "Track " + index,
+            "Artist",
+            "Album",
+            null,
+            180000,
+            false,
+            Array.Empty<string>(),
+            SourcePosition: index))).ToList();
+        var changed = prepared with
+        {
+            Candidates = added,
+            SnapshotId = "snap-large-2",
+            TrackCount = 3010,
+            SourceItemsObserved = 3010,
+            IdentityRevision = PlaylistCandidateContract.BuildIdentityRevision("unsupported", added)
+        };
+        var third = await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: changed);
+        Assert.True(third.Success, third.Message);
+        var thirdSummary = LatestSummary();
+        Assert.Equal(10L, Counter(thirdSummary, "tracks_reconciled"));
+        Assert.Equal(10L, Counter(thirdSummary, "tracks_persisted"));
+        Assert.Equal(0L, Counter(thirdSummary, "unchanged_selection_reused"));
+        Assert.Equal(3010, (await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "large-unchanged")).Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnchangedSnapshotRechecksUnavailableWhenDueOrPreferencesChange(bool changePreferences)
+    {
+        var (playlist, snapshot) = await ReconciliationFixtureAsync("recheck");
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot)).Success);
+        var before = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "recheck"));
+        Assert.Equal("unavailable", before.Status);
+        var deadline = changePreferences ? DateTimeOffset.UtcNow.AddDays(2) : DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync("unsupported", "recheck", "1", null,
+            "Previous check", changePreferences ? "previous-preferences" : before.UnavailableSettingsFingerprint!, deadline);
+
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot)).Success);
+        var after = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "recheck"));
+        Assert.NotEqual(deadline, after.UnavailableNextRecheckUtc);
+        Assert.True(after.UnavailableNextRecheckUtc > DateTimeOffset.UtcNow);
+        // Availability was reconsidered without repeating library identity matching.
+        Assert.Equal(0L, Counter(LatestSummary(), "tracks_reconciled"));
+    }
+
+    [Fact]
+    public async Task ChangedSnapshotUpdatesExistingPositionsAndMetadata()
+    {
+        var (playlist, snapshot) = await ReconciliationFixtureAsync("reordered", 2);
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot)).Success);
+        var candidates = snapshot.Candidates.Reverse().Select((track, index) => track with
+            { SourcePosition = index + 1, Title = "Corrected " + track.TrackSourceId }).ToList();
+        var changed = snapshot with { Candidates = candidates, SnapshotId = "reordered-v2",
+            IdentityRevision = PlaylistCandidateContract.BuildIdentityRevision("unsupported", candidates) };
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: changed)).Success);
+        var statuses = await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "reordered");
+        Assert.Equal(2, statuses.Single(track => track.TrackSourceId == "1").SourcePosition);
+        Assert.Equal(1, statuses.Single(track => track.TrackSourceId == "2").SourcePosition);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + Path.Join(_tempRoot, "library.db"));
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT title FROM playlist_watch_track WHERE source_id='reordered' AND track_source_id='1'";
+        Assert.Equal("Corrected 1", await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task FailedReconciliationDoesNotPublishACompletedLibraryWatermark()
+    {
+        var (playlist, snapshot) = await ReconciliationFixtureAsync("interrupted", 2);
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + Path.Join(_tempRoot, "library.db"));
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TRIGGER interrupt_reconcile BEFORE UPDATE OF identity_status ON playlist_watch_track WHEN NEW.track_source_id='2' BEGIN SELECT RAISE(ABORT,'injected interruption'); END;";
+        await command.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() =>
+            reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot));
+        var interrupted = await _repository.GetPlaylistTrackCandidateCacheAsync("unsupported", "interrupted");
+        Assert.NotNull(interrupted);
+        Assert.Empty(WatchlistEngine.PlaylistReconcileDelta.ReadLibraryWatermark(interrupted.IdentityRevision));
+        Assert.Equal(2, (await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "interrupted")).Count);
+        command.CommandText = "DROP TRIGGER interrupt_reconcile";
+        await command.ExecuteNonQueryAsync();
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot)).Success);
+        var recovered = await _repository.GetPlaylistTrackCandidateCacheAsync("unsupported", "interrupted");
+        Assert.NotEmpty(WatchlistEngine.PlaylistReconcileDelta.ReadLibraryWatermark(recovered!.IdentityRevision));
+        Assert.Equal(2, (await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "interrupted")).Count);
+        Assert.Equal(2L, Counter(LatestSummary(), "tracks_reconciled"));
+    }
+
+    [Fact]
+    public async Task AvailabilityRecheckReopensOnlyDueMissingLedgerRows()
+    {
+        var (playlist, snapshot) = await ReconciliationFixtureAsync("due-ledger", 2);
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        Assert.True((await reconciler.ReconcilePlaylistAsync(playlist, CancellationToken.None, preparedSnapshot: snapshot)).Success);
+        var status = (await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "due-ledger")).First();
+        var fingerprint = status.UnavailableSettingsFingerprint!;
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync("unsupported", "due-ledger", "1", null, "due", fingerprint, DateTimeOffset.UtcNow.AddMinutes(-1));
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync("unsupported", "due-ledger", "2", null, "later", fingerprint, DateTimeOffset.UtcNow.AddDays(1));
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + Path.Join(_tempRoot, "library.db"));
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO playlist_watch_missing_track(source,source_id,track_source_id,status) VALUES ('unsupported','due-ledger','1','unavailable'),('unsupported','due-ledger','2','unavailable')";
+        await command.ExecuteNonQueryAsync();
+
+        await _repository.ClearPlaylistWatchUnavailableStatusesWithDifferentFingerprintAsync("unsupported", "due-ledger", fingerprint);
+        // Only a candidate accepted by selection may reopen its missing-download row.
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("unsupported", "due-ledger",
+            new[] { "1", "2" }.Select(id => new PlaylistWatchMissingTrackUpsert(id, null, null,
+                "Track", "Artist", "Album", 180000, null, null, null, null, null, null)).ToList());
+        var due = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
+        Assert.Equal("1", Assert.Single(due).TrackSourceId);
+        var statuses = await _repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "due-ledger");
+        Assert.Equal("pending", statuses.Single(track => track.TrackSourceId == "1").Status);
+        Assert.Equal("unavailable", statuses.Single(track => track.TrackSourceId == "2").Status);
+    }
+
+    private async Task<(PlaylistWatchlistDto Playlist, PreparedPlaylistSnapshot Snapshot)> ReconciliationFixtureAsync(string id, int count = 1)
+    {
+        var playlist = (await _repository.AddPlaylistWatchlistAsync("unsupported", id,
+            new PlaylistWatchlistMetadataInput("Fixture", null, null, count)))!;
+        var candidates = Enumerable.Range(1, count).Select(index => new PlaylistTrackCandidate(index.ToString(), null,
+            "Track " + index, "Artist", "Album", null, 180000, false, Array.Empty<string>(), SourcePosition: index)).ToList();
+        var prepared = await _provider.GetRequiredService<PlaylistWatchReconciler>()
+            .PreparePlaylistSnapshotAsync(playlist, null, CancellationToken.None);
+        return (playlist, prepared with { Candidates = candidates, SnapshotId = id + "-v1", Name = "Fixture",
+            TrackCount = count, SourceItemsObserved = count, IsComplete = true, IsAuthoritativeEmpty = false,
+            IdentityRevision = PlaylistCandidateContract.BuildIdentityRevision("unsupported", candidates), WasExpanded = true });
+    }
+
+    private IReadOnlyDictionary<string, object?> LatestSummary()
+        => Assert.Single(_engineLogger.Entries.Where(entry => entry.Fields?.ContainsKey("tracks_reconciled") == true).TakeLast(1)).Fields!;
+
+    private static long Counter(IReadOnlyDictionary<string, object?> fields, string name)
+        => fields.TryGetValue(name, out var value) ? Convert.ToInt64(value) : 0L;
 
     [Fact]
     public async Task RunOnce_AccountsForEveryPlaylistDespitePersistedBackoff()
