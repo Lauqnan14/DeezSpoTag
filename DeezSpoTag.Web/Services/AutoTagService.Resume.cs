@@ -28,7 +28,10 @@ public partial class AutoTagService
 
     internal static bool ShouldRewindLegacyCombinedFolderUniformityJob(AutoTagJob job, JsonObject configRoot)
     {
-        if (job.SelectedEnhancementFeatures.Count > 0
+        // A profile can enable Folder Uniformity while the run intent skips it.
+        // Missing evidence is expected in that case, not grounds to replay tagging.
+        if (!ShouldRunEnhancementForIntent(job.RunIntent)
+            || job.SelectedEnhancementFeatures.Count > 0
             || !string.IsNullOrWhiteSpace(job.FolderUniformityRunMode)
             || job.EnhancementBatchState.Pending != null
             || job.ResumeCheckpoint is not { } checkpoint

@@ -18,6 +18,43 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class AutoTagResumeTriggerPolicyTest
 {
+    [Theory]
+    [InlineData("download_enrichment", false)]
+    [InlineData("DOWNLOAD_ENRICHMENT", false)]
+    [InlineData("manual_enrichment", false)]
+    [InlineData("soulseek_enrichment", true)]
+    [InlineData("enhancement_only", true)]
+    [InlineData("enhancement_recent_downloads", true)]
+    public void LegacyCombinedRun_RewindRequiresWorkflowEligibleRunIntent(string runIntent, bool expected)
+    {
+        // Profiles retain enhancement options even when download enrichment skips
+        // those workflows. Their missing execution evidence must not reset progress.
+        var config = JsonNode.Parse("""
+            {
+              "tags": ["title"],
+              "enhancement": {
+                "gapFilling": { "enabled": true },
+                "folderUniformity": { "enabled": true, "enforceFolderStructure": true }
+              }
+            }
+            """)!.AsObject();
+        var job = new AutoTagJob
+        {
+            RunIntent = runIntent,
+            ResumeCheckpoint = new AutoTagResumeCheckpoint
+            {
+                StageName = "enrichment",
+                PlatformIndex = 6,
+                FileIndex = 40,
+                PlatformCount = 11,
+                FileCount = 64,
+                LastPath = "/downloads/artist/album/track.flac"
+            }
+        };
+
+        Assert.Equal(expected, AutoTagService.ShouldRewindLegacyCombinedFolderUniformityJob(job, config));
+    }
+
     [Fact]
     public void LegacyCombinedRun_RewindsOnlyWhenFolderUniformityHasNoEvidence()
     {

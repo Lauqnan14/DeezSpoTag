@@ -191,6 +191,27 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private const string InvolvedPeopleRawTag = "INVOLVEDPEOPLE";
     private const string PublisherTag = "publisher";
     private const string PublisherRawTag = "PUBLISHER";
+    // Independent credit-role config keys (canonical order from
+    // SupportedTagCreditMappings); physical raw tags resolve through the
+    // registry, not constants.
+    private const string SongwriterTag = "songwriter";
+    private const string ProducerTag = "producer";
+    private const string ExecutiveProducerTag = "executiveProducer";
+    private const string CoProducerTag = "coProducer";
+    private const string AdditionalProducerTag = "additionalProducer";
+    private const string VocalProducerTag = "vocalProducer";
+    private const string EngineerTag = "engineer";
+    private const string RecordingEngineerTag = "recordingEngineer";
+    private const string MixingEngineerTag = "mixingEngineer";
+    private const string MasteringEngineerTag = "masteringEngineer";
+    private const string AssistantEngineerTag = "assistantEngineer";
+    private const string ArrangerTag = "arranger";
+    private const string OrchestratorTag = "orchestrator";
+    private const string ConductorTag = "conductor";
+    private const string PerformerTag = "performer";
+    private const string DjMixerTag = "djMixer";
+    private const string DirectorTag = "director";
+    private const string MelodicnessTag = "melodicness";
     private const string DescriptionTag = "description";
     private const string DescriptionRawTag = "DESCRIPTION";
     private const string CommentRawTag = "COMMENT";
@@ -288,6 +309,45 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         "TEXT",
         InvolvedPeopleTag,
         InvolvedPeopleRawTag,
+        // Independent credit-role raw fields bound through
+        // SupportedTagCreditMappings (uppercase custom tags plus their config
+        // keys so presence logic never treats them as unclassified "other").
+        SongwriterTag,
+        "SONGWRITER",
+        ProducerTag,
+        "PRODUCER",
+        ExecutiveProducerTag,
+        "EXECUTIVEPRODUCER",
+        CoProducerTag,
+        "COPRODUCER",
+        AdditionalProducerTag,
+        "ADDITIONALPRODUCER",
+        VocalProducerTag,
+        "VOCALPRODUCER",
+        EngineerTag,
+        "ENGINEER",
+        RecordingEngineerTag,
+        "RECORDINGENGINEER",
+        MixingEngineerTag,
+        "MIXINGENGINEER",
+        MasteringEngineerTag,
+        "MASTERINGENGINEER",
+        AssistantEngineerTag,
+        "ASSISTANTENGINEER",
+        ArrangerTag,
+        "ARRANGER",
+        OrchestratorTag,
+        "ORCHESTRATOR",
+        ConductorTag,
+        "CONDUCTOR",
+        PerformerTag,
+        "PERFORMER",
+        DjMixerTag,
+        "DJMIXER",
+        DirectorTag,
+        "DIRECTOR",
+        MelodicnessTag,
+        "MELODICNESS",
         PublisherTag,
         PublisherRawTag,
         DescriptionTag,
@@ -350,6 +410,24 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         [LyricistTag] = settings => settings.Lyricist = true,
         [InvolvedPeopleTag] = settings => settings.InvolvedPeople = true,
         [PublisherTag] = settings => settings.Publisher = true,
+        [SongwriterTag] = settings => settings.Songwriter = true,
+        [ProducerTag] = settings => settings.Producer = true,
+        [ExecutiveProducerTag] = settings => settings.ExecutiveProducer = true,
+        [CoProducerTag] = settings => settings.CoProducer = true,
+        [AdditionalProducerTag] = settings => settings.AdditionalProducer = true,
+        [VocalProducerTag] = settings => settings.VocalProducer = true,
+        [EngineerTag] = settings => settings.Engineer = true,
+        [RecordingEngineerTag] = settings => settings.RecordingEngineer = true,
+        [MixingEngineerTag] = settings => settings.MixingEngineer = true,
+        [MasteringEngineerTag] = settings => settings.MasteringEngineer = true,
+        [AssistantEngineerTag] = settings => settings.AssistantEngineer = true,
+        [ArrangerTag] = settings => settings.Arranger = true,
+        [OrchestratorTag] = settings => settings.Orchestrator = true,
+        [ConductorTag] = settings => settings.Conductor = true,
+        [PerformerTag] = settings => settings.Performer = true,
+        [DjMixerTag] = settings => settings.DjMixer = true,
+        [DirectorTag] = settings => settings.Director = true,
+        [MelodicnessTag] = settings => settings.Melodicness = true,
         [DescriptionTag] = settings => settings.Description = true,
         [SourceTag] = settings => settings.Source = true,
         [UrlTag] = settings => settings.Url = true,

@@ -611,6 +611,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    private static void TransferShazamRecognitionCache(AutoTagRunPlan plan, string previousPath, string materializedPath)
+    {
+        if (PathsReferToSameFile(previousPath, materializedPath)) return;
+        if (plan.ShazamCache.TryGetValue(previousPath, out var recognition))
+        {
+            plan.ShazamCache[materializedPath] = recognition;
+            plan.ShazamCache.Remove(previousPath);
+        }
+    }
+
     private static void PersistManualMaterializedTargetPath(
         AutoTagRunPlan plan,
         string previousPath,
@@ -621,11 +631,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (plan.ShazamCache.TryGetValue(previousPath, out var recognition))
-        {
-            plan.ShazamCache[materializedPath] = recognition;
-            plan.ShazamCache.Remove(previousPath);
-        }
+        TransferShazamRecognitionCache(plan, previousPath, materializedPath);
         var runtimeDirectory = Path.GetDirectoryName(plan.ConfigPath);
         if (string.IsNullOrWhiteSpace(runtimeDirectory) || !Directory.Exists(runtimeDirectory))
         {

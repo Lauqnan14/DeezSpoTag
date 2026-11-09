@@ -398,15 +398,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteRemixerTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(RemixerTag) || context.SourceTrack.Remixers.Count == 0)
-        {
-            return;
-        }
-
-        SetField(
-            tagWriteContext,
-            new TagFieldBinding("TPE4", RemixerUpperTag, RemixerUpperTag, SupportedTag.Remixer),
-            context.SourceTrack.Remixers.ToList());
+        if (SupportedTagCreditMappings.TryGetRole(RemixerTag, out var role))
+            WriteCreditRoleTag(tagWriteContext, context, role);
     }
 
     private static void WriteMoodTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -544,18 +537,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteComposerTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(ComposerTag) || !context.EffectiveTagSettings.Composer)
-        {
-            return;
-        }
-
-        var values = ResolveOtherValues(context.SourceTrack, ComposerTag, ComposerUpperTag, "TCOM");
-        if (values.Count == 0)
-        {
-            return;
-        }
-
-        SetRawIfAllowed(tagWriteContext, ComposerTag, ResolveComposerRawName(context.Extension), values);
+        if (SupportedTagCreditMappings.TryGetRole(ComposerTag, out var role))
+            WriteCreditRoleTag(tagWriteContext, context, role);
     }
 
     private static void WriteInvolvedPeopleTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -571,23 +554,273 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetRawIfAllowed(tagWriteContext, InvolvedPeopleTag, InvolvedPeopleRawTag, values);
-    }
-
-    private static void WritePublisherTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(PublisherTag) || !context.EffectiveTagSettings.Publisher)
+        // Recognized roles are controlled exclusively by their own selections.
+        // The legacy toggle may write unknown labels, never bypass a role's
+        // Write/Overwrite decision through the combined representation.
+        var unknown = SplitCombinedCreditTokens(values)
+            .Where(entry => !SupportedTagCreditMappings.TryParseCombinedCreditEntry(entry, out _, out _))
+            .ToList();
+        if (unknown.Count == 0)
         {
             return;
         }
 
-        var values = ResolveFirstClassOrOtherValues(context.SourceTrack.Publisher, context.SourceTrack, PublisherTag, PublisherRawTag);
+        var retainedRoles = SplitCombinedCreditTokens(
+                ReadRawTagValues(tagWriteContext.File, tagWriteContext.Extension, InvolvedPeopleRawTag))
+            .Where(entry => SupportedTagCreditMappings.TryParseCombinedCreditEntry(entry, out _, out _));
+        var merged = retainedRoles.Concat(unknown).Distinct(StringComparer.Ordinal).ToList();
+        SetRawIfAllowed(tagWriteContext, InvolvedPeopleTag, InvolvedPeopleRawTag, merged);
+    }
+
+    /// <summary>
+    /// Shared credit-role write stage. Each canonical role resolves through
+    /// SupportedTagCreditMappings and gets its own dedicated raw field, its own
+    /// selection gate (whitelist key + effective settings flag) and its own
+    /// overwrite gate (global overwrite or the role's own overwrite whitelist
+    /// entry). A role present either in its dedicated field or as a recognized
+    /// combined-credit entry ("Role: Name") counts as existing, so with
+    /// overwrite disabled the stored value always wins and no conflicting
+    /// duplicate is ever created. When a role write is granted, stale combined
+    /// entries for exactly that role are superseded — every other combined
+    /// entry (deselected roles, unrecognized labels) is retained.
+    /// </summary>
+    private static void WriteCreditRoleTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        SupportedTagCreditMappings.NormalizeTrackCredits(context.SourceTrack);
+        foreach (var role in SupportedTagCreditMappings.Definitions)
+        {
+            // Composer, lyricist, remixer and publisher keep their native
+            // tag-library bindings (TCOM/TEXT/TXXX/TXXX) through their own
+            // writers; a second dedicated field would duplicate the credit.
+            if (role.Key is "composer" or "lyricist" or "remixer" or "publisher")
+            {
+                continue;
+            }
+
+            WriteCreditRoleTag(tagWriteContext, context, role);
+        }
+    }
+
+    private static void WriteCreditRoleTag(
+        TagWriteContext tagWriteContext,
+        TagWriteExecutionContext context,
+        CreditRoleDefinition role)
+    {
+        if (!context.EnabledTags.Contains(role.Key) || !IsCreditRoleEnabled(context.EffectiveTagSettings, role.Key))
+        {
+            return;
+        }
+
+        SupportedTagCreditMappings.NormalizeTrackCredits(context.SourceTrack);
+        var values = CollectCreditRoleValues(context.SourceTrack, role);
         if (values.Count == 0)
         {
             return;
         }
 
-        SetRawIfAllowed(tagWriteContext, PublisherTag, PublisherRawTag, values);
+        var overwrite = context.Config.Overwrite
+            || context.Config.OverwriteTags.Any(tag => string.Equals(tag?.Trim(), role.Key, StringComparison.OrdinalIgnoreCase));
+        // The combined representation is stored separator-joined in some
+        // containers (ID3 user text frames), so entries are split into tokens
+        // before role resolution. Comma-joined payloads remain ambiguous with
+        // names that contain commas and are treated as one token.
+        var combinedTokens = SplitCombinedCreditTokens(
+            ReadRawTagValues(tagWriteContext.File, tagWriteContext.Extension, InvolvedPeopleRawTag));
+        var combinedForRole = combinedTokens
+            .Where(entry => ResolvesToRole(entry, role.Key))
+            .ToList();
+        var rawName = role.Key switch
+        {
+            "composer" => ResolveComposerRawName(context.Extension),
+            "lyricist" => ResolveLyricistRawName(context.Extension),
+            "remixer" when context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase) => "TPE4",
+            _ => role.RawTag
+        };
+        var hasDedicated = ReadRawTagValues(tagWriteContext.File, tagWriteContext.Extension, rawName).Count > 0;
+
+        if (!overwrite && (hasDedicated || combinedForRole.Count > 0))
+        {
+            if (SupportedTagMap.TryGetValue(role.Key, out var retainedTag))
+            {
+                tagWriteContext.AttemptedTags.Add(retainedTag);
+            }
+
+            return;
+        }
+
+        if (combinedForRole.Count > 0)
+        {
+            var retained = combinedTokens
+                .Where(entry => !ResolvesToRole(entry, role.Key))
+                .ToList();
+            if (retained.Count == 0)
+            {
+                RemoveRawTagValues(tagWriteContext, InvolvedPeopleRawTag);
+            }
+            else
+            {
+                WriteRawTagValues(tagWriteContext, InvolvedPeopleRawTag, retained);
+            }
+        }
+
+        SetRaw(tagWriteContext, rawName, SupportedTagMap[role.Key], values);
+    }
+
+    private static bool ResolvesToRole(string entry, string roleKey)
+    {
+        return SupportedTagCreditMappings.TryParseCombinedCreditEntry(entry, out var key, out _)
+            && string.Equals(key, roleKey, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// ID3-family containers store the combined-credit field as one
+    /// separator-joined string; Vorbis and MP4 dash boxes store one entry per
+    /// value. Splitting on semicolons recovers entry granularity in both
+    /// shapes; names containing semicolons are not representable in the joined
+    /// shape.
+    /// </summary>
+    private static List<string> SplitCombinedCreditTokens(IEnumerable<string> storedValues)
+    {
+        var tokens = new List<string>();
+        foreach (var stored in storedValues.Select(value => value.Trim()))
+        {
+            if (string.IsNullOrWhiteSpace(stored))
+            {
+                continue;
+            }
+
+            foreach (var piece in stored.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                tokens.AddRange(SplitJoinedEntryBoundaries(piece));
+            }
+        }
+
+        return tokens;
+    }
+
+    /// <summary>
+    /// A comma inside a combined-credit payload starts a new entry only when
+    /// the following segment itself looks like a "Label: value" entry start;
+    /// otherwise it continues the previous name (e.g. "Domingo, Plácido").
+    /// </summary>
+    private static List<string> SplitJoinedEntryBoundaries(string text)
+    {
+        var entries = new List<string>();
+        var current = new StringBuilder();
+        foreach (var segment in text.Split(','))
+        {
+            var candidate = segment.Trim();
+            if (candidate.Length == 0)
+            {
+                current.Append(',');
+                continue;
+            }
+
+            if (current.Length > 0 && LooksLikeEntryStart(candidate))
+            {
+                entries.Add(current.ToString().Trim());
+                current.Clear();
+            }
+            else if (current.Length > 0)
+            {
+                current.Append(", ");
+            }
+
+            current.Append(candidate);
+        }
+
+        if (current.Length > 0)
+        {
+            entries.Add(current.ToString().Trim());
+        }
+
+        return entries;
+    }
+
+    private static bool LooksLikeEntryStart(string candidate)
+    {
+        var colonIndex = candidate.IndexOf(':');
+        return colonIndex > 0
+            && colonIndex < candidate.Length - 1
+            && candidate[..colonIndex].Trim() is { Length: > 0 and <= 32 } label
+            && !label.Contains(':');
+    }
+
+    /// <summary>
+    /// Role values come from the provider-specific dedicated multi-value
+    /// entries or, when a provider only supplies the legacy combined-credit
+    /// representation, from recognized combined entries for this role.
+    /// </summary>
+    private static List<string> CollectCreditRoleValues(AutoTagTrack track, CreditRoleDefinition role)
+    {
+        var values = role.Key switch
+        {
+            "lyricist" => ResolveFirstClassOrOtherValues(track.Lyricist, track, LyricistTag, LyricistRawTag, "TEXT"),
+            "publisher" => ResolveFirstClassOrOtherValues(track.Publisher, track, PublisherTag, PublisherRawTag),
+            "remixer" => track.Remixers.Concat(ResolveOtherValues(track, role.Key, role.RawTag))
+                .Distinct(StringComparer.Ordinal).ToList(),
+            "composer" => ResolveOtherValues(track, ComposerTag, ComposerUpperTag, "TCOM"),
+            _ => ResolveOtherValues(track, role.Key, role.RawTag)
+        };
+        if (values.Count > 0 || track.Other.Count == 0)
+        {
+            return values;
+        }
+
+        var combined = new List<string>();
+        foreach (var bucketKey in new[] { InvolvedPeopleTag, InvolvedPeopleRawTag })
+        {
+            if (!track.Other.TryGetValue(bucketKey, out var entries))
+            {
+                continue;
+            }
+
+            foreach (var entry in entries)
+            {
+                if (SupportedTagCreditMappings.TryParseCombinedCreditEntry(entry, out var key, out var name)
+                    && string.Equals(key, role.Key, StringComparison.Ordinal))
+                {
+                    if (!string.IsNullOrWhiteSpace(name)) combined.Add(name);
+                }
+            }
+        }
+
+        return combined.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    private static bool IsCreditRoleEnabled(TagSettings settings, string key)
+    {
+        return key switch
+        {
+            "songwriter" => settings.Songwriter,
+            "composer" => settings.Composer,
+            "lyricist" => settings.Lyricist,
+            "producer" => settings.Producer,
+            "executiveProducer" => settings.ExecutiveProducer,
+            "coProducer" => settings.CoProducer,
+            "additionalProducer" => settings.AdditionalProducer,
+            "vocalProducer" => settings.VocalProducer,
+            "engineer" => settings.Engineer,
+            "recordingEngineer" => settings.RecordingEngineer,
+            "mixingEngineer" => settings.MixingEngineer,
+            "masteringEngineer" => settings.MasteringEngineer,
+            "assistantEngineer" => settings.AssistantEngineer,
+            "arranger" => settings.Arranger,
+            "orchestrator" => settings.Orchestrator,
+            "conductor" => settings.Conductor,
+            "performer" => settings.Performer,
+            "remixer" => settings.Remixer,
+            "djMixer" => settings.DjMixer,
+            "publisher" => settings.Publisher,
+            "director" => settings.Director,
+            _ => false
+        };
+    }
+
+    private static void WritePublisherTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (SupportedTagCreditMappings.TryGetRole(PublisherTag, out var role))
+            WriteCreditRoleTag(tagWriteContext, context, role);
     }
 
     private static void WriteDescriptionTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)

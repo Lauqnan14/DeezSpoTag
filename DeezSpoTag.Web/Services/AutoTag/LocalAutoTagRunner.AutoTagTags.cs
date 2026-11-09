@@ -111,6 +111,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         SupportedTagFeatureMappings.AddAudioFeatureTags(map);
 
+        // Independent credit roles and melodicness resolve their config keys
+        // through the shared registry so every provider and the whitelist
+        // matching use the same camelCase keys.
+        SupportedTagCreditMappings.AddSupportedTagMappings(map);
+
         map[CatalogNumberTag] = SupportedTag.CatalogNumber;
         map[TrackNumberTag] = SupportedTag.TrackNumber;
         map[DiscNumberTag] = SupportedTag.DiscNumber;
@@ -138,6 +143,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static List<string> CollectAutoTagTags(AutoTagTrack track)
     {
+        SupportedTagCreditMappings.NormalizeTrackCredits(track);
         var tags = new List<string>();
         void Add(string tag, bool condition)
         {
@@ -201,6 +207,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         add("tempo", track.Tempo.HasValue);
         add("timeSignature", track.TimeSignature.HasValue);
         add("liveness", track.Liveness.HasValue);
+        add(MelodicnessTag, track.Melodicness.HasValue);
         add("key", !string.IsNullOrWhiteSpace(track.Key));
         add("mood", !string.IsNullOrWhiteSpace(track.Mood));
         add("activity", !string.IsNullOrWhiteSpace(track.Activity));
@@ -230,6 +237,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         add(ComposerTag, HasOtherTagValues(track, ComposerTag));
         add(LyricistTag, HasOtherTagValues(track, LyricistTag) || HasOtherTagValues(track, LyricistRawTag) || HasOtherTagValues(track, "TEXT"));
         add(InvolvedPeopleTag, HasOtherTagValues(track, InvolvedPeopleTag));
+        foreach (var role in SupportedTagCreditMappings.Definitions)
+        {
+            add(role.Key,
+                HasOtherTagValues(track, role.Key) || HasOtherTagValues(track, role.RawTag));
+        }
+
         add(PublisherTag, HasOtherTagValues(track, PublisherTag) || HasOtherTagValues(track, PublisherRawTag));
         add(DescriptionTag, HasOtherTagValues(track, DescriptionTag) || HasOtherTagValues(track, DescriptionRawTag) || HasOtherTagValues(track, CommentRawTag));
         add(SourceTag, HasOtherTagValues(track, SourceTag));
@@ -250,7 +263,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool IsFirstClassOtherRawKey(string key)
     {
-        if (FirstClassRawOtherTags.Contains(key))
+        if (FirstClassRawOtherTags.Contains(key) || SupportedTagCreditMappings.TryGetRole(key, out _))
         {
             return true;
         }

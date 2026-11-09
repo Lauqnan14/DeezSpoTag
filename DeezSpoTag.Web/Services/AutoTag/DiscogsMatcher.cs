@@ -317,7 +317,8 @@ public sealed class DiscogsMatcher
         var other = BuildOtherFields(release, position);
         var media = BuildMediaFormats(release);
         var credits = BuildCreditFields((track.ExtraArtists ?? new List<DiscogsExtraArtist>())
-            .Concat(release.ExtraArtists ?? new List<DiscogsExtraArtist>()));
+            .Concat(release.ExtraArtists ?? new List<DiscogsExtraArtist>())
+            .Where(credit => RestrictionAppliesToTrack(credit?.Tracks, release, trackIndex)));
         var trackArtistNames = track.Artists?.Select(a => CleanArtist(a.Name)).ToList()
             ?? release.Artists.Select(a => CleanArtist(a.Name)).ToList();
         var trackArtistId = track.Artists?
@@ -359,6 +360,7 @@ public sealed class DiscogsMatcher
                     (format.Descriptions ?? new List<string>()).Append(format.Name)),
                 release.Tracks.Count),
             Composers = credits.Composers,
+            Songwriters = credits.Songwriters,
             Remixers = credits.Remixers,
             InvolvedPeople = credits.InvolvedPeople,
             Lyricist = string.Join("; ", credits.Lyricists),
@@ -412,51 +414,73 @@ public sealed class DiscogsMatcher
             .ToList();
     }
 
+    /// <summary>
+    /// Shared-registry credit classification. Every source credit label is
+    /// normalized through SupportedTagCreditMappings: commas split only outside
+    /// brackets, brackets resolve to their recognized inner roles, and a label
+    /// the registry does not recognize stays a combined credit entry with its
+    /// original text. <c>Written-By</c> / <c>Written By</c> resolve to the
+    /// generic Songwriter role — never to Composer or Lyricist because of that
+    /// wording; the hyphen distinguishes linked versus unlinked credits, not a
+    /// different writing contribution. Unlinked formatted writer-name text is
+    /// kept intact (names are never guessed by splitting slashes or commas).
+    /// </summary>
     private static DiscogsCreditFields BuildCreditFields(IEnumerable<DiscogsExtraArtist>? extraArtists)
     {
         var composers = new List<string>();
         var lyricists = new List<string>();
         var publishers = new List<string>();
         var remixers = new List<string>();
+        var songwriters = new List<string>();
         var involvedPeople = new List<string>();
 
         foreach (var credit in extraArtists ?? Enumerable.Empty<DiscogsExtraArtist>())
         {
-            var name = CleanArtist(credit.Name);
+            var credited = ResolveCreditedName(credit);
             var role = credit.Role?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(role))
+            if (string.IsNullOrWhiteSpace(credited) || string.IsNullOrWhiteSpace(role))
             {
                 continue;
             }
 
-            var roleLower = role.ToLowerInvariant();
-            if (roleLower.Contains("lyric", StringComparison.OrdinalIgnoreCase))
+            var normalizedRoles = SupportedTagCreditMappings.NormalizeRoles(role);
+            foreach (var normalized in normalizedRoles)
             {
-                lyricists.Add(name);
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(normalized.Key))
+                {
+                    involvedPeople.Add($"{normalized.OriginalLabel}: {credited}");
+                    continue;
+                }
 
-            if (roleLower.Contains("publish", StringComparison.OrdinalIgnoreCase))
-            {
-                publishers.Add(name);
-                continue;
+                switch (normalized.Key)
+                {
+                    case "composer":
+                        composers.Add(credited);
+                        break;
+                    case "lyricist":
+                        lyricists.Add(credited);
+                        break;
+                    case "remixer":
+                        remixers.Add(credited);
+                        break;
+                    case "publisher":
+                        publishers.Add(credited);
+                        break;
+                    case "songwriter":
+                        songwriters.Add(credited);
+                        break;
+                    default:
+                        // Combined entries keep the original label text so
+                        // qualifiers and formatting survive losslessly, e.g.
+                        // "Instrument [Piano]: name" or "Mastered by: name".
+                        var label = normalizedRoles.Count(candidate => candidate.OriginalLabel == normalized.OriginalLabel) > 1
+                            && SupportedTagCreditMappings.TryGetRole(normalized.Key, out var definition)
+                            ? definition.DisplayName
+                            : normalized.OriginalLabel;
+                        involvedPeople.Add($"{label}: {credited}");
+                        break;
+                }
             }
-
-            if (roleLower.Contains("remix", StringComparison.OrdinalIgnoreCase))
-            {
-                remixers.Add(name);
-                continue;
-            }
-
-            if (roleLower.Contains("compos", StringComparison.OrdinalIgnoreCase)
-                || roleLower.Contains("written", StringComparison.OrdinalIgnoreCase)
-                || roleLower.Contains("songwriter", StringComparison.OrdinalIgnoreCase))
-            {
-                composers.Add(name);
-                continue;
-            }
-
-            involvedPeople.Add($"{role}: {name}");
         }
 
         return new DiscogsCreditFields(
@@ -464,7 +488,98 @@ public sealed class DiscogsMatcher
             Dedupe(lyricists),
             Dedupe(publishers),
             Dedupe(remixers),
-            Dedupe(involvedPeople));
+            Dedupe(involvedPeople),
+            Dedupe(songwriters));
+    }
+
+    /// <summary>
+    /// Prefer the ANV (the credited name as printed) over the canonical artist
+    /// name; preserving the credited name is display fidelity, never a new
+    /// artist-identity merge (IDs stay untouched).
+    /// </summary>
+    private static string ResolveCreditedName(DiscogsExtraArtist credit)
+    {
+        var anv = credit.Anv?.Trim();
+        if (!string.IsNullOrWhiteSpace(anv) && !string.Equals(anv, credit.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return CleanArtist(anv);
+        }
+
+        return CleanArtist(credit.Name);
+    }
+
+    /// <summary>
+    /// A blank restriction keeps the credit's unscoped release-level provenance
+    /// (Discogs documentation is ambiguous there, so it is never presented as
+    /// independently verified track-specific evidence). A nonblank restriction
+    /// resolves strictly: comma-delimited numeric entries and inclusive numeric
+    /// ranges against the release tracklist ordering (1-based, including
+    /// vinyl/disc gaps), or an exact position-string match for matrix/label
+    /// forms like "A1". A nonblank restriction that cannot be resolved is not
+    /// permission to apply a credit to all tracks: it excludes the credit.
+    /// </summary>
+    private static bool RestrictionAppliesToTrack(string? restriction, DiscogsRelease release, int trackIndex)
+    {
+        if (string.IsNullOrWhiteSpace(restriction))
+        {
+            return true;
+        }
+
+        // Resolve all restrictions before accepting any entry. An unresolved
+        // endpoint must not grant credits through an earlier matching item.
+        var covered = new HashSet<int>();
+        foreach (var rawItem in restriction.Split(','))
+        {
+            var item = rawItem.Trim();
+            if (item.Length == 0)
+            {
+                return false;
+            }
+
+            var exact = FindPosition(item);
+            if (exact >= 0)
+            {
+                covered.Add(exact);
+                continue;
+            }
+
+            var range = System.Text.RegularExpressions.Regex.Match(
+                item, @"^(.+?)\s+to\s+(.+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(100));
+            var separators = range.Success
+                ? new[] { (range.Groups[1].Value.Trim(), range.Groups[2].Value.Trim()) }
+                : item.Select((ch, i) => (ch, i))
+                    .Where(pair => pair.ch == '-' && pair.i > 0 && pair.i < item.Length - 1)
+                    .Select(pair => (item[..pair.i].Trim(), item[(pair.i + 1)..].Trim()))
+                    .ToArray();
+            var resolved = separators
+                .Select(pair => (Start: FindPosition(pair.Item1), End: FindPosition(pair.Item2)))
+                .Where(pair => pair.Start >= 0 && pair.End >= pair.Start)
+                .Distinct()
+                .ToArray();
+            if (resolved.Length != 1)
+            {
+                return false;
+            }
+
+            for (var index = resolved[0].Start; index <= resolved[0].End; index++)
+            {
+                covered.Add(index);
+            }
+        }
+
+        return covered.Contains(trackIndex);
+
+        int FindPosition(string position)
+        {
+            var matches = release.Tracks.Select((track, index) => (track, index))
+                .Where(pair => string.Equals(pair.track.Position?.Trim(), position, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.index)
+                .ToArray();
+            return matches.Length == 1 ? matches[0] : -1;
+        }
     }
 
     private static List<string> Dedupe(IEnumerable<string> values)
@@ -532,6 +647,13 @@ public sealed class DiscogsMatcher
             mapped.Other["composer"] = track.Composers.ToList();
         }
 
+        // A supplied songwriter is written to the independent songwriter role;
+        // it is never copied into composer or lyricist.
+        if (track.Songwriters.Count > 0)
+        {
+            mapped.Other["songwriter"] = track.Songwriters.ToList();
+        }
+
         if (track.InvolvedPeople.Count > 0)
         {
             mapped.Other["involvedPeople"] = track.InvolvedPeople.ToList();
@@ -546,7 +668,8 @@ public sealed class DiscogsMatcher
         List<string> Lyricists,
         List<string> Publishers,
         List<string> Remixers,
-        List<string> InvolvedPeople);
+        List<string> InvolvedPeople,
+        List<string> Songwriters);
 }
 
 public sealed class DiscogsTrackInfo
@@ -575,6 +698,7 @@ public sealed class DiscogsTrackInfo
     public int TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
     public List<string> Composers { get; set; } = new();
+    public List<string> Songwriters { get; set; } = new();
     public List<string> Remixers { get; set; } = new();
     public List<string> InvolvedPeople { get; set; } = new();
     public string? Lyricist { get; set; }

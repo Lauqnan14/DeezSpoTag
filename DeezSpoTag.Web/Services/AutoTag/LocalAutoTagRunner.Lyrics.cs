@@ -693,6 +693,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         WriteLyricistTag(tagWriteContext, context);
         WriteInvolvedPeopleTag(tagWriteContext, context);
         WritePublisherTag(tagWriteContext, context);
+        WriteCreditRoleTags(tagWriteContext, context);
         WriteDescriptionTag(tagWriteContext, context);
         WriteSourceTag(tagWriteContext, context);
         WriteRatingTag(tagWriteContext, context);
@@ -707,18 +708,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteLyricistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(LyricistTag) || !context.EffectiveTagSettings.Lyricist)
-        {
-            return;
-        }
-
-        var values = ResolveFirstClassOrOtherValues(context.SourceTrack.Lyricist, context.SourceTrack, LyricistTag, LyricistRawTag, "TEXT");
-        if (values.Count == 0)
-        {
-            return;
-        }
-
-        SetRawIfAllowed(tagWriteContext, LyricistTag, ResolveLyricistRawName(context.Extension), values);
+        if (SupportedTagCreditMappings.TryGetRole(LyricistTag, out var role))
+            WriteCreditRoleTag(tagWriteContext, context, role);
     }
 
     private static void WriteSyncedLyrics(TagLib.File file, TagWriteExecutionContext context)

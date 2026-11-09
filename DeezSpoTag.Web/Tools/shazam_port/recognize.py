@@ -6,10 +6,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
+import time
 from typing import Any, Dict, Optional
 
-from aiohttp_retry import ExponentialRetry
-from shazamio import HTTPClient, SearchParams, Shazam
+_stage = "startup"
+_stage_started = time.monotonic()
+_timings: Dict[str, float] = {}
+
+
+def mark_stage(stage: str) -> None:
+    global _stage, _stage_started
+    now = time.monotonic()
+    _timings[_stage] = now - _stage_started
+    _stage, _stage_started = stage, now
+    print(json.dumps({"shazamStage": stage, "stage": stage, "timings": _timings}), file=sys.stderr, flush=True)
 
 
 def first_non_empty(*values: Optional[str]) -> Optional[str]:
@@ -48,7 +59,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("audio_path", help="Path to an audio file")
     parser.add_argument("--language", default="en-US")
     parser.add_argument("--country", default="US")
-    parser.add_argument("--timeout", type=int, default=25)
+    parser.add_argument("--timeout", type=float, default=25, help="Shazam HTTP request budget in seconds")
+    parser.add_argument("--fingerprint-timeout", type=float, default=30)
     parser.add_argument(
         "--max-retries",
         type=int,
@@ -61,8 +73,12 @@ def parse_args() -> argparse.Namespace:
 
 
 async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
+    # Imports belong to startup, not the fingerprint or network request budget.
+    from aiohttp_retry import ExponentialRetry
+    from shazamio import HTTPClient, SearchParams, Shazam
+
     signature_seconds = max(3, min(20, int(args.signature_seconds)))
-    timeout_seconds = max(5, int(args.timeout))
+    timeout_seconds = max(.01, float(args.timeout))
     max_retries = max(1, min(12, int(args.max_retries)))
 
     shazam = Shazam(
@@ -80,22 +96,36 @@ async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
         segment_duration_seconds=signature_seconds,
     )
 
+    mark_stage("fingerprint")
     try:
-        response = await asyncio.wait_for(
-            shazam.recognize(
-                args.audio_path,
+        signature = await asyncio.wait_for(
+            shazam.core_recognizer.recognize_path(
+                value=args.audio_path,
                 options=SearchParams(segment_duration_seconds=signature_seconds),
             ),
+            timeout=max(.01, float(args.fingerprint_timeout)),
+        )
+    except asyncio.TimeoutError as ex:
+        raise RuntimeError(f"Shazam fingerprint timeout after {args.fingerprint_timeout:g}s") from ex
+
+    mark_stage("request")
+    try:
+        response = await asyncio.wait_for(
+            shazam.send_recognize_request_v2(sig=signature),
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as ex:
-        raise RuntimeError(f"Shazam recognize timeout after {timeout_seconds}s") from ex
+        raise RuntimeError(f"Shazam request timeout after {timeout_seconds:g}s") from ex
+
+    mark_stage("complete")
 
     matches = response.get("matches") if isinstance(response, dict) else None
     matched = isinstance(matches, list) and len(matches) > 0
 
     return {
         "ok": True,
+        "stage": "complete",
+        "timings": _timings,
         "matched": matched,
         "matchesCount": len(matches) if isinstance(matches, list) else 0,
         "summary": summarize_response(response),
@@ -110,7 +140,8 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as ex:  # pragma: no cover - CLI error surface
-        print(json.dumps({"ok": False, "error": str(ex)}))
+        _timings[_stage] = time.monotonic() - _stage_started
+        print(json.dumps({"ok": False, "error": f"Shazam {_stage} failed: {ex}", "stage": _stage, "timings": _timings}))
         return 1
 
 

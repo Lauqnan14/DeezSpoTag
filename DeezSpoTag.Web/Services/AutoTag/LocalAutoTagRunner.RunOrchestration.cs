@@ -917,6 +917,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 $"onetagger_autotag: shazam could not identify {Path.GetFileName(context.File)}; continuing with {context.Platform}");
         }
 
+        // Shared optional details are independent of the selected matching provider.
+        // Reuse the recognition cache above; an outage never changes the match/review decision.
+        await GetSharedSongDetailsAsync(context);
+
         var identityIsTrusted = IsTrustedSourceIdentity(validationInfo, context.File, context.Plan.Config);
         var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
             && identityIsTrusted

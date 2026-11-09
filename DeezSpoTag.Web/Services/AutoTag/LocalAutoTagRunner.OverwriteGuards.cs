@@ -124,6 +124,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool HasTag(TagLib.File file, string extension, SupportedTag tag, AutoTagRunnerConfig config, string platformId)
     {
+        if (SupportedTagCreditMappings.TryGetRoleFor(tag, out var role))
+        {
+            if (SplitCombinedCreditTokens(ReadRawTagValues(file, extension, InvolvedPeopleRawTag))
+                .Any(entry => ResolvesToRole(entry, role.Key)))
+                return true;
+            if (tag is not (SupportedTag.Composer or SupportedTag.Lyricist or SupportedTag.Remixer or SupportedTag.Publisher))
+                return ReadRawTagValues(file, extension, role.RawTag).Count > 0;
+        }
+
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
             var id3 = (TagLib.Id3v2.Tag?)file.GetTag(TagTypes.Id3v2, false);
@@ -150,6 +159,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         return supportedTag switch
         {
+            SupportedTag.Melodicness or
+            SupportedTag.Songwriter or
+            SupportedTag.Producer or
+            SupportedTag.ExecutiveProducer or
+            SupportedTag.CoProducer or
+            SupportedTag.AdditionalProducer or
+            SupportedTag.VocalProducer or
+            SupportedTag.Engineer or
+            SupportedTag.RecordingEngineer or
+            SupportedTag.MixingEngineer or
+            SupportedTag.MasteringEngineer or
+            SupportedTag.AssistantEngineer or
+            SupportedTag.Arranger or
+            SupportedTag.Orchestrator or
+            SupportedTag.Conductor or
+            SupportedTag.Performer or
+            SupportedTag.DjMixer or
+            SupportedTag.Director
+                => SupportedTagCreditMappings.TryGetRawTagFor(supportedTag, out var creditRaw) && TagRawProbe.HasId3Raw(tag, creditRaw),
             SupportedTag.Title => !string.IsNullOrWhiteSpace(tag.Title),
             SupportedTag.Artist => tag.Performers?.Length > 0,
             SupportedTag.AlbumArtist => tag.AlbumArtists?.Length > 0,
@@ -224,6 +252,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         return supportedTag switch
         {
+            SupportedTag.Melodicness or
+            SupportedTag.Songwriter or
+            SupportedTag.Producer or
+            SupportedTag.ExecutiveProducer or
+            SupportedTag.CoProducer or
+            SupportedTag.AdditionalProducer or
+            SupportedTag.VocalProducer or
+            SupportedTag.Engineer or
+            SupportedTag.RecordingEngineer or
+            SupportedTag.MixingEngineer or
+            SupportedTag.MasteringEngineer or
+            SupportedTag.AssistantEngineer or
+            SupportedTag.Arranger or
+            SupportedTag.Orchestrator or
+            SupportedTag.Conductor or
+            SupportedTag.Performer or
+            SupportedTag.DjMixer or
+            SupportedTag.Director
+                => SupportedTagCreditMappings.TryGetRawTagFor(supportedTag, out var creditRaw) && tag.GetField(creditRaw).Length > 0,
             SupportedTag.Title => tag.GetField(TitleUpperTag).Length > 0,
             SupportedTag.Artist => tag.GetField(ArtistUpperTag).Length > 0,
             SupportedTag.AlbumArtist => tag.GetField(AlbumArtistUpperTag).Length > 0,
@@ -300,6 +347,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         return supportedTag switch
         {
+            SupportedTag.Melodicness or
+            SupportedTag.Songwriter or
+            SupportedTag.Producer or
+            SupportedTag.ExecutiveProducer or
+            SupportedTag.CoProducer or
+            SupportedTag.AdditionalProducer or
+            SupportedTag.VocalProducer or
+            SupportedTag.Engineer or
+            SupportedTag.RecordingEngineer or
+            SupportedTag.MixingEngineer or
+            SupportedTag.MasteringEngineer or
+            SupportedTag.AssistantEngineer or
+            SupportedTag.Arranger or
+            SupportedTag.Orchestrator or
+            SupportedTag.Conductor or
+            SupportedTag.Performer or
+            SupportedTag.DjMixer or
+            SupportedTag.Director
+                => SupportedTagCreditMappings.TryGetRawTagFor(supportedTag, out var creditRaw) && Mp4TagHelper.HasRaw(file, creditRaw),
             SupportedTag.Title => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.Artist => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.AlbumArtist => Mp4TagHelper.HasField(file, supportedTag),
@@ -493,6 +559,26 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SyncedLyrics = baseSettings.SyncedLyrics,
             Composer = baseSettings.Composer,
             InvolvedPeople = baseSettings.InvolvedPeople,
+            // Independent credit roles and melodicness must survive profile
+            // preview cloning or their selections silently vanish.
+            Songwriter = baseSettings.Songwriter,
+            Producer = baseSettings.Producer,
+            ExecutiveProducer = baseSettings.ExecutiveProducer,
+            CoProducer = baseSettings.CoProducer,
+            AdditionalProducer = baseSettings.AdditionalProducer,
+            VocalProducer = baseSettings.VocalProducer,
+            Engineer = baseSettings.Engineer,
+            RecordingEngineer = baseSettings.RecordingEngineer,
+            MixingEngineer = baseSettings.MixingEngineer,
+            MasteringEngineer = baseSettings.MasteringEngineer,
+            AssistantEngineer = baseSettings.AssistantEngineer,
+            Arranger = baseSettings.Arranger,
+            Orchestrator = baseSettings.Orchestrator,
+            Conductor = baseSettings.Conductor,
+            Performer = baseSettings.Performer,
+            DjMixer = baseSettings.DjMixer,
+            Director = baseSettings.Director,
+            Melodicness = baseSettings.Melodicness,
             Source = baseSettings.Source,
             Rating = baseSettings.Rating,
             Language = baseSettings.Language,

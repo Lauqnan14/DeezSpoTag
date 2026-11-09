@@ -416,6 +416,12 @@ public sealed class ShazamMatcher
                 DateTimeOffset.UtcNow));
             track.TrackLanguageEvidence = existing;
         }
+        var songwriterKeys = new[] { "songwriter", "SHAZAM_SONGWRITER", "SHAZAM_META_SONGWRITER", "SHAZAM_META_SONGWRITER_S", "SHAZAM_META_WRITERS", "SHAZAM_META_WRITTEN_BY" };
+        var songwriters = songwriterKeys.Where(recognized.Tags.ContainsKey)
+            .SelectMany(key => recognized.Tags[key])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal).ToList();
+        if (songwriters.Count > 0) track.Other["songwriter"] = songwriters;
         AddOtherIfNotEmpty(track, "composer", recognized.Composer);
         AddOtherIfNotEmpty(track, "lyricist", recognized.Lyricist);
         AddOtherIfNotEmpty(track, "publisher", recognized.Publisher);

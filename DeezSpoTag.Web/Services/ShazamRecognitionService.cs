@@ -23,9 +23,11 @@ public sealed class ShazamRecognitionService : IDisposable
     // its own validation: changing it also moves which audio each window covers, and
     // SelectBestAudioOnlyAttempt discards the result when the two windows disagree.
     private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 18];
-    private static readonly TimeSpan RecognizerProcessTimeout = TimeSpan.FromSeconds(15);
-    // Leaves room for interpreter startup and for the script to print its error JSON
-    // before the process timeout above kills it.
+    private static readonly TimeSpan RecognizerStartupTimeout = TimeSpan.FromSeconds(30);
+    private const int RecognizerFingerprintTimeoutSeconds = 30;
+    private static readonly TimeSpan RecognizerProcessTimeout = TimeSpan.FromSeconds(75);
+    // Network retries share this budget. Startup and fingerprinting have independent
+    // deadlines; the overall ceiling also bounds stage transitions and shutdown.
     private const int RecognizerScriptTimeoutSeconds = 12;
     private const int RecognizerScriptMaxRetries = 3;
     private const string ToolsDirectory = "Tools";
@@ -43,10 +45,11 @@ public sealed class ShazamRecognitionService : IDisposable
     private readonly IWebHostEnvironment _environment;
     private readonly ShazamDiscoveryService _discoveryService;
     private readonly ILogger<ShazamRecognitionService> _logger;
-    private readonly SemaphoreSlim _recognizerGate = new(2, 2);
+    private readonly SemaphoreSlim _recognizerGate = new(1, 1);
     private readonly ConcurrentDictionary<int, Process> _activeRecognizerProcesses = new();
     private readonly SemaphoreSlim _runtimeProbeGate = new(1, 1);
     private volatile RecognizerRuntimeProbe? _runtimeProbe;
+    private volatile bool _runtimeProbeRetryPending;
     private DateTimeOffset _runtimeProbeCheckedAtUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastBootstrapAttemptUtc = DateTimeOffset.MinValue;
     private string? _lastProbeErrorLogged;
@@ -60,6 +63,19 @@ public sealed class ShazamRecognitionService : IDisposable
         _environment = environment;
         _discoveryService = discoveryService;
         _logger = logger;
+    }
+
+    public Task<ShazamTrackCard?> GetSongDetailsAsync(ShazamRecognitionInfo recognized, CancellationToken token = default)
+    {
+        if (string.IsNullOrWhiteSpace(recognized.TrackId)) return Task.FromResult<ShazamTrackCard?>(null);
+        var card = new ShazamTrackCard(recognized.TrackId, recognized.Title ?? "", recognized.Artist ?? "",
+            recognized.Album, recognized.Genre, recognized.Label, recognized.ReleaseDate, recognized.ArtworkUrl,
+            recognized.Url, recognized.AppleMusicUrl, recognized.SpotifyUrl, recognized.Isrc,
+            recognized.DurationMs is > 0 and <= int.MaxValue ? (int)recognized.DurationMs.Value : null,
+            recognized.Key, recognized.Language, recognized.Composer, recognized.Lyricist, recognized.Publisher,
+            recognized.TrackNumber, recognized.DiscNumber, recognized.Explicit, recognized.AlbumAdamId,
+            recognized.ArtistIds, recognized.ArtistAdamIds, recognized.Tags);
+        return _discoveryService.GetSongDetailsAsync(card, token);
     }
 
     // An unprobed runtime reads as available on purpose. Probing spawns processes and can
@@ -83,7 +99,7 @@ public sealed class ShazamRecognitionService : IDisposable
             return true;
         }
 
-        var ttl = probe.IsAvailable
+        var ttl = probe.IsAvailable && !_runtimeProbeRetryPending
             ? RuntimeProbeSuccessCacheTtl
             : RuntimeProbeFailureRetryTtl;
         return nowUtc - _runtimeProbeCheckedAtUtc >= ttl;
@@ -104,16 +120,28 @@ public sealed class ShazamRecognitionService : IDisposable
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var previous = _runtimeProbe;
             var refreshed = await ProbeRecognizerRuntimeAsync(now, cancellationToken);
-            _runtimeProbe = refreshed;
-            _runtimeProbeCheckedAtUtc = now;
-            LogRuntimeProbeTransition(previous, refreshed);
+            RecordRuntimeProbeResult(refreshed.IsAvailable, refreshed.TimedOut, refreshed.Error, now);
         }
         finally
         {
             _runtimeProbeGate.Release();
         }
+    }
+
+    private void RecordRuntimeProbeResult(bool available, bool timedOut, string? error, DateTimeOffset checkedAt)
+    {
+        var previous = _runtimeProbe;
+        _runtimeProbeRetryPending = timedOut;
+        _runtimeProbeCheckedAtUtc = checkedAt;
+        if (timedOut && previous is { IsAvailable: true })
+        {
+            _logger.LogWarning("Shazam runtime check timed out; retaining last successful availability and retrying shortly. {Reason}", error);
+            return;
+        }
+        var current = new RecognizerRuntimeProbe(available, error, timedOut);
+        _runtimeProbe = current;
+        LogRuntimeProbeTransition(previous, current);
     }
 
     private void LogRuntimeProbeTransition(RecognizerRuntimeProbe? previous, RecognizerRuntimeProbe current)
@@ -216,7 +244,7 @@ public sealed class ShazamRecognitionService : IDisposable
     /// <summary>
     /// Single-window audio-only recognition for the interactive live-capture path.
     /// Async throughout so a request thread is never parked waiting on the recognizer
-    /// subprocess while holding one of the two recognizer gate slots.
+    /// subprocess while holding the shared recognizer slot.
     /// </summary>
     public async Task<ShazamRecognitionAttempt> RecognizeAudioOnlyAsync(
         string filePath,
@@ -631,10 +659,40 @@ public sealed class ShazamRecognitionService : IDisposable
             _activeRecognizerProcesses[process.Id] = process;
             try
             {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(RecognizerProcessTimeout);
+                using var overall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                overall.CancelAfter(RecognizerProcessTimeout);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
+                timeout.CancelAfter(RecognizerStartupTimeout);
+                var stageIndex = 0;
+                var stageClock = Stopwatch.StartNew();
+                string[] stages = ["startup", "fingerprint", "request", "complete"];
+                TimeSpan[] budgets = [RecognizerStartupTimeout, TimeSpan.FromSeconds(RecognizerFingerprintTimeoutSeconds),
+                    TimeSpan.FromSeconds(RecognizerScriptTimeoutSeconds + 1), TimeSpan.FromSeconds(2)];
+                async Task<string> ReadDiagnosticsAsync()
+                {
+                    var errors = new System.Text.StringBuilder();
+                    while (await process.StandardError.ReadLineAsync() is { } line)
+                    {
+                        if (errors.Length < 8192) errors.AppendLine(line);
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(line);
+                            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                                || !doc.RootElement.TryGetProperty("shazamStage", out var phase)
+                                || phase.ValueKind != JsonValueKind.String) continue;
+                            var next = Array.IndexOf(stages, phase.GetString());
+                            if (next <= Volatile.Read(ref stageIndex)) continue;
+                            Volatile.Write(ref stageIndex, next);
+                            timeout.CancelAfter(budgets[next]);
+                            _logger.LogInformation("Shazam recognition entered {Stage} after {ElapsedMs}ms in previous stage. {Diagnostic}", stages[next], stageClock.ElapsedMilliseconds, line);
+                            stageClock.Restart();
+                        }
+                        catch (JsonException) { /* Dependency stderr is not necessarily JSON. */ }
+                    }
+                    return errors.ToString();
+                }
                 var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-                var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+                var stderrTask = ReadDiagnosticsAsync();
                 try
                 {
                     await process.WaitForExitAsync(timeout.Token);
@@ -642,12 +700,15 @@ public sealed class ShazamRecognitionService : IDisposable
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     var terminated = TryTerminateRecognizerProcess(process);
+                    if (terminated) await Task.WhenAll(stdoutTask, stderrTask);
+                    var stage = stages[Volatile.Read(ref stageIndex)];
+                    _logger.LogWarning("Shazam recognition timed out during {Stage} (stage budget {Seconds}s).", stage, budgets[stageIndex].TotalSeconds);
                     return new PortedRecognizerExecution
                     {
                         State = PortedRecognizerState.Error,
                         Error = terminated
-                            ? $"Shazam recognizer timed out after {RecognizerProcessTimeout.TotalSeconds:0} seconds."
-                            : "Shazam recognizer timed out and its process did not terminate."
+                            ? $"Shazam recognizer timed out during {stage} (stage budget {budgets[stageIndex].TotalSeconds:0}s)."
+                            : $"Shazam recognizer timed out during {stage} and its process did not terminate."
                     };
                 }
                 catch (OperationCanceledException)
@@ -660,6 +721,11 @@ public sealed class ShazamRecognitionService : IDisposable
                 var stderr = (await stderrTask).Trim();
                 if (process.ExitCode != 0)
                 {
+                    if (!string.IsNullOrWhiteSpace(stdout))
+                    {
+                        var reported = ParsePortedRecognizerOutput(stdout);
+                        if (reported.State == PortedRecognizerState.Error) return reported;
+                    }
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
                         _logger.LogDebug("Shazam ported recognizer exited with code {Code}. stderr={Stderr}", process.ExitCode, stderr);
@@ -758,12 +824,12 @@ public sealed class ShazamRecognitionService : IDisposable
             startInfo.ArgumentList.Add(Math.Clamp(signatureWindowSeconds.Value, 3, 20).ToString());
         }
 
-        // Give the script a deadline strictly inside RecognizerProcessTimeout so it can
-        // report a clean timeout itself. Without this it kept its own 25s default, which
-        // the 15s kill always beat, turning every slow lookup into "recognizer failed"
-        // instead of an honest no-match.
+        // Give the script explicit fingerprint and request deadlines so it can
+        // report the failed stage before the host's cleanup deadline kills it.
         startInfo.ArgumentList.Add("--timeout");
         startInfo.ArgumentList.Add(RecognizerScriptTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--fingerprint-timeout");
+        startInfo.ArgumentList.Add(RecognizerFingerprintTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--max-retries");
         startInfo.ArgumentList.Add(RecognizerScriptMaxRetries.ToString(CultureInfo.InvariantCulture));
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
@@ -800,7 +866,7 @@ public sealed class ShazamRecognitionService : IDisposable
         }
 
         var probe = await TryProbeRecognizerRuntimeAsync(cancellationToken);
-        if (probe.IsAvailable)
+        if (probe.IsAvailable || probe.TimedOut)
         {
             return probe;
         }
@@ -822,7 +888,7 @@ public sealed class ShazamRecognitionService : IDisposable
         }
 
         var postBootstrapProbe = await TryProbeRecognizerRuntimeAsync(cancellationToken);
-        if (postBootstrapProbe.IsAvailable)
+        if (postBootstrapProbe.IsAvailable || postBootstrapProbe.TimedOut)
         {
             return postBootstrapProbe;
         }
@@ -838,25 +904,21 @@ public sealed class ShazamRecognitionService : IDisposable
     private async Task<RecognizerRuntimeProbe> TryProbeRecognizerRuntimeAsync(CancellationToken cancellationToken)
     {
         var pythonExecutable = ResolvePythonExecutable();
-        var pythonError = await RunProbeProcessAsync(pythonExecutable, "--version", cancellationToken: cancellationToken);
-        if (pythonError != null)
+        var pythonProbe = await RunProbeProcessAsync(pythonExecutable, "--version", cancellationToken: cancellationToken);
+        if (!pythonProbe.IsAvailable)
         {
-            return new RecognizerRuntimeProbe(
-                false,
-                FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
+            return pythonProbe;
         }
 
         var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from aiohttp_retry import ExponentialRetry; from shazamio import HTTPClient, SearchParams, Shazam\"";
-        var runtimeImportError = await RunProbeProcessAsync(
+        var runtimeImportProbe = await RunProbeProcessAsync(
             pythonExecutable,
             runtimeImportCheckArgs,
             useShellArgumentParsing: true,
             cancellationToken: cancellationToken);
-        if (runtimeImportError != null)
+        if (!runtimeImportProbe.IsAvailable)
         {
-            return new RecognizerRuntimeProbe(
-                false,
-                FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
+            return runtimeImportProbe;
         }
 
         return new RecognizerRuntimeProbe(true, null);
@@ -996,9 +1058,9 @@ public sealed class ShazamRecognitionService : IDisposable
     }
 
     /// <summary>
-    /// Runs a probe command. Returns null when it exited cleanly, otherwise the reason.
+    /// Runs a probe command, distinguishing a missed deadline from an explicit failure.
     /// </summary>
-    private async Task<string?> RunProbeProcessAsync(
+    private async Task<RecognizerRuntimeProbe> RunProbeProcessAsync(
         string fileName,
         string arguments,
         bool useShellArgumentParsing = false,
@@ -1039,7 +1101,7 @@ public sealed class ShazamRecognitionService : IDisposable
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 TryTerminateRecognizerProcess(process);
-                return $"Command '{fileName} {arguments}' timed out.";
+                return new RecognizerRuntimeProbe(false, $"Command '{fileName} {arguments}' timed out.", TimedOut: true);
             }
             catch (OperationCanceledException)
             {
@@ -1051,12 +1113,12 @@ public sealed class ShazamRecognitionService : IDisposable
             var stderr = (await stderrTask).Trim();
             if (process.ExitCode == 0)
             {
-                return null;
+                return new RecognizerRuntimeProbe(true, null);
             }
 
-            return string.IsNullOrWhiteSpace(stderr)
+            return new RecognizerRuntimeProbe(false, string.IsNullOrWhiteSpace(stderr)
                 ? $"Command '{fileName} {arguments}' exited with code {process.ExitCode}."
-                : stderr;
+                : stderr);
         }
         catch (OperationCanceledException)
         {
@@ -1068,7 +1130,7 @@ public sealed class ShazamRecognitionService : IDisposable
             {
                 _logger.LogDebug(ex, "Failed probing Shazam recognizer dependency {FileName} {Arguments}.", fileName, arguments);
             }
-            return ex.Message;
+            return new RecognizerRuntimeProbe(false, ex.Message);
         }
     }
 
@@ -1426,7 +1488,7 @@ public sealed class ShazamRecognitionService : IDisposable
         var discNumber = card.DiscNumber ?? ParseInt(GetTag(tags, "SHAZAM_DISC_NUMBER", "SHAZAM_META_DISC_NUMBER", "SHAZAM_META_DISC"));
         var explicitValue = card.Explicit ?? ParseBool(GetTag(tags, "SHAZAM_EXPLICIT", "SHAZAM_META_EXPLICIT", "SHAZAM_META_CONTENT_RATING"));
         var language = FirstNonEmpty(card.Language, GetTag(tags, "SHAZAM_LANGUAGE", "LANGUAGE", "SHAZAM_META_LANGUAGE"));
-        var composer = FirstNonEmpty(card.Composer, GetTag(tags, "SHAZAM_COMPOSER", "COMPOSER", "SHAZAM_META_COMPOSER", "SHAZAM_META_SONGWRITER", "SHAZAM_META_SONGWRITER_S", "SHAZAM_META_WRITTEN_BY"));
+        var composer = FirstNonEmpty(card.Composer, GetTag(tags, "SHAZAM_COMPOSER", "COMPOSER", "SHAZAM_META_COMPOSER", "SHAZAM_META_COMPOSED_BY", "SHAZAM_META_MUSIC_BY"));
         var lyricist = FirstNonEmpty(card.Lyricist, GetTag(tags, "SHAZAM_LYRICIST", "LYRICIST", "SHAZAM_META_LYRICIST"));
         var publisher = FirstNonEmpty(card.Publisher, GetTag(tags, "SHAZAM_PUBLISHER", "PUBLISHER", "SHAZAM_META_PUBLISHER"));
         var albumAdamId = FirstNonEmpty(card.AlbumAdamId, GetTag(tags, "SHAZAM_ALBUM_ADAM_ID"));
@@ -1463,6 +1525,7 @@ public sealed class ShazamRecognitionService : IDisposable
             AppleMusicUrl = appleMusicUrl,
             SpotifyUrl = spotifyUrl,
             YoutubeUrl = youtubeUrl,
+            SongDetails = card.SongDetails,
             Tags = tags
         };
     }
@@ -1624,7 +1687,7 @@ public sealed class ShazamRecognitionService : IDisposable
 
     private sealed record FingerprintCandidate(ShazamRecognitionAttempt Attempt, string Identity);
     private sealed record FingerprintCandidateGroup(string Identity, int Count, ShazamRecognitionAttempt BestAttempt);
-    private sealed record RecognizerRuntimeProbe(bool IsAvailable, string? Error);
+    private sealed record RecognizerRuntimeProbe(bool IsAvailable, string? Error, bool TimedOut = false);
 }
 
 public sealed class ShazamRecognitionAttempt
@@ -1649,6 +1712,7 @@ public enum ShazamRecognitionOutcome
 
 public sealed class ShazamRecognitionInfo
 {
+    public DeezSpoTag.Web.Services.AutoTag.AutoTagTrack? SongDetails { get; set; }
     public string? Title { get; set; }
     public string? Artist { get; set; }
     public List<string> Artists { get; set; } = new();

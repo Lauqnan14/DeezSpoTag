@@ -264,6 +264,24 @@ public sealed class TaggingProfilesApiController : ControllerBase
             ArtistCity = ParseTagSource(tagConfigObject, "artistCity"),
             ArtistRegion = ParseTagSource(tagConfigObject, "artistRegion"),
             ArtistLanguage = ParseTagSource(tagConfigObject, "artistLanguage"),
+            Melodicness = ParseTagSource(tagConfigObject, "melodicness"),
+            Songwriter = ParseTagSource(tagConfigObject, "songwriter"),
+            Producer = ParseTagSource(tagConfigObject, "producer"),
+            ExecutiveProducer = ParseTagSource(tagConfigObject, "executiveProducer"),
+            CoProducer = ParseTagSource(tagConfigObject, "coProducer"),
+            AdditionalProducer = ParseTagSource(tagConfigObject, "additionalProducer"),
+            VocalProducer = ParseTagSource(tagConfigObject, "vocalProducer"),
+            Engineer = ParseTagSource(tagConfigObject, "engineer"),
+            RecordingEngineer = ParseTagSource(tagConfigObject, "recordingEngineer"),
+            MixingEngineer = ParseTagSource(tagConfigObject, "mixingEngineer"),
+            MasteringEngineer = ParseTagSource(tagConfigObject, "masteringEngineer"),
+            AssistantEngineer = ParseTagSource(tagConfigObject, "assistantEngineer"),
+            Arranger = ParseTagSource(tagConfigObject, "arranger"),
+            Orchestrator = ParseTagSource(tagConfigObject, "orchestrator"),
+            Conductor = ParseTagSource(tagConfigObject, "conductor"),
+            Performer = ParseTagSource(tagConfigObject, "performer"),
+            DjMixer = ParseTagSource(tagConfigObject, "djMixer"),
+            Director = ParseTagSource(tagConfigObject, "director"),
             Url = ParseTagSource(tagConfigObject, "url"),
             OtherTags = ParseTagSource(tagConfigObject, "otherTags"),
             MetaTags = ParseTagSource(tagConfigObject, "metaTags")
@@ -614,6 +632,60 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 break;
             case "involvedPeople":
                 config.InvolvedPeople = MergeTagSource(config.InvolvedPeople, source);
+                break;
+            case "songwriter":
+                config.Songwriter = MergeTagSource(config.Songwriter, source);
+                break;
+            case "producer":
+                config.Producer = MergeTagSource(config.Producer, source);
+                break;
+            case "executiveProducer":
+                config.ExecutiveProducer = MergeTagSource(config.ExecutiveProducer, source);
+                break;
+            case "coProducer":
+                config.CoProducer = MergeTagSource(config.CoProducer, source);
+                break;
+            case "additionalProducer":
+                config.AdditionalProducer = MergeTagSource(config.AdditionalProducer, source);
+                break;
+            case "vocalProducer":
+                config.VocalProducer = MergeTagSource(config.VocalProducer, source);
+                break;
+            case "engineer":
+                config.Engineer = MergeTagSource(config.Engineer, source);
+                break;
+            case "recordingEngineer":
+                config.RecordingEngineer = MergeTagSource(config.RecordingEngineer, source);
+                break;
+            case "mixingEngineer":
+                config.MixingEngineer = MergeTagSource(config.MixingEngineer, source);
+                break;
+            case "masteringEngineer":
+                config.MasteringEngineer = MergeTagSource(config.MasteringEngineer, source);
+                break;
+            case "assistantEngineer":
+                config.AssistantEngineer = MergeTagSource(config.AssistantEngineer, source);
+                break;
+            case "arranger":
+                config.Arranger = MergeTagSource(config.Arranger, source);
+                break;
+            case "orchestrator":
+                config.Orchestrator = MergeTagSource(config.Orchestrator, source);
+                break;
+            case "conductor":
+                config.Conductor = MergeTagSource(config.Conductor, source);
+                break;
+            case "performer":
+                config.Performer = MergeTagSource(config.Performer, source);
+                break;
+            case "djMixer":
+                config.DjMixer = MergeTagSource(config.DjMixer, source);
+                break;
+            case "director":
+                config.Director = MergeTagSource(config.Director, source);
+                break;
+            case "melodicness":
+                config.Melodicness = MergeTagSource(config.Melodicness, source);
                 break;
             case "publisher":
                 config.Publisher = MergeTagSource(config.Publisher, source);

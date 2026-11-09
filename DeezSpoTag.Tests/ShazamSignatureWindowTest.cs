@@ -114,7 +114,7 @@ public sealed class ShazamSignatureWindowTest
         var match = System.Text.RegularExpressions.Regex.Match(source, @"const RECOGNITION_REQUEST_TIMEOUT_MS = (\d+);");
         Assert.True(match.Success, "RECOGNITION_REQUEST_TIMEOUT_MS not found");
 
-        var clientTimeoutSeconds = int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        var clientTimeout = TimeSpan.FromMilliseconds(int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
         var processTimeout = (TimeSpan)typeof(ShazamRecognitionService)
             .GetField("RecognizerProcessTimeout", BindingFlags.NonPublic | BindingFlags.Static)!
             .GetValue(null)!;
@@ -122,8 +122,8 @@ public sealed class ShazamSignatureWindowTest
         // Otherwise the client abandons the request first and reports a generic timeout in
         // place of the server's precise reason.
         Assert.True(
-            clientTimeoutSeconds > processTimeout.TotalSeconds,
-            $"Client timeout {clientTimeoutSeconds}s must exceed the {processTimeout.TotalSeconds}s server process timeout.");
+            clientTimeout > processTimeout + processTimeout,
+            $"Client timeout {clientTimeout.TotalSeconds}s must accommodate an active recognition and a queued recognition, each bounded by {processTimeout.TotalSeconds}s.");
     }
 
     [Fact]

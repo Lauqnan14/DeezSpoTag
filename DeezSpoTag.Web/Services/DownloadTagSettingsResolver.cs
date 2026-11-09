@@ -328,6 +328,7 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                && !settings.Tempo
                && !settings.TimeSignature
                && !settings.Liveness
+               && !settings.Melodicness
                && !settings.Label
 	               && !settings.Copyright
 	               && !settings.Lyrics
@@ -336,6 +337,23 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
 	               && !settings.Composer
 	               && !settings.Lyricist
 	               && !settings.InvolvedPeople
+	               && !settings.Songwriter
+	               && !settings.Producer
+	               && !settings.ExecutiveProducer
+	               && !settings.CoProducer
+	               && !settings.AdditionalProducer
+	               && !settings.VocalProducer
+	               && !settings.Engineer
+	               && !settings.RecordingEngineer
+	               && !settings.MixingEngineer
+	               && !settings.MasteringEngineer
+	               && !settings.AssistantEngineer
+	               && !settings.Arranger
+	               && !settings.Orchestrator
+	               && !settings.Conductor
+	               && !settings.Performer
+	               && !settings.DjMixer
+	               && !settings.Director
 	               && !settings.Publisher
 	               && !settings.Description
 	               && !settings.Remixer

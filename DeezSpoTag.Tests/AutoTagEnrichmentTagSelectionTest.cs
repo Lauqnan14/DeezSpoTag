@@ -497,10 +497,6 @@ public sealed class AutoTagEnrichmentTagSelectionTest
         var tagList = ExtractConstArray(script, "const TAGS = [");
         var unbacked = new[]
         {
-            "danceability",
-            "energy",
-            "valence",
-            "acousticness",
             "instrumentalness",
             "speechiness",
             "loudness",
@@ -508,6 +504,9 @@ public sealed class AutoTagEnrichmentTagSelectionTest
             "timeSignature",
             "liveness"
         };
+
+        foreach (var backed in new[] { "danceability", "energy", "valence", "acousticness", "melodicness" })
+            Assert.Contains($"tag: \"{backed}\"", tagList, StringComparison.Ordinal);
 
         foreach (var tag in unbacked)
         {

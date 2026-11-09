@@ -43,6 +43,17 @@ public sealed class DiscogsExtraArtist
     public string Name { get; set; } = "";
     public long Id { get; set; }
     public string Role { get; set; } = "";
+
+    /// <summary>Discogs ANV: the credited name variation as printed on the release.</summary>
+    [JsonPropertyName("anv")]
+    public string? Anv { get; set; }
+
+    /// <summary>
+    /// Raw Discogs track restriction ("2", "2, 4-6", "A1"), a blank value
+    /// meaning Discogs' ambiguous release-level or unspecified scope.
+    /// </summary>
+    [JsonPropertyName("tracks")]
+    public string? Tracks { get; set; }
 }
 
 public sealed class DiscogsTrack

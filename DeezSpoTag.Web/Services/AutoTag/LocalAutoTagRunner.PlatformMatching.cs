@@ -513,6 +513,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         materializedPath);
                 }
             }
+            if (!isManualEnrichment) TransferShazamRecognitionCache(context.Plan, context.File, materializedPath);
             context.File = materializedPath;
             context.Plan.Files[context.FileIndex] = context.File;
             if (context.Plan.Config.GenreIntelligence?.Enabled == true && originalFile != materializedPath)
@@ -586,11 +587,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 stepToken => PopulateArtistMetadataAsync(match.Track, stepToken, context.Platform, context.File,
                     context.Plan.TagSettings.SingleAlbumArtist
                     || string.Equals(context.Plan.TagSettings.MultiArtistSeparator, MultiArtistSeparatorNothing, StringComparison.OrdinalIgnoreCase)));
+            if (!context.Plan.SharedSongDetailTags.TryGetValue(context.FileIndex, out var provisionalDetails))
+                context.Plan.SharedSongDetailTags[context.FileIndex] = provisionalDetails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Snapshot native fields before adding optional shared values. Only a later native
+            // result may replace fields this run provisionally filled from Shazam.
+            var nativeDetailKeys = CollectAutoTagTags(match.Track).Where(SharedSongDetailKeys.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var writeConfig = BuildSharedDetailsWriteConfig(context.Plan.Config, provisionalDetails, match.Track);
+            var addedDetails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (await GetSharedSongDetailsAsync(context) is { } songDetails)
+            {
+                var eligibleDetails = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
+                    ? context.Plan.Config.Tags.Where(SharedSongDetailKeys.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : MissingSharedDetailKeys(context);
+                addedDetails = MergeSharedSongDetails(match.Track, songDetails, eligibleDetails);
+            }
             var writeResult = await TagFileAsync(
                 context.File,
                 match.Track,
                 context.Plan.TagSettings,
-                context.Plan.Config,
+                writeConfig,
                 context.Plan.Settings,
                 context.Platform,
                 match.ProviderIdentity,
@@ -604,6 +619,18 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 match.Track,
                 match.ProviderIdentity,
                 returnedTags);
+            if (!context.Plan.NativeSongDetailTags.TryGetValue(context.FileIndex, out var nativeOwners))
+                context.Plan.NativeSongDetailTags[context.FileIndex] = nativeOwners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in nativeDetailKeys.Concat(addedDetails).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!SupportedTagMap.TryGetValue(key, out var tag) || !returnedTags.Contains(tag) || persistenceFailures.Contains(tag)) continue;
+                if (nativeDetailKeys.Contains(key) || string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
+                {
+                    provisionalDetails.Remove(key);
+                    nativeOwners.Add(key);
+                }
+                else provisionalDetails.Add(key);
+            }
             if (persistenceFailures.Remove(SupportedTag.AlbumArt))
             {
                 returnedTags.Remove(SupportedTag.AlbumArt);

@@ -506,6 +506,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public HashSet<int> OrganizedFileIndices { get; } = new();
         public HashSet<string> AttemptedArtistArtworkPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<int> AttemptedAppleExtras { get; } = new();
+        public ConcurrentDictionary<int, Lazy<Task<AutoTagTrack?>>> SharedSongDetails { get; } = new();
+        public Dictionary<int, HashSet<string>> SharedSongDetailTags { get; } = new();
+        public Dictionary<int, HashSet<string>> NativeSongDetailTags { get; } = new();
         public Dictionary<int, Dictionary<string, ProviderIdentityPayload>> ConfirmedProviderIdentities { get; } = new();
         public int PlatformCount => EffectivePlatforms.Count;
         public int FileCount => Files.Count;
@@ -696,6 +699,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public bool? EditionConflictReview { get; set; }
         public List<string> Tags { get; set; } = new();
         public List<string> OverwriteTags { get; set; } = new();
+        internal AutoTagRunnerConfig CopyForSharedSongDetails() => (AutoTagRunnerConfig)MemberwiseClone();
         public AutoTagSeparators? Separators { get; set; }
         public bool Overwrite { get; set; } = false;
         public bool MergeGenres { get; set; } = true;

@@ -664,7 +664,19 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
         var source = ReadSource("DeezSpoTag.Web", "Services", "ShazamRecognitionService.cs");
 
         Assert.Contains("AudioOnlySignatureRetryWindowsSeconds = [10, 18]", source, StringComparison.Ordinal);
-        Assert.Contains("RecognizerProcessTimeout = TimeSpan.FromSeconds(15)", source, StringComparison.Ordinal);
+        // The former 15-second whole-process deadline mixed interpreter startup,
+        // fingerprinting and HTTP retries. Each now has a budget within a hard ceiling.
+        var type = typeof(ShazamRecognitionService);
+        var flags = BindingFlags.NonPublic | BindingFlags.Static;
+        var startup = (TimeSpan)type.GetField("RecognizerStartupTimeout", flags)!.GetValue(null)!;
+        var fingerprint = (int)type.GetField("RecognizerFingerprintTimeoutSeconds", flags)!.GetRawConstantValue()!;
+        var request = (int)type.GetField("RecognizerScriptTimeoutSeconds", flags)!.GetRawConstantValue()!;
+        var overall = (TimeSpan)type.GetField("RecognizerProcessTimeout", flags)!.GetValue(null)!;
+        Assert.True(startup > TimeSpan.Zero);
+        Assert.True(fingerprint > 0);
+        Assert.True(request > 0);
+        Assert.True(startup.TotalSeconds + fingerprint + request < overall.TotalSeconds);
+        Assert.True(overall <= TimeSpan.FromSeconds(75));
         Assert.DoesNotContain("UseSearchAssistedFallbackAfterAudioOnlyMiss", source, StringComparison.Ordinal);
     }
 

@@ -72,7 +72,43 @@ public enum SupportedTag
     ArtistCountry,
     ArtistCity,
     ArtistRegion,
-    ArtistLanguage
+    ArtistLanguage,
+    [JsonPropertyName("melodicness")]
+    Melodicness,
+    [JsonPropertyName("songwriter")]
+    Songwriter,
+    [JsonPropertyName("producer")]
+    Producer,
+    [JsonPropertyName("executiveProducer")]
+    ExecutiveProducer,
+    [JsonPropertyName("coProducer")]
+    CoProducer,
+    [JsonPropertyName("additionalProducer")]
+    AdditionalProducer,
+    [JsonPropertyName("vocalProducer")]
+    VocalProducer,
+    [JsonPropertyName("engineer")]
+    Engineer,
+    [JsonPropertyName("recordingEngineer")]
+    RecordingEngineer,
+    [JsonPropertyName("mixingEngineer")]
+    MixingEngineer,
+    [JsonPropertyName("masteringEngineer")]
+    MasteringEngineer,
+    [JsonPropertyName("assistantEngineer")]
+    AssistantEngineer,
+    [JsonPropertyName("arranger")]
+    Arranger,
+    [JsonPropertyName("orchestrator")]
+    Orchestrator,
+    [JsonPropertyName("conductor")]
+    Conductor,
+    [JsonPropertyName("performer")]
+    Performer,
+    [JsonPropertyName("djMixer")]
+    DjMixer,
+    [JsonPropertyName("director")]
+    Director
 }
 
 public sealed class PlatformInfo

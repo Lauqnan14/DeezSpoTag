@@ -634,9 +634,11 @@ public sealed class MusicBrainzMatcher
                 return true;
             case "arranger":
             case "instrument arranger":
-            case "orchestrator":
             case "vocal arranger":
                 role = "Arranger";
+                return true;
+            case "orchestrator":
+                role = "Orchestrator";
                 return true;
             case "audio director":
             case "video director":

@@ -68,6 +68,16 @@ public sealed class MusicBrainzPlatform : AutoTagPlatformBase
                 SupportedTag.Lyricist,
                 SupportedTag.Remixer,
                 SupportedTag.InvolvedPeople,
+                SupportedTag.Songwriter,
+                SupportedTag.Producer,
+                SupportedTag.Engineer,
+                SupportedTag.MixingEngineer,
+                SupportedTag.DjMixer,
+                SupportedTag.Conductor,
+                SupportedTag.Arranger,
+                SupportedTag.Orchestrator,
+                SupportedTag.Performer,
+                SupportedTag.Director,
                 SupportedTag.OtherTags),
             RequiresAuth = false
         };

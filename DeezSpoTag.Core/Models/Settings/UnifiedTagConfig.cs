@@ -30,6 +30,7 @@ public class UnifiedTagConfig
     public TagSource Energy { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Valence { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Acousticness { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource Melodicness { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Instrumentalness { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Speechiness { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Loudness { get; set; } = TagSource.AutoTagPlatform;
@@ -49,6 +50,27 @@ public class UnifiedTagConfig
     public TagSource InvolvedPeople { get; set; } = TagSource.DownloadSource;
     public TagSource Publisher { get; set; } = TagSource.DownloadSource;
     public TagSource Description { get; set; } = TagSource.DownloadSource;
+
+    // Distinct credit roles. Conservative None defaults: no legacy selection is
+    // invented by default — the profile canonicalizer migrates unversioned
+    // profiles that actually enabled the legacy combined-credit field.
+    public TagSource Songwriter { get; set; } = TagSource.None;
+    public TagSource Producer { get; set; } = TagSource.None;
+    public TagSource ExecutiveProducer { get; set; } = TagSource.None;
+    public TagSource CoProducer { get; set; } = TagSource.None;
+    public TagSource AdditionalProducer { get; set; } = TagSource.None;
+    public TagSource VocalProducer { get; set; } = TagSource.None;
+    public TagSource Engineer { get; set; } = TagSource.None;
+    public TagSource RecordingEngineer { get; set; } = TagSource.None;
+    public TagSource MixingEngineer { get; set; } = TagSource.None;
+    public TagSource MasteringEngineer { get; set; } = TagSource.None;
+    public TagSource AssistantEngineer { get; set; } = TagSource.None;
+    public TagSource Arranger { get; set; } = TagSource.None;
+    public TagSource Orchestrator { get; set; } = TagSource.None;
+    public TagSource Conductor { get; set; } = TagSource.None;
+    public TagSource Performer { get; set; } = TagSource.None;
+    public TagSource DjMixer { get; set; } = TagSource.None;
+    public TagSource Director { get; set; } = TagSource.None;
 
     public TagSource Source { get; set; } = TagSource.DownloadSource;
     public TagSource Explicit { get; set; } = TagSource.DownloadSource;

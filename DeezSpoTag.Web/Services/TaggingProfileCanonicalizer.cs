@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Web.Services.AutoTag;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -11,6 +13,9 @@ public static class TaggingProfileCanonicalizer
     private const string EnhancementTagsKey = "gapFillTags";
     private const string TracknameTemplateKey = "tracknameTemplate";
     private const string LegacyFilenameTemplateKey = "filenameTemplate";
+    private const string OverwriteTagsKey = "overwriteTags";
+    private const string CreditControlsVersionKey = "creditControlsVersion";
+    private const string LegacyInvolvedPeopleKey = "involvedPeople";
 
     private static readonly string[] LegacyTemplateKeys =
     {
@@ -55,6 +60,7 @@ public static class TaggingProfileCanonicalizer
         new("energy", c => c.Energy, (c, v) => c.Energy = v),
         new("valence", c => c.Valence, (c, v) => c.Valence = v),
         new("acousticness", c => c.Acousticness, (c, v) => c.Acousticness = v),
+        new("melodicness", c => c.Melodicness, (c, v) => c.Melodicness = v),
         new("instrumentalness", c => c.Instrumentalness, (c, v) => c.Instrumentalness = v),
         new("speechiness", c => c.Speechiness, (c, v) => c.Speechiness = v),
         new("loudness", c => c.Loudness, (c, v) => c.Loudness = v),
@@ -69,6 +75,23 @@ public static class TaggingProfileCanonicalizer
         new("composer", c => c.Composer, (c, v) => c.Composer = v),
         new("lyricist", c => c.Lyricist, (c, v) => c.Lyricist = v),
         new("involvedPeople", c => c.InvolvedPeople, (c, v) => c.InvolvedPeople = v),
+        new("songwriter", c => c.Songwriter, (c, v) => c.Songwriter = v),
+        new("producer", c => c.Producer, (c, v) => c.Producer = v),
+        new("executiveProducer", c => c.ExecutiveProducer, (c, v) => c.ExecutiveProducer = v),
+        new("coProducer", c => c.CoProducer, (c, v) => c.CoProducer = v),
+        new("additionalProducer", c => c.AdditionalProducer, (c, v) => c.AdditionalProducer = v),
+        new("vocalProducer", c => c.VocalProducer, (c, v) => c.VocalProducer = v),
+        new("engineer", c => c.Engineer, (c, v) => c.Engineer = v),
+        new("recordingEngineer", c => c.RecordingEngineer, (c, v) => c.RecordingEngineer = v),
+        new("mixingEngineer", c => c.MixingEngineer, (c, v) => c.MixingEngineer = v),
+        new("masteringEngineer", c => c.MasteringEngineer, (c, v) => c.MasteringEngineer = v),
+        new("assistantEngineer", c => c.AssistantEngineer, (c, v) => c.AssistantEngineer = v),
+        new("arranger", c => c.Arranger, (c, v) => c.Arranger = v),
+        new("orchestrator", c => c.Orchestrator, (c, v) => c.Orchestrator = v),
+        new("conductor", c => c.Conductor, (c, v) => c.Conductor = v),
+        new("performer", c => c.Performer, (c, v) => c.Performer = v),
+        new("djMixer", c => c.DjMixer, (c, v) => c.DjMixer = v),
+        new("director", c => c.Director, (c, v) => c.Director = v),
         new("publisher", c => c.Publisher, (c, v) => c.Publisher = v),
         new("description", c => c.Description, (c, v) => c.Description = v, "comment", "comments"),
         new("source", c => c.Source, (c, v) => c.Source = v),
@@ -121,6 +144,7 @@ public static class TaggingProfileCanonicalizer
         var baseConfig = CloneConfig(profile.TagConfig);
 
         changed |= CanonicalizeTemplateKeys(data);
+        changed |= MigrateLegacyCreditControls(data);
 
         var hasDownloadTags = TryReadTagArray(data, DownloadTagsKey, out var downloadTags, out var downloadKey);
         var hasEnrichmentTags = TryReadTagArray(data, EnrichmentTagsKey, out var enrichmentTags, out var enrichmentKey);
@@ -179,6 +203,7 @@ public static class TaggingProfileCanonicalizer
         var data = profile.AutoTag.Data;
         var changed = false;
         changed |= CanonicalizeTemplateKeys(data);
+        changed |= MigrateLegacyCreditControls(data);
         var downloadTags = BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true);
         var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
@@ -198,6 +223,7 @@ public static class TaggingProfileCanonicalizer
             : new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
 
         CanonicalizeTemplateKeys(data);
+        MigrateLegacyCreditControls(data);
 
         var downloadKey = ResolveTagArrayKey(data, DownloadTagsKey);
         var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
@@ -249,6 +275,76 @@ public static class TaggingProfileCanonicalizer
 
         return changed;
     }
+
+    /// <summary>
+    /// One-time migration of the legacy combined-credit selection
+    /// ("involvedPeople") into the independent per-role credit selections.
+    ///
+    /// Unversioned profiles only: the version stamp makes repeat calls
+    /// idempotent, and once stamped an absent role in a write/overwrite
+    /// whitelist is an explicit off, never an absent legacy setting. When an
+    /// array carries the legacy combined key, the roles it previously covered
+    /// are appended (except roles the array already names explicitly — a
+    /// separately specified new selection is respected), the legacy key is
+    /// retained for rollback compatibility, and global overwrite choices stay
+    /// untouched. A newly checked role must never be confused with an absent
+    /// legacy setting, so an array without the legacy key is migrated with no
+    /// additions.
+    /// </summary>
+    public static bool MigrateLegacyCreditControls(Dictionary<string, JsonElement>? data)
+    {
+        if (data == null)
+        {
+            return false;
+        }
+
+        var versionKey = ResolveKey(data, CreditControlsVersionKey);
+        if (data.TryGetValue(versionKey, out var storedVersion))
+        {
+            if (storedVersion.ValueKind is JsonValueKind.Number or JsonValueKind.String)
+            {
+                if (int.TryParse(storedVersion.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                    && parsed >= CurrentCreditControlsVersion)
+                {
+                    return false;
+                }
+            }
+        }
+
+        var changed = false;
+        var covered = SupportedTagCreditMappings.LegacyCombinedCreditRoles;
+        foreach (var listKey in (ReadOnlySpan<string>)[DownloadTagsKey, EnrichmentTagsKey, EnhancementTagsKey, OverwriteTagsKey])
+        {
+            if (!TryReadTagArray(data, listKey, out var tags, out var resolvedKey))
+            {
+                continue;
+            }
+
+            if (!tags.Contains(LegacyInvolvedPeopleKey, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var expanded = new List<string>(tags);
+            foreach (var roleKey in covered)
+            {
+                if (expanded.Contains(roleKey, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                expanded.Add(roleKey);
+                changed = true;
+            }
+
+            changed |= WriteTagArray(data, resolvedKey, expanded);
+        }
+
+        data[versionKey] = JsonSerializer.SerializeToElement(CurrentCreditControlsVersion);
+        return true;
+    }
+
+    private const int CurrentCreditControlsVersion = 1;
 
     public static UnifiedTagConfig BuildTagConfig(
         UnifiedTagConfig? fallbackConfig,

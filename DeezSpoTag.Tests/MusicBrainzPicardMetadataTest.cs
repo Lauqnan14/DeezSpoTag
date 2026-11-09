@@ -177,10 +177,14 @@ public sealed class MusicBrainzPicardMetadataTest
         Assert.Equal(["cccccccc-cccc-cccc-cccc-cccccccccccc", "dddddddd-dddd-dddd-dddd-dddddddddddd"], track.AlbumArtistIds);
         Assert.Equal(["Group", "Guest"], track.AlbumArtists);
 
-        Assert.Equal(["Performer (grand piano): Pianist", "Performer (guest soprano): Singer", "DJ-Mixer: DJ Name", "Arranger: Orch Name", "Performer (chorus master): Chorus Name"], track.Other["involvedPeople"]);
+        Assert.Equal(["Performer (grand piano): Pianist", "Performer (guest soprano): Singer", "DJ-Mixer: DJ Name", "Orchestrator: Orch Name", "Performer (chorus master): Chorus Name"], track.Other["involvedPeople"]);
         Assert.Equal(["Composer Name"], track.Other["composer"]);
         Assert.DoesNotContain("Writer Name", track.Other["composer"]);
         Assert.Equal(["Writer Name"], track.Other["writer"]);
+        SupportedTagCreditMappings.NormalizeTrackCredits(track);
+        Assert.Equal(["Orch Name"], track.Other["orchestrator"]);
+        Assert.False(track.Other.ContainsKey("arranger"));
+        Assert.Equal(["Writer Name"], track.Other["songwriter"]);
         Assert.Equal([composerId], track.Other["MUSICBRAINZ_COMPOSERID"]);
         Assert.Equal("Librettist Name", track.Lyricist);
         Assert.Equal(["Librettist Name"], track.Other["lyricist"]);

@@ -84,6 +84,12 @@ public sealed class ShazamPlatform : AutoTagPlatformBase
             }
 	        };
 
+            var detailTags = new Dictionary<string, SupportedTag>(StringComparer.OrdinalIgnoreCase);
+            SupportedTagCreditMappings.AddSupportedTagMappings(detailTags);
+            foreach (var tag in detailTags.Values.Concat(new[] { SupportedTag.BPM, SupportedTag.Acousticness,
+                SupportedTag.Valence, SupportedTag.Danceability, SupportedTag.Energy }).Distinct())
+                if (!info.SupportedTags.Contains(tag)) info.SupportedTags.Add(tag);
+
 	        return CreateDescriptor(info, "shazam.png");
 	    }
 

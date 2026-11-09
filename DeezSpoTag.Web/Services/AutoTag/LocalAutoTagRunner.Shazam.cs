@@ -35,6 +35,114 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
+    private static HashSet<string> SharedSongDetailKeys => SupportedTagFeatureMappings.ShazamSongDetailsKeys;
+
+    private static readonly (string Key, Func<AutoTagTrack, double?> Read, Action<AutoTagTrack, double?> Write)[] SharedSongFeatures =
+    [
+        ("melodicness", track => track.Melodicness, (track, value) => track.Melodicness = value),
+        ("acousticness", track => track.Acousticness, (track, value) => track.Acousticness = value),
+        ("valence", track => track.Valence, (track, value) => track.Valence = value),
+        ("danceability", track => track.Danceability, (track, value) => track.Danceability = value),
+        ("energy", track => track.Energy, (track, value) => track.Energy = value)
+    ];
+
+    private Task<AutoTagTrack?> GetSharedSongDetailsAsync(AutoTagFileRunContext context)
+    {
+        context.Token.ThrowIfCancellationRequested();
+        if (!context.Plan.Config.Tags.Any(SharedSongDetailKeys.Contains)) return Task.FromResult<AutoTagTrack?>(null);
+        // File index is stable when the existing organizer materializes/moves its path.
+        return context.Plan.SharedSongDetails.GetOrAdd(context.FileIndex,
+            _ => new Lazy<Task<AutoTagTrack?>>(() => LoadSharedSongDetailsAsync(context))).Value;
+    }
+
+    private async Task<AutoTagTrack?> LoadSharedSongDetailsAsync(AutoTagFileRunContext context)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
+        bounded.CancelAfter(TimeSpan.FromSeconds(40));
+        try
+        {
+            if (!context.Plan.ShazamCache.TryGetValue(context.File, out var recognized))
+            {
+                if (_shazamRecognitionService is null || !_shazamRecognitionService.IsAvailable) return null;
+                recognized = await _shazamRecognitionService.RecognizeAsync(context.File, bounded.Token);
+                context.Plan.ShazamCache[context.File] = recognized;
+            }
+            if (recognized?.SongDetails is { } existing) return existing;
+            if (recognized is null || _shazamRecognitionService is null) return null;
+            var details = await _shazamRecognitionService.GetSongDetailsAsync(recognized, bounded.Token);
+            return details?.SongDetails;
+        }
+        catch (OperationCanceledException) when (!context.Token.IsCancellationRequested)
+        { context.LogCallback("onetagger_autotag: optional Shazam song details timed out; continuing"); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Optional Shazam Song Details unavailable");
+            context.LogCallback("onetagger_autotag: optional Shazam song details unavailable; continuing");
+        }
+        return null;
+    }
+
+    private static bool SameSharedDetailsRecording(AutoTagTrack native, AutoTagTrack details)
+    {
+        static string Identity(string? text) => string.Concat((text ?? "").Normalize().Where(char.IsLetterOrDigit)).ToUpperInvariant();
+        var nativeTitle = OneTaggerMatching.FullTitle(native.Title, native.Version);
+        var detailsTitle = OneTaggerMatching.FullTitle(details.Title, details.Version);
+        return Identity(nativeTitle) == Identity(detailsTitle)
+            && TrackTitleMatcher.HasCompatibleTitleIdentity(nativeTitle, detailsTitle)
+            && native.Artists.Any(artist => details.Artists.Any(candidate => Identity(artist) == Identity(candidate)))
+            && (string.IsNullOrWhiteSpace(native.Isrc) || string.IsNullOrWhiteSpace(details.Isrc) || Identity(native.Isrc) == Identity(details.Isrc))
+            && (!native.Duration.HasValue || !details.Duration.HasValue || Math.Abs((native.Duration.Value - details.Duration.Value).TotalSeconds) <= 2);
+    }
+
+    private static HashSet<string> MergeSharedSongDetails(AutoTagTrack track, AutoTagTrack details, HashSet<string> eligible)
+    {
+        var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!SameSharedDetailsRecording(track, details)) return added;
+        SupportedTagCreditMappings.NormalizeTrackCredits(track);
+        if (eligible.Contains("bpm") && !track.Bpm.HasValue && details.Bpm is > 0)
+        { track.Bpm = details.Bpm; added.Add("bpm"); }
+        foreach (var field in SharedSongFeatures)
+        {
+            if (eligible.Contains(field.Key) && field.Read(track) is null && field.Read(details) is { } value)
+            { field.Write(track, value); added.Add(field.Key); }
+        }
+        foreach (var role in SupportedTagCreditMappings.Definitions)
+        {
+            if (!eligible.Contains(role.Key) || CollectCreditRoleValues(track, role).Count > 0
+                || !details.Other.TryGetValue(role.Key, out var values) || values.Count == 0) continue;
+            track.Other[role.Key] = new List<string>(values);
+            added.Add(role.Key);
+        }
+        if (eligible.Contains("involvedPeople") && !track.Other.ContainsKey("involvedPeople")
+            && details.Other.TryGetValue("involvedPeople", out var legacy))
+        { track.Other["involvedPeople"] = new List<string>(legacy); added.Add("involvedPeople"); }
+        return added;
+    }
+
+    private static AutoTagRunnerConfig BuildSharedDetailsWriteConfig(AutoTagRunnerConfig config,
+        HashSet<string> provisional, AutoTagTrack native)
+    {
+        var replace = CollectAutoTagTags(native).Where(key => provisional.Contains(key)).ToList();
+        if (replace.Count == 0) return config;
+        var effective = config.CopyForSharedSongDetails();
+        effective.OverwriteTags = config.OverwriteTags.Concat(replace).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return effective;
+    }
+
+    private static HashSet<string> MissingSharedDetailKeys(AutoTagFileRunContext context)
+    {
+        var missing = context.Plan.Config.Tags.Where(SharedSongDetailKeys.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        using var file = TagLib.File.Create(context.File);
+        var extension = Path.GetExtension(context.File);
+        context.Plan.NativeSongDetailTags.TryGetValue(context.FileIndex, out var nativeFields);
+        // The user may refresh pre-run values. A successful native provider's values
+        // remain authoritative over this optional source for the rest of this run.
+        missing.RemoveWhere(key => SupportedTagMap.TryGetValue(key, out var tag)
+            && HasTag(file, extension, tag, context.Plan.Config, context.Platform)
+            && (nativeFields?.Contains(key) == true || !ShouldOverwriteTag(context.Plan.Config, tag)));
+        return missing;
+    }
+
     private void LogShazamAvailability(AutoTagRunPlan plan, Action<string> logCallback)
     {
         var shazamRecognitionAvailable = IsShazamRecognitionAvailable();

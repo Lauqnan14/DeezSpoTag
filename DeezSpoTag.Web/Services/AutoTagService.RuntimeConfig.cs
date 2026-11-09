@@ -258,14 +258,15 @@ public partial class AutoTagService
             supported,
             NormalizeSupportedTagKey);
 
-        // Common artist-enrichment fields are collected by the shared metadata pipeline
+        // Common artist fields and optional verified Shazam details are collected by the shared metadata pipeline
         // rather than by individual track providers, so retain them when explicitly
         // requested. This does not advertise them as capabilities of every provider
         // and does not change run eligibility.
         var retained = new HashSet<string>(filtered, StringComparer.OrdinalIgnoreCase);
         foreach (var normalized in requested
                      .Select(NormalizeSupportedTagKey)
-                     .Where(normalized => normalized is not null && CommonArtistEnrichmentKeys.Contains(normalized))
+                     .Where(normalized => normalized is not null && (CommonArtistEnrichmentKeys.Contains(normalized)
+                         || SupportedTagFeatureMappings.ShazamSongDetailsKeys.Contains(normalized)))
                      .Select(normalized => normalized!))
         {
             retained.Add(normalized);
@@ -299,7 +300,10 @@ public partial class AutoTagService
         }
 
         var normalized = tag.Trim();
-        return SupportedTagKeyMap.TryGetValue(normalized, out var mapped) ? mapped : null;
+        if (SupportedTagKeyMap.TryGetValue(normalized, out var mapped)) return mapped;
+        if (normalized.Equals("melodicness", StringComparison.OrdinalIgnoreCase)) return "melodicness";
+        return SupportedTagCreditMappings.Definitions
+            .FirstOrDefault(role => role.Key.Equals(normalized, StringComparison.OrdinalIgnoreCase))?.Key;
     }
 
     private async Task TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(

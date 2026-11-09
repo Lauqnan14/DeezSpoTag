@@ -247,6 +247,41 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("VerificationRetryServiceTest", fixture.Calls[1]);
     }
 
+    [Theory]
+    [InlineData("DeezSpoTag.Web/Services/ShazamDiscoveryService.cs")]
+    [InlineData("DeezSpoTag.Web/Services/ShazamRecognitionService.cs")]
+    [InlineData("DeezSpoTag.Web/Tools/shazam_port/recognize.py")]
+    [InlineData("DeezSpoTag.Web/wwwroot/js/shazam-listen.js")]
+    public async Task ShazamDetailsChangesSelectAcquisitionAndSharedIntegrationRegressions(string sourcePath)
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        fixture.WriteFile("DeezSpoTag.Tests/ShazamSongDetailsTest.cs", "public class ShazamSongDetailsTest { }");
+        fixture.WriteFile("DeezSpoTag.Tests/AutoTagSharedSongDetailsTest.cs", "public class AutoTagSharedSongDetailsTest { }");
+        await fixture.CommitFileAsync(sourcePath, "// song details changed");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.ShazamSongDetailsTest.", fixture.Calls[1]);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.AutoTagSharedSongDetailsTest.", fixture.Calls[1]);
+    }
+
+    [Theory]
+    [InlineData("DeezSpoTag.Core/Models/AudioFeaturesBase.cs")]
+    [InlineData("DeezSpoTag.Core/Models/Settings/TagSettings.cs")]
+    [InlineData("DeezSpoTag.Core/Models/Settings/UnifiedTagConfig.cs")]
+    [InlineData("DeezSpoTag.Web/Services/DownloadTagSettingsConverter.cs")]
+    public async Task SharedCreditContractsSelectTheRoleAndFileRegressions(string sourcePath)
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        fixture.WriteFile("DeezSpoTag.Tests/AutoTagCreditRoleTest.cs", "public class AutoTagCreditRoleTest { }");
+        fixture.WriteFile("DeezSpoTag.Tests/AutoTagCreditRoleFileRoundTripTest.cs", "public class AutoTagCreditRoleFileRoundTripTest { }");
+        await fixture.CommitFileAsync(sourcePath, "// shared contract changed");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.AutoTagCreditRoleTest.", fixture.Calls[1]);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.AutoTagCreditRoleFileRoundTripTest.", fixture.Calls[1]);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.TaggingProfileCanonicalizerTest.", fixture.Calls[1]);
+    }
+
     [Fact]
     public async Task UnmappedSourceChange_BlocksWithoutRunningUnrelatedTests()
     {

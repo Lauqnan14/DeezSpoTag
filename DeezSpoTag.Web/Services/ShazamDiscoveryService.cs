@@ -1,3 +1,4 @@
+using System.Net;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -31,7 +32,15 @@ public sealed record ShazamTrackCard(
     List<string> ArtistIds,
     List<string> ArtistAdamIds,
     Dictionary<string, List<string>> Tags,
-    string? DeezerUrl = null);
+    string? DeezerUrl = null)
+{
+    public DeezSpoTag.Web.Services.AutoTag.AutoTagTrack? SongDetails { get; init; }
+    public double? AnalysisBpm { get; init; }
+    public int DetailsVersion { get; init; }
+    public bool DetailsAlgorithmicAnalysis { get; init; }
+    public string? DetailsPageId { get; init; }
+    public DateTimeOffset? DetailsRetrievedAt { get; init; }
+}
 
 public sealed partial class ShazamDiscoveryService
 {
@@ -70,6 +79,325 @@ public sealed partial class ShazamDiscoveryService
         {
             _httpClient.Timeout = TimeSpan.FromSeconds(15);
         }
+    }
+
+    private const int SongDetailsVersion = 1;
+    private const int MaxSongDetailsBytes = 8 * 1024 * 1024;
+    private readonly ConcurrentDictionary<string, Lazy<Task<ShazamTrackCard?>>> _detailRequests = new(StringComparer.Ordinal);
+
+    public async Task<ShazamTrackCard?> GetSongDetailsAsync(ShazamTrackCard track,
+        CancellationToken cancellationToken = default, bool refresh = false)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var pageId = SongDetailsPageId(track.AppleMusicUrl);
+        if (pageId is null || !NumericDetailsId(track.Id)) return null;
+        var key = $"{track.Id}-{pageId}-{Country}-{Language}";
+        var pending = _detailRequests.GetOrAdd(key, _ => new Lazy<Task<ShazamTrackCard?>>(
+            () => FetchSongDetailsAsync(track, pageId, key, refresh, cancellationToken)));
+        try
+        {
+            var result = await pending.Value.WaitAsync(cancellationToken);
+            return result is not null && SameDetailsRecording(track, result) ? result : null;
+        }
+        finally
+        {
+            if (pending.IsValueCreated)
+            {
+                if (pending.Value.IsCompleted) _detailRequests.TryRemove(new KeyValuePair<string, Lazy<Task<ShazamTrackCard?>>>(key, pending));
+                else _ = pending.Value.ContinueWith(_ =>
+                    _detailRequests.TryRemove(new KeyValuePair<string, Lazy<Task<ShazamTrackCard?>>>(key, pending)),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+        }
+    }
+
+    private async Task<ShazamTrackCard?> FetchSongDetailsAsync(ShazamTrackCard expected, string pageId,
+        string key, bool refresh, CancellationToken token)
+    {
+        var path = Path.Join(AppDataPaths.GetDataRoot(_environment), "shazam-song-details", key + ".json");
+        ShazamTrackCard? cached = null;
+        try
+        {
+            if (File.Exists(path) && new FileInfo(path).Length <= MaxSongDetailsBytes)
+            {
+                var value = JsonSerializer.Deserialize<ShazamTrackCard>(await File.ReadAllTextAsync(path, token));
+                if (value is { DetailsVersion: SongDetailsVersion, SongDetails: not null }
+                    && value.DetailsPageId == pageId && SameDetailsRecording(expected, value)) cached = value;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        { _logger.LogDebug(ex, "Cannot read optional Shazam details cache"); }
+        if (!refresh && cached?.DetailsRetrievedAt > DateTimeOffset.UtcNow.AddDays(-7)) return cached;
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
+        bounded.CancelAfter(TimeSpan.FromSeconds(18));
+        try
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var slug = string.Join("-", System.Text.RegularExpressions.Regex.Matches(expected.Title.ToLowerInvariant(), @"[\p{L}\p{N}]+")
+                    .Select(match => match.Value));
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"https://www.shazam.com/song/{pageId}/{Uri.EscapeDataString(slug)}");
+                request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36");
+                request.Headers.TryAddWithoutValidation("Sec-CH-UA", "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"");
+                request.Version = HttpVersion.Version20;
+                request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+                request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+                request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
+                request.Headers.TryAddWithoutValidation("Accept-Language", Language);
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, bounded.Token);
+                if (((int)response.StatusCode == 429 || (int)response.StatusCode >= 500) && attempt == 0)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(400), bounded.Token);
+                    continue;
+                }
+                if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MaxSongDetailsBytes) return cached;
+                await using var rawStream = await response.Content.ReadAsStreamAsync(bounded.Token);
+                Stream stream = rawStream;
+                // Some injected HttpClients decompress automatically (and remove these headers),
+                // others do not. Bound the decoded document in either case.
+                foreach (var encoding in response.Content.Headers.ContentEncoding.Reverse())
+                {
+                    stream = encoding.ToLowerInvariant() switch
+                    {
+                        "gzip" => new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress),
+                        "deflate" => new System.IO.Compression.DeflateStream(stream, System.IO.Compression.CompressionMode.Decompress),
+                        "br" => new System.IO.Compression.BrotliStream(stream, System.IO.Compression.CompressionMode.Decompress),
+                        "identity" => stream,
+                        _ => throw new HttpRequestException("Unsupported Shazam document encoding")
+                    };
+                }
+                await using var decodedStream = stream;
+                using var body = new MemoryStream();
+                var buffer = new byte[16384];
+                int count;
+                while ((count = await stream.ReadAsync(buffer, bounded.Token)) > 0)
+                {
+                    if (body.Length + count > MaxSongDetailsBytes) return cached;
+                    body.Write(buffer, 0, count);
+                }
+                var accepted = ParseSongDetails(expected, Encoding.UTF8.GetString(body.ToArray()));
+                if (accepted is null) return cached;
+                if (cached?.SongDetails is { } previous && accepted.SongDetails is { } fresh)
+                {
+                    fresh.Bpm ??= previous.Bpm;
+                    fresh.Melodicness ??= previous.Melodicness;
+                    fresh.Danceability ??= previous.Danceability;
+                    fresh.Energy ??= previous.Energy;
+                    fresh.Valence ??= previous.Valence;
+                    fresh.Acousticness ??= previous.Acousticness;
+                    foreach (var entry in previous.Other) fresh.Other.TryAdd(entry.Key, entry.Value);
+                    accepted = accepted with { AnalysisBpm = accepted.AnalysisBpm ?? cached.AnalysisBpm };
+                }
+                var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(accepted), bounded.Token);
+                    File.Move(temporary, path, overwrite: true);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { _logger.LogDebug(ex, "Cannot save optional Shazam details cache"); }
+                finally
+                {
+                    try { if (File.Exists(temporary)) File.Delete(temporary); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _logger.LogDebug(ex, "Cannot remove optional Shazam details temporary file"); }
+                }
+                return accepted;
+            }
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { _logger.LogDebug("Optional Shazam details timed out"); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        { _logger.LogDebug(ex, "Optional Shazam details request failed"); }
+        return cached;
+    }
+
+    private static bool NumericDetailsId(string? value) => value is { Length: > 0 and <= 20 } && value.All(char.IsAsciiDigit);
+
+    private static string? SongDetailsPageId(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https") return null;
+        if (uri.Host.Equals("music.apple.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+            if (query.TryGetValue("i", out var id) && NumericDetailsId(id.ToString())) return id.ToString();
+        }
+        else if (!uri.Host.Equals("www.shazam.com", StringComparison.OrdinalIgnoreCase)
+            && !uri.Host.Equals("shazam.com", StringComparison.OrdinalIgnoreCase)) return null;
+        var match = System.Text.RegularExpressions.Regex.Match(uri.AbsolutePath, @"/song/(\d+)(?:/|$)");
+        return match.Success && NumericDetailsId(match.Groups[1].Value) ? match.Groups[1].Value : null;
+    }
+
+    private static string DetailsIdentityText(string? text) => string.Concat((text ?? "").Normalize()
+        .Where(char.IsLetterOrDigit)).ToUpperInvariant();
+
+    private static bool SameDetailsRecording(ShazamTrackCard expected, ShazamTrackCard actual) => expected.Id == actual.Id
+        && DetailsIdentityText(expected.Title) == DetailsIdentityText(actual.Title)
+        && DetailsIdentityText(expected.Artist) == DetailsIdentityText(actual.Artist)
+        && (string.IsNullOrWhiteSpace(expected.Isrc) || string.IsNullOrWhiteSpace(actual.Isrc)
+            || DetailsIdentityText(expected.Isrc) == DetailsIdentityText(actual.Isrc))
+        && (!expected.DurationMs.HasValue || !actual.DurationMs.HasValue
+            || Math.Abs((long)expected.DurationMs.Value - actual.DurationMs.Value) <= 2000);
+
+    private static ShazamTrackCard? ParseSongDetails(ShazamTrackCard expected, string html)
+    {
+        if (html.Length > MaxSongDetailsBytes || SongDetailsPageId(expected.AppleMusicUrl) is not { } pageId) return null;
+        var options = System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+        var timeout = TimeSpan.FromSeconds(2);
+        try
+        {
+            var canonicals = System.Text.RegularExpressions.Regex.Matches(html, @"<link\b[^>]*>", options, timeout)
+                .Select(m => m.Value).Where(link => System.Text.RegularExpressions.Regex.IsMatch(link,
+                    "\\brel=[\"']canonical[\"']", options, timeout)).ToList();
+            if (canonicals.Count != 1) return null;
+            var href = System.Text.RegularExpressions.Regex.Match(canonicals[0], "\\bhref=[\"']([^\"']+)[\"']", options, timeout);
+            if (!href.Success || !Uri.TryCreate(System.Net.WebUtility.HtmlDecode(href.Groups[1].Value), UriKind.Absolute, out var canonical)
+                || canonical.Host is not ("www.shazam.com" or "shazam.com") || SongDetailsPageId(canonical.AbsoluteUri) != pageId) return null;
+            var flight = new StringBuilder();
+            foreach (System.Text.RegularExpressions.Match script in System.Text.RegularExpressions.Regex.Matches(html,
+                @"self\.__next_f\.push\((.*?)\)</script>", System.Text.RegularExpressions.RegexOptions.Singleline, timeout))
+            {
+                using var chunk = JsonDocument.Parse(script.Groups[1].Value);
+                if (chunk.RootElement.ValueKind == JsonValueKind.Array && chunk.RootElement.GetArrayLength() == 2
+                    && chunk.RootElement[0].ValueKind == JsonValueKind.Number && chunk.RootElement[0].GetInt32() == 1
+                    && chunk.RootElement[1].ValueKind == JsonValueKind.String) flight.Append(chunk.RootElement[1].GetString());
+            }
+            var frames = ReadDetailsFrames(Encoding.UTF8.GetBytes(flight.ToString()));
+            var nodes = frames.Values.SelectMany(WalkDetailsJson).ToList();
+            var mains = nodes.Where(node => node.ValueKind == JsonValueKind.Object
+                && node.TryGetProperty("track", out var track) && track.ValueKind == JsonValueKind.Object
+                && DetailsString(track, "type") == "shazam-songs" && DetailsString(track, "id") == expected.Id
+                && node.TryGetProperty("audioAnalysis", out _)).ToList();
+            if (mains.Count != 1) return null;
+            var main = mains[0];
+            var attributes = main.GetProperty("track").GetProperty("attributes");
+            var actual = expected with { Title = DetailsString(attributes, "title") ?? "", Artist = DetailsString(attributes, "artist") ?? "",
+                Isrc = DetailsString(attributes, "isrc"), DurationMs = attributes.TryGetProperty("durationInMillis", out var duration)
+                    && duration.ValueKind == JsonValueKind.Number && duration.TryGetInt32(out var ms) ? ms : null };
+            if (!SameDetailsRecording(expected, actual)) return null;
+            var analysis = main.GetProperty("audioAnalysis");
+            double? Unit(string name) => DetailsNumber(analysis, name) is { } value && value is >= 0 and <= 1 ? value : null;
+            var bpm = DetailsNumber(analysis, "bpm");
+            if (bpm is < 0.5 or >= long.MaxValue) bpm = null;
+            var details = new DeezSpoTag.Web.Services.AutoTag.AutoTagTrack {
+                Title = actual.Title, Artists = [actual.Artist], Isrc = actual.Isrc ?? expected.Isrc,
+                Duration = (actual.DurationMs ?? expected.DurationMs) is { } durationMs ? TimeSpan.FromMilliseconds(durationMs) : null,
+                Bpm = bpm.HasValue ? (long)Math.Round(bpm.Value, MidpointRounding.AwayFromZero) : null,
+                Melodicness = Unit("melodicness"), Acousticness = Unit("acousticness"), Valence = Unit("valence"),
+                Danceability = Unit("danceability"), Energy = Unit("energy") };
+            foreach (var props in nodes.Where(node => node.ValueKind == JsonValueKind.Object
+                && DetailsString(node, "dataTestId") == "creditPerson" && DetailsString(node, "songId") == pageId
+                && DetailsString(node, "providerName") == "credits"))
+            {
+                if (!props.TryGetProperty("children", out var children) || children.ValueKind != JsonValueKind.Array) continue;
+                var labels = children.EnumerateArray().SelectMany(child => DetailsCreditLabels(child, frames, new HashSet<string>(), 0))
+                    .Where(text => !string.IsNullOrWhiteSpace(text)).ToList();
+                if (labels.Count != 2) continue;
+                foreach (var role in DeezSpoTag.Web.Services.AutoTag.SupportedTagCreditMappings.NormalizeRoles(labels[1]))
+                {
+                    var key = string.IsNullOrEmpty(role.Key) ? "involvedPeople" : role.Key;
+                    if (!details.Other.TryGetValue(key, out var values)) details.Other[key] = values = [];
+                    var value = key == "involvedPeople" ? $"{role.OriginalLabel}: {labels[0]}"
+                        : key == "performer" && !string.Equals(role.OriginalLabel, "Performer", StringComparison.OrdinalIgnoreCase)
+                            ? $"{labels[0]} [{role.OriginalLabel}]" : labels[0];
+                    if (!values.Contains(value, StringComparer.OrdinalIgnoreCase)) values.Add(value);
+                }
+            }
+            if (details.Bpm is null && details.Melodicness is null && details.Acousticness is null && details.Valence is null
+                && details.Danceability is null && details.Energy is null && details.Other.Count == 0) return null;
+            return expected with { SongDetails = details, AnalysisBpm = bpm, DetailsVersion = SongDetailsVersion,
+                DetailsPageId = pageId, DetailsAlgorithmicAnalysis = true, DetailsRetrievedAt = DateTimeOffset.UtcNow };
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException or OverflowException
+            or KeyNotFoundException or System.Text.RegularExpressions.RegexMatchTimeoutException) { return null; }
+    }
+
+    private static double? DetailsNumber(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.Number
+        && item.TryGetDouble(out var number) && double.IsFinite(number) ? number : null;
+    private static string? DetailsString(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+
+    private static Dictionary<string, JsonElement> ReadDetailsFrames(byte[] bytes)
+    {
+        var frames = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var offset = 0;
+        while (offset < bytes.Length && frames.Count < 12000)
+        {
+            var colon = Array.IndexOf(bytes, (byte)':', offset);
+            if (colon < 0) break;
+            var id = colon - offset is > 0 and <= 8 ? Encoding.ASCII.GetString(bytes, offset, colon - offset) : "";
+            if (id.Length == 0 || !id.All(char.IsAsciiHexDigit))
+            {
+                // React preload rows (e.g. :HL[...]) have no frame ID.
+                var newline = Array.IndexOf(bytes, (byte)'\n', offset);
+                if (newline < 0) break;
+                offset = newline + 1;
+                continue;
+            }
+            offset = colon + 1;
+            if (offset < bytes.Length && bytes[offset] == 'T')
+            {
+                var comma = Array.IndexOf(bytes, (byte)',', offset);
+                if (comma < 0 || comma - offset > 9 || !int.TryParse(Encoding.ASCII.GetString(bytes, offset + 1, comma - offset - 1),
+                    System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var size)
+                    || size < 0 || size > bytes.Length - comma - 1) break;
+                frames[id] = JsonSerializer.SerializeToElement(Encoding.UTF8.GetString(bytes, comma + 1, size));
+                offset = comma + 1 + size;
+            }
+            else
+            {
+                try
+                {
+                    var reader = new Utf8JsonReader(bytes.AsSpan(offset));
+                    using var document = JsonDocument.ParseValue(ref reader);
+                    frames[id] = document.RootElement.Clone();
+                    offset += (int)reader.BytesConsumed;
+                }
+                catch (JsonException)
+                {
+                    var newline = Array.IndexOf(bytes, (byte)'\n', offset);
+                    if (newline < 0) break;
+                    offset = newline;
+                }
+            }
+            while (offset < bytes.Length && bytes[offset] is (byte)'\n' or (byte)'\r') offset++;
+        }
+        return frames;
+    }
+
+    private static IEnumerable<JsonElement> WalkDetailsJson(JsonElement node)
+    {
+        yield return node;
+        if (node.ValueKind == JsonValueKind.Object)
+            foreach (var property in node.EnumerateObject()) foreach (var child in WalkDetailsJson(property.Value)) yield return child;
+        else if (node.ValueKind == JsonValueKind.Array)
+            foreach (var value in node.EnumerateArray()) foreach (var child in WalkDetailsJson(value)) yield return child;
+    }
+
+    private static IEnumerable<string> DetailsCreditLabels(JsonElement node, Dictionary<string, JsonElement> frames,
+        HashSet<string> seen, int depth)
+    {
+        if (depth > 24) yield break;
+        if (node.ValueKind == JsonValueKind.String)
+        {
+            var text = node.GetString() ?? "";
+            if (!text.StartsWith('$')) { yield return text.Trim(); yield break; }
+            var reference = text[1..].TrimStart('L', '@');
+            if (seen.Add(reference) && frames.TryGetValue(reference, out var target))
+                foreach (var label in DetailsCreditLabels(target, frames, seen, depth + 1)) yield return label;
+        }
+        else if (node.ValueKind == JsonValueKind.Array)
+        {
+            if (node.GetArrayLength() == 4 && node[0].ValueKind == JsonValueKind.String && node[0].GetString() == "$")
+            {
+                foreach (var label in DetailsCreditLabels(node[3], frames, seen, depth + 1)) yield return label;
+            }
+            else foreach (var child in node.EnumerateArray())
+                foreach (var label in DetailsCreditLabels(child, frames, seen, depth + 1)) yield return label;
+        }
+        else if (node.ValueKind == JsonValueKind.Object && node.TryGetProperty("children", out var children))
+            foreach (var label in DetailsCreditLabels(children, frames, seen, depth + 1)) yield return label;
     }
 
     public async Task<ShazamTrackCard?> GetTrackAsync(string trackId, CancellationToken cancellationToken = default)
@@ -558,10 +886,8 @@ public sealed partial class ShazamDiscoveryService
             GetMetadataValue(metadata, "Lang"));
         var composer = FirstNonEmpty(
             GetMetadataValue(metadata, "Composer"),
-            GetMetadataValue(metadata, "Songwriter(s)"),
-            GetMetadataValue(metadata, "Songwriter"),
-            GetMetadataValue(metadata, "Writers"),
-            GetMetadataValue(metadata, "Written By"));
+            GetMetadataValue(metadata, "Composed By"),
+            GetMetadataValue(metadata, "Music By"));
         var lyricist = FirstNonEmpty(
             GetMetadataValue(metadata, "Lyricist"),
             GetMetadataValue(metadata, "Lyrics By"));

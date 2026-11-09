@@ -56,7 +56,7 @@
     const TARGET_SAMPLE_RATE = 16000;
     // Above the server's 15s recognizer process timeout, so a stuck lookup reports the
     // server's precise reason instead of a generic client-side timeout.
-    const RECOGNITION_REQUEST_TIMEOUT_MS = 30000;
+    const RECOGNITION_REQUEST_TIMEOUT_MS = 180000;
     // document.currentScript is only valid while this module is being evaluated.
     const captureWorkletUrl = document.currentScript?.dataset?.captureWorkletSrc
         || '/js/shazam-capture-processor.js';

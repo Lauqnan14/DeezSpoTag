@@ -114,6 +114,9 @@ public class TagSettings
     [JsonPropertyName("acousticness")]
     public bool Acousticness { get; set; } = false;
 
+    [JsonPropertyName("melodicness")]
+    public bool Melodicness { get; set; } = false;
+
     [JsonPropertyName("instrumentalness")]
     public bool Instrumentalness { get; set; } = false;
 
@@ -170,6 +173,60 @@ public class TagSettings
 
     [JsonPropertyName("involvedPeople")]
     public bool InvolvedPeople { get; set; } = false;
+
+    // Distinct credit roles. Each is an independent write selection; the
+    // overwrite guard handles each independently as well. Defaults follow the
+    // legacy involvedPeople contract: nothing is written unless selected.
+    [JsonPropertyName("songwriter")]
+    public bool Songwriter { get; set; } = false;
+
+    [JsonPropertyName("producer")]
+    public bool Producer { get; set; } = false;
+
+    [JsonPropertyName("executiveProducer")]
+    public bool ExecutiveProducer { get; set; } = false;
+
+    [JsonPropertyName("coProducer")]
+    public bool CoProducer { get; set; } = false;
+
+    [JsonPropertyName("additionalProducer")]
+    public bool AdditionalProducer { get; set; } = false;
+
+    [JsonPropertyName("vocalProducer")]
+    public bool VocalProducer { get; set; } = false;
+
+    [JsonPropertyName("engineer")]
+    public bool Engineer { get; set; } = false;
+
+    [JsonPropertyName("recordingEngineer")]
+    public bool RecordingEngineer { get; set; } = false;
+
+    [JsonPropertyName("mixingEngineer")]
+    public bool MixingEngineer { get; set; } = false;
+
+    [JsonPropertyName("masteringEngineer")]
+    public bool MasteringEngineer { get; set; } = false;
+
+    [JsonPropertyName("assistantEngineer")]
+    public bool AssistantEngineer { get; set; } = false;
+
+    [JsonPropertyName("arranger")]
+    public bool Arranger { get; set; } = false;
+
+    [JsonPropertyName("orchestrator")]
+    public bool Orchestrator { get; set; } = false;
+
+    [JsonPropertyName("conductor")]
+    public bool Conductor { get; set; } = false;
+
+    [JsonPropertyName("performer")]
+    public bool Performer { get; set; } = false;
+
+    [JsonPropertyName("djMixer")]
+    public bool DjMixer { get; set; } = false;
+
+    [JsonPropertyName("director")]
+    public bool Director { get; set; } = false;
 
     [JsonPropertyName("publisher")]
     public bool Publisher { get; set; } = false;

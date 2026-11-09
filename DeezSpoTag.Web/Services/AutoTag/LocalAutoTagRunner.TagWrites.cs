@@ -441,7 +441,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.Plan.PlatformSupportedTags.TryGetValue(context.Platform, out var supported))
         {
-            var common = configured.Where(tag => tag is SupportedTag.ArtistCountry or SupportedTag.ArtistCity
+            var shared = SharedSongDetailKeys.Where(SupportedTagMap.ContainsKey).Select(key => SupportedTagMap[key]).ToHashSet();
+            var common = configured.Where(tag => shared.Contains(tag) || tag is SupportedTag.ArtistCountry or SupportedTag.ArtistCity
                 or SupportedTag.ArtistRegion or SupportedTag.ArtistLanguage).ToArray();
             configured.IntersectWith(supported);
             configured.UnionWith(common);
@@ -462,7 +463,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 var requiresPreferredAlias = (tag == SupportedTag.Artist && aliasOverwrite.ForcedArtist)
                     || (tag == SupportedTag.AlbumArtist && aliasOverwrite.ForcedAlbumArtist)
                     || (tag == SupportedTag.Title && aliasOverwrite.ForcedTitle);
-                if (!requiresPreferredAlias && !ShouldOverwriteTag(context.Plan.Config, tag)
+                var provisional = context.Plan.SharedSongDetailTags.TryGetValue(context.FileIndex, out var sharedKeys)
+                    && sharedKeys.Any(key => SupportedTagMap.TryGetValue(key, out var mapped) && mapped == tag);
+                if (!requiresPreferredAlias && !provisional && !ShouldOverwriteTag(context.Plan.Config, tag)
                     && HasTag(file, extension, tag, context.Plan.Config, context.Platform))
                 {
                     retained.Add(tag);
@@ -837,6 +840,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         WriteAudioFeatureTag(tagWriteContext, context, "loudness", LoudnessTag, SupportedTag.Loudness, context.SourceTrack.Loudness);
         WriteAudioFeatureTag(tagWriteContext, context, "tempo", TempoTag, SupportedTag.Tempo, context.SourceTrack.Tempo);
         WriteAudioFeatureTag(tagWriteContext, context, "liveness", LivenessTag, SupportedTag.Liveness, context.SourceTrack.Liveness);
+        WriteAudioFeatureTag(tagWriteContext, context, "melodicness", "MELODICNESS", SupportedTag.Melodicness, context.SourceTrack.Melodicness);
 
         if (context.EnabledTags.Contains("timeSignature") && context.SourceTrack.TimeSignature.HasValue)
         {

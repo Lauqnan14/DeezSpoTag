@@ -34,6 +34,17 @@ public sealed class AutoTagProviderCapabilityContractTest
     ];
 
     [Fact]
+    public void CreditProvidersAdvertiseTheirSeparateCreditCapabilities()
+    {
+        var env = new StubWebHostEnvironment();
+        Assert.Contains(SupportedTag.Songwriter, new DiscogsPlatform(env).Describe().SupportedTags);
+        Assert.Contains(SupportedTag.RecordingEngineer, new DiscogsPlatform(env).Describe().SupportedTags);
+        Assert.Contains(SupportedTag.Songwriter, new MusicBrainzPlatform(env).Describe().SupportedTags);
+        Assert.Contains(SupportedTag.Producer, new DeezerPlatform(env).Describe().SupportedTags);
+        Assert.DoesNotContain(SupportedTag.Producer, new SpotifyPlatform(env).Describe().SupportedTags);
+    }
+
+    [Fact]
     public void WordSynchronizedLyricsProviders_AdvertiseTtmlOutput()
     {
         var environment = new StubWebHostEnvironment();

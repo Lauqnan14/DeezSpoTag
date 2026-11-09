@@ -4,6 +4,10 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 internal static class SupportedTagFeatureMappings
 {
+    internal static readonly HashSet<string> ShazamSongDetailsKeys = SupportedTagCreditMappings.Definitions
+        .Select(role => role.Key).Concat(new[] { "bpm", "melodicness", "acousticness", "valence", "danceability", "energy", "involvedPeople" })
+        .ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+
     private static readonly (string Key, SupportedTag Tag)[] AudioFeatureTags =
     {
         ("bpm", SupportedTag.BPM),

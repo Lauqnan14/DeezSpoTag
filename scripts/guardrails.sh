@@ -125,6 +125,8 @@ if [[ "$MODE" == "changed" ]]; then
           selected+=("${name%.cs}")
         fi
         continue ;;
+      DeezSpoTag.Core/Models/AudioFeaturesBase.cs|DeezSpoTag.Core/Models/Settings/TagSettings.cs|DeezSpoTag.Core/Models/Settings/UnifiedTagConfig.cs|DeezSpoTag.Web/Services/DownloadTagSettingsConverter.cs|DeezSpoTag.Web/Services/DownloadTagSettingsResolver.cs|DeezSpoTag.Web/Services/TaggingProfileCanonicalizer.cs|DeezSpoTag.Web/Services/TaggingProfileSettingsMapper.cs|DeezSpoTag.Web/Controllers/Api/TaggingProfilesApiController.cs)
+        add_tests_matching '^(AutoTagCreditRole|AutoTagCreditRoleFileRoundTrip|TaggingProfileCanonicalizer|TaggingProfileSettingsMapper|AutoTagConfigBuilder|AutoTagProviderCapabilityContract)Test$' ;;
       *.md|.gitignore|LICENSE*|docs/*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
       *.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico)
@@ -145,8 +147,8 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(AudiomackPlatform|AudiomackArtistLocation|ArtistMetadataAliasLookup)Test$' ;;
       DeezSpoTag.Web/Services/PlatformSyncConnectionProvider.cs)
         add_tests_matching '^(PlaylistSyncReadiness|PlatformPlaylistSyncTarget|NavidromeApiClientPlaylist)Test$' ;;
-      DeezSpoTag.Web/Controllers/Api/ShazamDiscoveryApiController.cs|DeezSpoTag.Web/Services/Shazam*.cs|DeezSpoTag.Web/Tools/shazam_port/discover.py|DeezSpoTag.Web/Tools/shazam_related/*|DeezSpoTag.Web/Views/Shazam/Results.cshtml)
-        add_tests_matching '^(Shazam|DailyRecommendationSettings|RecommendationCacheServing)' ;;
+      DeezSpoTag.Web/Controllers/Api/ShazamDiscoveryApiController.cs|DeezSpoTag.Web/Services/Shazam*.cs|DeezSpoTag.Web/Tools/shazam_port/discover.py|DeezSpoTag.Web/Tools/shazam_port/recognize.py|DeezSpoTag.Web/wwwroot/js/shazam-listen.js|DeezSpoTag.Web/Tools/shazam_related/*|DeezSpoTag.Web/Views/Shazam/Results.cshtml)
+        add_tests_matching '^(Shazam|AutoTagSharedSongDetails|DailyRecommendationSettings|RecommendationCacheServing)' ;;
       DeezSpoTag.Web/Tools/spotify_librespot/deezspot-spotizerr-phoenix/deezspot_spotizerr_phoenix.egg-info/*)
         add_tests_matching '^(SpotifyCredentialsGenerationGuardrail|TidalSpotifyResolutionGuardrail)Test$' ;;
       DeezSpoTag.Web/Views/Artist/Index.cshtml)
