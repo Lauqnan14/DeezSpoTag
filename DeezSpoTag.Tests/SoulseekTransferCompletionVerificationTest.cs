@@ -608,11 +608,12 @@ public sealed class SoulseekTransferCompletionVerificationTest : IDisposable
             30_000,
             remoteFilename: transfer.Filename!);
         File.Delete(path);
-        var landing = Task.Run(async () =>
+        async Task LandFileAsync()
         {
             await Task.Delay(150);
             WriteBytes(path, 30_000);
-        });
+        }
+        var landing = LandFileAsync();
 
         var result = await CreateService().WaitForCompletionAsync(
             "listener", transfer.Id.Value, path, "queue-settle");
