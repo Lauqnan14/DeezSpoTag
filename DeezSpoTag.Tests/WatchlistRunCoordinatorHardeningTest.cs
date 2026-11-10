@@ -263,7 +263,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         }
     }
 
-    private void EnableRealQueueAdmissionFixture()
+    private void EnableRealQueueAdmissionFixture(Action<IServiceCollection>? configure = null)
     {
         // Reuse real queue/identity/destination/admission code. Only source HTTP and idle runtime
         // collaborators are synthetic; no download worker or provider network service is started.
@@ -305,6 +305,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             NullLogger<DeezSpoTag.Services.Download.Utils.EnhancedPathTemplateProcessor>.Instance));
         services.AddSingleton((PlaylistSyncService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PlaylistSyncService)));
         services.AddSingleton<PlaylistPlatformSnapshotCoordinator>(provider => new(provider, _settingsService, NullLogger<PlaylistPlatformSnapshotCoordinator>.Instance));
+        configure?.Invoke(services);
         _provider.Dispose();
         _provider = services.BuildServiceProvider();
         SetPrivateField(engine, "_serviceProvider", _provider);
@@ -2041,6 +2042,203 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waitTask);
     }
 
+
+    private async Task SeedHistoricalFinalizationRowAsync(string queueUuid, int attemptCount, string filePath)
+    {
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(queueUuid, "{\"WatchlistOrigin\":\"playlist\"}", [filePath]);
+        // Seed this exact historical row. Claiming the oldest due row would repeatedly
+        // reseed an earlier retry and leave later fixture rows at zero attempts.
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + Path.Join(_tempRoot, "library.db"));
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE watchlist_finalization_outbox SET status='retry',attempt_count=@attempts,next_attempt_utc='2000-01-01',last_error='Unverified historical work' WHERE queue_uuid=@uuid;";
+        command.Parameters.AddWithValue("attempts", attemptCount);
+        command.Parameters.AddWithValue("uuid", queueUuid);
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
+    [Fact]
+    public async Task TwoBatchesRespectQuotaWaitForImportAndResumeAfterTerminalClassification()
+    {
+        var signal = new WatchlistRunSignal();
+        EnableRealQueueAdmissionFixture(services =>
+        {
+            services.AddSingleton(signal);
+            services.AddSingleton(provider => new WatchlistFinalizationService(
+                _queueRepository, _repository, provider.GetRequiredService<PlaylistWatchReconciler>(),
+                signal, null!, _settingsService, NullLogger<WatchlistFinalizationService>.Instance));
+            services.AddSingleton(provider => new WatchlistPostDownloadSyncService(
+                provider, _settingsService, signal, NullLogger<WatchlistPostDownloadSyncService>.Instance));
+        });
+        var settings = _settingsService.LoadSettings();
+        settings.WatchMaxItemsPerRun = 2;
+        settings.WatchDelayBetweenPlaylistsSeconds = 0;
+        settings.Service = "deezer";
+        _settingsService.SaveSettings(settings);
+        const string source = "spotify";
+        const string playlistId = "two-batches";
+        await _repository.AddPlaylistWatchlistAsync(source, playlistId,
+            new PlaylistWatchlistMetadataInput("Two batches", null, null, 4));
+        await ConfigurePlaylistDestinationAsync(source, playlistId);
+        var engine = _provider.GetRequiredService<WatchlistEngine>();
+        var revision = await (Task<string>)typeof(WatchlistEngine)
+            .GetMethod("BuildProviderReadinessRevisionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(engine, new object[] { source })!;
+        var candidates = Enumerable.Range(1, 4).Select(n => new PlaylistTrackCandidate(
+            n.ToString("D22"), $"USAAA260000{n}", $"Batch Song {n}", "Fixture Artist", $"Album {n}",
+            null, 180000, null, Array.Empty<string>(), SourcePosition: n)).ToList();
+        var identity = PlaylistCandidateContract.BuildIdentityRevision(source, candidates);
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync(source, playlistId, "cached",
+            System.Text.Json.JsonSerializer.Serialize(candidates), PlaylistCandidateContract.CurrentCacheSchemaVersion,
+            identity, revision, true, sourceItemsObserved: 4);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(source, playlistId, candidates.Select((candidate, i) =>
+            new PlaylistWatchMissingTrackUpsert(candidate.TrackSourceId, candidate.Isrc, i + 1, candidate.Title!,
+                candidate.Artist!, candidate.Album, 180000, null, null, null, "cached", identity, revision)).ToList());
+        // A NAS-sized historical backlog cannot hold either admission path.
+        for (var n = 0; n < 88; n++)
+            await SeedHistoricalFinalizationRowAsync($"history-{n}", 18765, $"/missing/history-{n}.flac");
+        var providerReads = 0;
+        _snapshotHttp.Response = _ =>
+        {
+            providerReads++;
+            throw new InvalidOperationException("Batch release must reuse the cached snapshot");
+        };
+        var hosted = new WatchlistRunCoordinator(_provider, new BackgroundWorkCoordinator(), signal,
+            NullLogger<WatchlistRunCoordinator>.Instance);
+        var release = typeof(WatchlistRunCoordinator).GetMethod("ReleaseNextAdmissionBatchAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        signal.Request(WatchlistWakeReason.TargetSync);
+        await ((Task)release.Invoke(hosted, new object[] { _repository, cancellation.Token })!).WaitAsync(cancellation.Token);
+        var first = await _queueRepository.GetTasksAsync();
+        Assert.Equal(2, first.Count);
+        Assert.All(first, item => Assert.Equal("queued", item.Status));
+        await _repository.UpdateWatchlistCycleStateAsync("playlist", "waiting_downloads",
+            DateTimeOffset.UtcNow.AddMinutes(-1), null, DateTimeOffset.UtcNow.AddHours(6));
+        using var holding = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+        var wait = InvokeWaitForFullRunDeadlineAsync(hosted, holding.Token);
+        try
+        {
+            await Task.Delay(100, cancellation.Token);
+            Assert.Equal(2, (await _queueRepository.GetTasksAsync()).Count);
+            foreach (var item in first)
+            {
+                await _queueRepository.UpdateStatusAsync(item.QueueUuid, "completed");
+                await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, "completed");
+                await _queueRepository.MarkMoveSucceededAsync(item.QueueUuid);
+                await _repository.UpsertWatchlistFinalizationOutboxAsync(item.QueueUuid, item.PayloadJson,
+                    [$"/missing/import/{item.QueueUuid}.flac"]);
+            }
+            var sync = _provider.GetRequiredService<WatchlistPostDownloadSyncService>();
+            for (var pass = 0; pass < 4; pass++)
+                await sync.ProcessFinalizationWorkAsync(cancellation.Token);
+            Assert.True(await _repository.HasUnfinishedWatchlistFinalizationAsync());
+            signal.Request(WatchlistWakeReason.Finalization);
+            await Task.Delay(100, cancellation.Token);
+            Assert.Equal(2, (await _queueRepository.GetTasksAsync()).Count); // transferred is not imported
+
+            // Stop the observed coordinator before advancing synthetic retry history.
+            // Otherwise it can claim a row while the fixture updates only retry rows,
+            // then overwrite that synthetic history with its earlier attempt snapshot.
+            holding.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait);
+            Assert.Equal(0, (await _repository.GetWatchlistFinalizationBacklogCountsAsync()).Processing);
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + Path.Join(_tempRoot, "library.db"));
+            await connection.OpenAsync(cancellation.Token);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE watchlist_finalization_outbox SET attempt_count=10, next_attempt_utc='2000-01-01' WHERE status='retry';";
+            await command.ExecuteNonQueryAsync(cancellation.Token);
+            await sync.ProcessFinalizationWorkAsync(cancellation.Token);
+            Assert.False(await _repository.HasUnfinishedWatchlistFinalizationAsync());
+            signal.Request(WatchlistWakeReason.Finalization);
+            wait = InvokeWaitForFullRunDeadlineAsync(hosted, cancellation.Token);
+            while ((await _queueRepository.GetTasksAsync()).Count < 4)
+            {
+                if (wait.IsCompleted) await wait;
+                await Task.Delay(20, cancellation.Token);
+            }
+            var both = await _queueRepository.GetTasksAsync();
+            Assert.Equal(4, both.Count);
+            Assert.Equal(4, both.Select(item => item.QueueUuid).Distinct().Count());
+            Assert.Equal(4, both.Select(item => item.SpotifyTrackId).Distinct().Count());
+            Assert.Equal(2, both.Count(item => item.Status == "queued"));
+            Assert.Equal(0, providerReads);
+            Assert.Equal(90, (await _repository.GetWatchlistFinalizationBacklogCountsAsync()).Blocked);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait);
+        }
+    }
+
+    /// <summary>
+    /// NAS-style recovery: 88 historical retry jobs with no admitted claims after restart. The
+    /// persisted waiting_downloads row must be re-evaluated and progress again instead of holding
+    /// the coordinator hostage on stale finalization work.
+    /// </summary>
+    [Fact]
+    public async Task StaleWaitingSchedulerRowWithHistoricalBacklogEvaluatesAgainAfterRestart()
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddHours(-10);
+        await _repository.UpdateWatchlistCycleStateAsync(
+            "playlist", "waiting_downloads", startedUtc, null, null);
+        for (var n = 0; n < 6; n++)
+        {
+            await SeedHistoricalFinalizationRowAsync($"q-stale-{n}", 500 + n, "/music/final/stale-" + n + ".flac");
+        }
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "unspent-request");
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var waitTask = InvokeWaitForFullRunDeadlineAsync(hosted, cancellation.Token);
+        var completed = waitTask == await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(10), cancellation.Token));
+        Assert.True(completed, "The wait phase stayed blocked on a historical finalization backlog without admitted claims.");
+        Assert.Equal(1, await _repository.GetWatchlistReconciliationRequestCountAsync());
+    }
+
+    /// <summary>
+    /// The repaired rule in the other direction: genuinely unfinished admitted work with current
+    /// watchlist ownership must continue holding waiting_downloads until verified import.
+    /// </summary>
+    [Fact]
+    public async Task CurrentUnfinishedImportWithWatchedOwnershipHoldsWaitingDownloads()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "import-list", new PlaylistWatchlistMetadataInput("Import", null, null, 1));
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(
+            "q-import-open", "{\"WatchlistOrigin\":\"playlist\"}", ["/music/final/importing.flac"]);
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
+            "spotify", "import-list", "sp-import-1", ["q-import-open"], null);
+        var startedUtc = DateTimeOffset.UtcNow.AddMinutes(-2);
+        await _repository.UpdateWatchlistCycleStateAsync(
+            "playlist", "waiting_downloads", startedUtc, null, null);
+
+        var signal = new WatchlistRunSignal();
+        var hosted = new WatchlistRunCoordinator(
+            _provider,
+            new BackgroundWorkCoordinator(),
+            signal,
+            NullLogger<WatchlistRunCoordinator>.Instance);
+        using var cancellation = new CancellationTokenSource();
+
+        var waitTask = InvokeWaitForFullRunDeadlineAsync(hosted, cancellation.Token);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        try
+        {
+            Assert.False(waitTask.IsCompleted, "waiting_downloads must keep holding while a current import is unfinished.");
+            Assert.Equal("waiting_downloads", (await _repository.GetWatchlistSchedulerStateAsync("playlist"))!.CycleStatus);
+            Assert.Contains(
+                "finish finalizing",
+                hosted.GetRuntimeHealth().LastAdmissionBlockReason,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waitTask);
+        }
+    }
 
     [Fact]
     public void HeartbeatAndProgress_DoNotOverwriteCurrentPhase()

@@ -62,4 +62,38 @@ public sealed class WatchlistBatchReleaseTest
 
         Assert.Equal(WatchlistWaitAction.Wait, action);
     }
+
+    // ---------------------------------------------------------------------------
+    // Scoped finalization gate semantics (watchlist finalization backlog repair).
+    //
+    // The `batchBusy` input here is no longer a global "ANY pending finalization row" flag: both
+    // coordinator admission paths compute it as (active downloads owned by live queue rows)
+    // OR (admitted finalization work with valid current watchlist ownership). These cases pin the
+    // repaired behavior that historically failed rows, removed owners, and attention-required
+    // jobs are NOT a batch-busy reason.
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public void HistoricalBacklogIsNotABatchBusyReason()
+    {
+        var action = WatchlistRunCoordinator.DecideWaitAction(
+            Now,
+            Later,
+            batchBusy: false,
+            missingTracksRemain: true);
+
+        Assert.Equal(WatchlistWaitAction.ReleaseNextBatch, action);
+    }
+
+    [Fact]
+    public void AttentionRequiredWorkDoesNotHoldTheNextBatch()
+    {
+        var action = WatchlistRunCoordinator.DecideWaitAction(
+            Now,
+            Now.AddMinutes(-10),
+            batchBusy: false,
+            missingTracksRemain: false);
+
+        Assert.Equal(WatchlistWaitAction.StartSnapshotRun, action);
+    }
 }

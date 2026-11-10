@@ -236,6 +236,7 @@ public partial class WatchlistApiController : ControllerBase
             || !DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(queueItem, DateTimeOffset.UtcNow));
         var syncJobs = await _repository.GetWatchlistSyncJobStatusCountsAsync(cancellationToken);
         var pendingReconciliationRequests = await _repository.GetWatchlistReconciliationRequestCountAsync(cancellationToken);
+        var finalizationBacklog = await _repository.GetWatchlistFinalizationBacklogCountsAsync(cancellationToken);
         var runtime = _watchlistCoordinator?.GetRuntimeHealth();
         if (runtime != null)
         {
@@ -350,6 +351,16 @@ public partial class WatchlistApiController : ControllerBase
                 orphanedPending = orphanedPendingClaims
             },
             targetSyncJobs = syncJobs,
+            finalization = new
+            {
+                pendingRetry = finalizationBacklog.PendingRetry,
+                processing = finalizationBacklog.Processing,
+                blocked = finalizationBacklog.Blocked,
+                obsolete = finalizationBacklog.Obsolete,
+                completed = finalizationBacklog.Completed,
+                unresolved = finalizationBacklog.Unresolved,
+                blockingAdmission = finalizationBacklog.BlockingAdmission
+            },
             presentation = new
             {
                 review = playlists.Sum(static item => item.ReviewTrackCount ?? 0),

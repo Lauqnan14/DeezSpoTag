@@ -9,6 +9,37 @@ using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Services;
 
+public enum WatchlistFinalizationDisposition
+{
+    /// <summary>Verification and notification succeeded; durable receipt recorded.</summary>
+    Completed,
+    /// <summary>Recoverable condition (missing/unindexed audio, uncertain identity) worth retrying under the attempt ceiling.</summary>
+    TemporaryFailure,
+    /// <summary>No currently watched playlist keeps needing the verified recording; never reported as completion.</summary>
+    ObsoleteOwnership,
+    /// <summary>Work is still relevant but unresolved; retained with its error for attention and no longer retried automatically.</summary>
+    UnresolvedWork
+}
+
+public sealed record WatchlistFinalizationOutcome(
+    WatchlistFinalizationDisposition Disposition,
+    int NotificationCount,
+    string? Reason)
+{
+    /// <summary>Notification counts stay integer zero for every non-completed disposition, so repaired observability distinguishes them instead of reading zero as success.</summary>
+    public static WatchlistFinalizationOutcome Completed(int notificationCount, string? reason = null)
+        => new(WatchlistFinalizationDisposition.Completed, Math.Max(0, notificationCount), reason);
+
+    public static WatchlistFinalizationOutcome TemporaryFailure(string reason)
+        => new(WatchlistFinalizationDisposition.TemporaryFailure, 0, reason);
+
+    public static WatchlistFinalizationOutcome ObsoleteOwnership(string reason)
+        => new(WatchlistFinalizationDisposition.ObsoleteOwnership, 0, reason);
+
+    public static WatchlistFinalizationOutcome UnresolvedWork(string reason)
+        => new(WatchlistFinalizationDisposition.UnresolvedWork, 0, reason);
+}
+
 public sealed class WatchlistFinalizationService
 {
     private const string AppleSource = "apple";
@@ -45,7 +76,7 @@ public sealed class WatchlistFinalizationService
         _logger = logger;
     }
 
-    public async Task<int> NotifyQueueItemFinalizedAsync(
+    public async Task<WatchlistFinalizationOutcome> NotifyQueueItemFinalizedAsync(
         DownloadQueueItem item,
         string? payloadJson,
         IEnumerable<string>? finalFilePaths,
@@ -53,7 +84,7 @@ public sealed class WatchlistFinalizationService
     {
         if (string.IsNullOrWhiteSpace(item.QueueUuid) || !_libraryRepository.IsConfigured)
         {
-            return 0;
+            return WatchlistFinalizationOutcome.TemporaryFailure("Library database is not configured or the queue uuid is empty.");
         }
 
         var normalizedFinalPaths = NormalizeFinalFilePaths(finalFilePaths);
@@ -65,7 +96,8 @@ public sealed class WatchlistFinalizationService
                     "Watchlist finalization skipped for queue {QueueUuid} because no final file paths were available.",
                     item.QueueUuid);
             }
-            return 0;
+
+            return WatchlistFinalizationOutcome.TemporaryFailure("No final file paths were attached to the finalized download yet.");
         }
 
         var verifiedAudioPaths = await ResolveVerifiedFinalAudioPathsAsync(
@@ -74,10 +106,20 @@ public sealed class WatchlistFinalizationService
             cancellationToken);
         if (verifiedAudioPaths.Count == 0)
         {
-            return 0;
+            // Missing/unindexed audio is never obsolete by itself: an unavailable mount or an
+            // unfinished import can still recover, so it stays a bounded temporary failure.
+            return WatchlistFinalizationOutcome.TemporaryFailure("Finalized audio is missing or not indexed in the library DB yet.");
         }
 
         var notifications = await ResolveNotificationsAsync(item, payloadJson, cancellationToken);
+        if (notifications.Count == 0)
+        {
+            // ResolveNotificationsAsync already exhausted payload context, durable claims and
+            // cross-playlist candidates; nothing relevant remains.
+            return WatchlistFinalizationOutcome.ObsoleteOwnership(
+                "No watchlist ownership can be resolved for this finalized download.");
+        }
+
         var localTrackIds = await _libraryRepository.GetTrackIdsByFilePathsAsync(
             verifiedAudioPaths,
             cancellationToken);
@@ -90,19 +132,34 @@ public sealed class WatchlistFinalizationService
             cancellationToken);
         if (selected.Paths.Count == 0)
         {
-            return 0;
+            return WatchlistFinalizationOutcome.TemporaryFailure("Finalized audio identity could not be verified against the downloaded payload yet.");
         }
 
         var localTrackId = selected.LocalTrackId;
         var identity = selected.Identity;
-        notifications = await VerifyNotificationsAsync(
-            notifications,
+        var watchedPlaylists = (await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken))
+            .Select(static playlist => $"{NormalizeSource(playlist.Source)}|{playlist.SourceId}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var watchedNotifications = notifications
+            .Where(notification => watchedPlaylists.Contains($"{NormalizeSource(notification.Source)}|{notification.PlaylistId}"))
+            .ToList();
+        if (watchedNotifications.Count == 0)
+        {
+            // Obsolete ownership requires confirmation that no current watched owner or watched
+            // cross-playlist reconciliation still needs the verified recording. Removed original
+            // owners, removed queue rows and missing files alone never reach this conclusion.
+            return WatchlistFinalizationOutcome.ObsoleteOwnership(
+                "No currently monitored playlist still owns this finalized download.");
+        }
+
+        var verified = await VerifyNotificationsAsync(
+            watchedNotifications,
             identity,
             localTrackId > 0 ? localTrackId : null,
             cancellationToken);
 
         var sent = 0;
-        foreach (var notification in notifications)
+        foreach (var notification in verified)
         {
             if (_settingsService.LoadSettings().WatchEnabled)
             {
@@ -127,7 +184,10 @@ public sealed class WatchlistFinalizationService
             _runSignal.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
         }
 
-        return sent;
+        return sent > 0
+            ? WatchlistFinalizationOutcome.Completed(sent, "Finalized audio verified and reconciled.")
+            : WatchlistFinalizationOutcome.TemporaryFailure(
+                "Finalized audio identity does not match the monitored playlist track(s).");
     }
 
     private async Task<List<WatchlistFinalizedNotification>> VerifyNotificationsAsync(
@@ -375,11 +435,12 @@ public sealed class WatchlistFinalizationService
                 continue;
             }
 
-            sent += await NotifyQueueItemFinalizedAsync(
+            var outcome = await NotifyQueueItemFinalizedAsync(
                 item,
                 item.PayloadJson,
                 DownloadQueueRepository.GetExistingMaterializedFilePaths(item),
                 cancellationToken);
+            sent += outcome.NotificationCount;
         }
 
         return sent;

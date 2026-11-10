@@ -13953,16 +13953,90 @@ WHERE lower(status) IN ('missing', 'failed')
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
     }
 
+    /// <summary>
+    /// Blocking finalization scope shared by both coordinator admission paths. A row only holds
+    /// admission when an outstanding claim for the same queue uuid still belongs to a currently
+    /// watched playlist. Historical retry rows whose claims are resolved/failed, removed owners,
+    /// and attention-required jobs therefore cannot block admission globally.
+    /// </summary>
+    private const string WatchlistFinalizationBlockingScopeSql = @"
+FROM watchlist_finalization_outbox finalization
+JOIN playlist_watch_download_claim claim
+  ON lower(claim.queue_uuid) = lower(finalization.queue_uuid)
+JOIN playlist_watchlist watchlist
+  ON lower(watchlist.source) = lower(claim.source)
+ AND lower(watchlist.source_id) = lower(claim.source_id)
+WHERE lower(finalization.status) IN ('pending', 'retry', 'processing')
+  AND lower(claim.status) = 'pending'";
+
+    /// <summary>
+    /// True while admitted download/import work with valid current watchlist ownership is still
+    /// awaiting finalization. Deliberately scoped by claim ownership instead of the previous
+    /// global ANY/pending check: a stale retry row that no current watched playlist owns is not
+    /// an active batch. Both coordinator wait paths must use this same calculation.
+    /// </summary>
     public async Task<bool> HasUnfinishedWatchlistFinalizationAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT 1
-FROM watchlist_finalization_outbox
-WHERE lower(status) IN ('pending', 'retry', 'processing')
-LIMIT 1;";
+        var sql = $"SELECT 1{WatchlistFinalizationBlockingScopeSql} LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    /// <summary>
+    /// Disposition counts for the finalization backlog, plus the admitted-work blocking count
+    /// using the same scoped calculation as <see cref="HasUnfinishedWatchlistFinalizationAsync"/> so
+    /// diagnostics and gating can never disagree.
+    /// </summary>
+    public async Task<WatchlistFinalizationBacklogDto> GetWatchlistFinalizationBacklogCountsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var pendingRetry = 0;
+        var processing = 0;
+        var completed = 0;
+        var blocked = 0;
+        var obsolete = 0;
+        await using (var countsCommand = new SqliteCommand(@"
+SELECT lower(status), COUNT(*)
+FROM watchlist_finalization_outbox
+GROUP BY lower(status);", connection))
+        {
+            await using var reader = await countsCommand.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var count = await ReadNullableIntAsync(reader, 1, cancellationToken) ?? 0;
+                switch (reader.GetString(0))
+                {
+                    case "pending":
+                    case "retry":
+                        pendingRetry += count;
+                        break;
+                    case "processing":
+                        processing += count;
+                        break;
+                    case "completed":
+                    case "complete":
+                        completed += count;
+                        break;
+                    case "blocked":
+                        blocked += count;
+                        break;
+                    case "obsolete":
+                        obsolete += count;
+                        break;
+                }
+            }
+        }
+
+        var blocking = 0;
+        await using (var blockingCommand = new SqliteCommand(
+            $"SELECT COUNT(*){WatchlistFinalizationBlockingScopeSql};", connection))
+        {
+            blocking = Convert.ToInt32(await blockingCommand.ExecuteScalarAsync(cancellationToken) ?? 0);
+        }
+
+        return new WatchlistFinalizationBacklogDto(pendingRetry, processing, completed, blocked, obsolete, blocking);
     }
 
     public async Task<int> ReopenOrphanedQueuedPlaylistWatchMissingTracksAsync(
@@ -15276,6 +15350,18 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// Inserts a genuinely missing finalization row, or applies a row change only when the
+    /// material evidence (final audio paths or watchlist payload content) actually changed.
+    ///
+    /// Repeated repair sweeps re-submit the same completed queue items every few minutes; the
+    /// previous unconditional upsert reset statuses, counters and deadlines on every pass, which
+    /// resurrected retry rows and let historical backlog accumulate attempts indefinitely. Now:
+    /// unchanged evidence leaves the row completely untouched (status, attempt count, retry
+    /// deadline, lease, error, updated_at); a terminal 'blocked'/'obsolete' row is reopened only
+    /// for an explicit evidence change, which also resets its attempt counter; a completed row
+    /// is never reopened; and a live 'processing' lease is never stolen.
+    /// </summary>
     public async Task UpsertWatchlistFinalizationOutboxAsync(
         string queueUuid,
         string? payloadJson,
@@ -15293,47 +15379,217 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
             return;
         }
 
+        var canonicalPaths = CanonicalizeFinalizationPathEvidence(paths);
+        var canonicalPayload = CanonicalizeFinalizationPayloadJson(payloadJson);
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
+        // Take the SQLite writer reservation before reading. Completion, claiming and
+        // evidence updates must serialize; otherwise a stale status can undo their writes.
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        string? existingStatus = null;
+        string? existingPayloadJson = null;
+        string? existingPathsJson = null;
+        await using (var existingCommand = new SqliteCommand(@"
+SELECT status, payload_json, final_file_paths_json
+FROM watchlist_finalization_outbox
+WHERE queue_uuid = @queueUuid
+LIMIT 1;", connection, transaction))
+        {
+            existingCommand.Parameters.AddWithValue("queueUuid", normalizedQueueUuid);
+            await using var reader = await existingCommand.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                existingStatus = reader.GetString(0);
+                existingPayloadJson = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
+                existingPathsJson = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+            }
+        }
+
+        if (existingStatus is null)
+        {
+            // Insert-genuinely-missing path for the durable sweep: a brand new row always starts
+            // as pending with a due timestamp; existing rows below never have state reset here.
+            await using var insertCommand = new SqliteCommand(@"
 INSERT INTO watchlist_finalization_outbox (queue_uuid,payload_json,final_file_paths_json,status,next_attempt_utc)
-VALUES (@queueUuid,@payloadJson,@paths,'pending',CURRENT_TIMESTAMP)
-ON CONFLICT(queue_uuid) DO UPDATE SET
-    payload_json=COALESCE(excluded.payload_json,watchlist_finalization_outbox.payload_json),
-    final_file_paths_json=excluded.final_file_paths_json,
-    status=CASE WHEN lower(watchlist_finalization_outbox.status)='completed' THEN 'completed' ELSE 'pending' END,
+VALUES (@queueUuid,@payloadJson,@paths,'pending',CURRENT_TIMESTAMP);", connection, transaction);
+            insertCommand.Parameters.AddWithValue("queueUuid", normalizedQueueUuid);
+            insertCommand.Parameters.AddWithValue("payloadJson", string.IsNullOrWhiteSpace(payloadJson) ? DBNull.Value : payloadJson);
+            insertCommand.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
+
+        var existingPaths = new List<string>();
+        try
+        {
+            existingPaths = JsonSerializer.Deserialize<List<string>>(existingPathsJson ?? "[]") ?? [];
+        }
+        catch (JsonException)
+        {
+            // Unreadable legacy evidence counts as changed below; the canonicalizers make it
+            // stable from this insert onward.
+        }
+
+        var evidenceChanged =
+            !string.Equals(canonicalPaths, CanonicalizeFinalizationPathEvidence(existingPaths), StringComparison.Ordinal)
+            || !string.Equals(canonicalPayload, CanonicalizeFinalizationPayloadJson(existingPayloadJson), StringComparison.Ordinal);
+        if (!evidenceChanged)
+        {
+            // Unchanged evidence must never flip a terminal disposition or reset retry state.
+            return;
+        }
+
+        await using var command = new SqliteCommand(
+            ReopenWatchlistFinalizationOutboxUpdateSql(existingStatus), connection, transaction);
+        command.Parameters.AddWithValue("queueUuid", normalizedQueueUuid);
+        command.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
+        command.Parameters.AddWithValue("payloadJson", string.IsNullOrWhiteSpace(payloadJson) ? DBNull.Value : payloadJson);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static string ReopenWatchlistFinalizationOutboxUpdateSql(string? existingStatus)
+    {
+        var terminalEvidenceColumns = $@"
+    payload_json=COALESCE(@payloadJson,payload_json),
+    final_file_paths_json=@paths,
+    updated_at=CURRENT_TIMESTAMP";
+        // Only completed rows and rows under a live processing lease keep their status; every
+        // other row (pending/retry/blocked/obsolete) reopens on explicit evidence change with a
+        // fresh attempt budget, because the new evidence is the only sanctioned reset path.
+        var reopenColumns = string.Equals(existingStatus?.Trim(), "processing", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : $@", status='pending',
+    attempt_count=0,
     next_attempt_utc=CURRENT_TIMESTAMP,
     lease_owner=NULL,
     lease_until_utc=NULL,
-    last_error=NULL,
-    updated_at=CURRENT_TIMESTAMP;", connection);
-        command.Parameters.AddWithValue("queueUuid", normalizedQueueUuid);
-        command.Parameters.AddWithValue("payloadJson", string.IsNullOrWhiteSpace(payloadJson) ? DBNull.Value : payloadJson);
-        command.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+    last_error=NULL";
+        var completedColumns = string.Equals(existingStatus?.Trim(), "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(existingStatus?.Trim(), "complete", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : reopenColumns;
+        return $@"
+UPDATE watchlist_finalization_outbox
+SET{terminalEvidenceColumns}{completedColumns}
+WHERE queue_uuid=@queueUuid;";
     }
 
+    private static string CanonicalizeFinalizationPathEvidence(IReadOnlyCollection<string> paths)
+        => string.Join("\n", paths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(static path => path.ToUpperInvariant())
+            .OrderBy(static value => value, StringComparer.Ordinal));
+
+    private static string? CanonicalizeFinalizationPayloadJson(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                WriteCanonicalFinalizationPayloadJson(document.RootElement, writer);
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (JsonException)
+        {
+            return payloadJson.Trim();
+        }
+    }
+
+    private static void WriteCanonicalFinalizationPayloadJson(JsonElement element, Utf8JsonWriter writer)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                // Property names are sorted case-insensitively and incidental event fields such as
+                // timestamps are dropped, so different JSON member ordering or event replay times
+                // can never look like a material evidence change and reopen a terminal row.
+                var members = element.EnumerateObject()
+                    .Where(static member => !IsIncidentalFinalizationEventProperty(member.Name))
+                    .Select(static member => (MemberName: member.Name, Value: member.Value.Clone()))
+                    .OrderBy(static member => member.MemberName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                writer.WriteStartObject();
+                foreach (var member in members)
+                {
+                    writer.WritePropertyName(member.MemberName);
+                    WriteCanonicalFinalizationPayloadJson(member.Value, writer);
+                }
+
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteCanonicalFinalizationPayloadJson(item.Clone(), writer);
+                }
+
+                writer.WriteEndArray();
+                break;
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
+    private static bool IsIncidentalFinalizationEventProperty(string propertyName)
+    {
+        var normalized = propertyName.Trim().Replace("_", string.Empty).ToLowerInvariant();
+        return normalized.EndsWith("utc", StringComparison.Ordinal)
+            || normalized.EndsWith("timestamp", StringComparison.Ordinal)
+            || normalized.Contains("createdat", StringComparison.Ordinal)
+            || normalized.Contains("updatedat", StringComparison.Ordinal)
+            || normalized.Contains("requestedat", StringComparison.Ordinal)
+            || normalized.Contains("completedat", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Claims due finalization rows under a lease. <paramref name="excludeIds"/> keeps rows that
+    /// were already attempted in the same processing pass invisible, so a job can never be
+    /// attempted twice within one pass even if its retry deadline comes due mid-pass.
+    /// </summary>
     public async Task<IReadOnlyList<WatchlistFinalizationOutboxDto>> ClaimDueWatchlistFinalizationOutboxAsync(
         int limit,
         TimeSpan lease,
         string leaseOwner,
+        IReadOnlyCollection<long>? excludeIds = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
+        var excludedSql = excludeIds is { Count: > 0 }
+            ? " AND id NOT IN (SELECT value FROM json_each(@excludeIdsJson))"
+            : string.Empty;
+        await using var command = new SqliteCommand($@"
 UPDATE watchlist_finalization_outbox
 SET status='processing', lease_owner=@leaseOwner, lease_until_utc=@leaseUntilUtc, updated_at=CURRENT_TIMESTAMP
 WHERE id IN (
     SELECT id FROM watchlist_finalization_outbox
-    WHERE (lower(status) IN ('pending','retry') AND datetime(next_attempt_utc) <= datetime('now'))
-       OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'))
+    WHERE ((lower(status) IN ('pending','retry') AND datetime(next_attempt_utc) <= datetime('now'))
+       OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'))){excludedSql}
     ORDER BY next_attempt_utc,id LIMIT @limit
 )
 RETURNING id,queue_uuid,payload_json,final_file_paths_json,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at;", connection, transaction);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 100));
+        command.Parameters.AddWithValue(
+            "excludeIdsJson",
+            JsonSerializer.Serialize(excludeIds is { Count: > 0 } ? excludeIds : []));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<WatchlistFinalizationOutboxDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -15343,6 +15599,36 @@ RETURNING id,queue_uuid,payload_json,final_file_paths_json,status,attempt_count,
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return items;
+    }
+
+    /// <summary>
+    /// Reads one finalization outbox row by queue uuid, or null when it is absent. Used by
+    /// diagnostics and recovery verification paths that need the durable row's full state.
+    /// </summary>
+    public async Task<WatchlistFinalizationOutboxDto?> GetWatchlistFinalizationOutboxByUuidAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedQueueUuid = queueUuid?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedQueueUuid))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT id,queue_uuid,payload_json,final_file_paths_json,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at
+FROM watchlist_finalization_outbox
+WHERE queue_uuid=@queueUuid
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("queueUuid", normalizedQueueUuid);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return ReadWatchlistFinalizationOutbox(reader);
     }
 
     private static WatchlistFinalizationOutboxDto ReadWatchlistFinalizationOutbox(SqliteDataReader reader)
@@ -15392,6 +15678,54 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner);
         command.Parameters.AddWithValue("attemptCount", Math.Max(0, attemptCount));
         command.Parameters.AddWithValue("nextAttemptUtc", nextAttemptUtc.ToString("O"));
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    /// <summary>
+    /// Terminally blocks an unresolved finalization row (attempt ceiling reached, or explicit
+    /// unresolved work) while preserving its reason, attempt counter and row for attention. The
+    /// row keeps its error but stops retrying and does not hold admission.
+    /// </summary>
+    public async Task<bool> BlockWatchlistFinalizationOutboxAsync(
+        long id,
+        string leaseOwner,
+        int attemptCount,
+        string? error,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_finalization_outbox
+SET status='blocked',attempt_count=@attemptCount,lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
+        command.Parameters.AddWithValue("attemptCount", Math.Max(0, attemptCount));
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    /// <summary>
+    /// Marks a finalization row as obsolete ownership after verification confirmed that no
+    /// currently watched playlist needs this recording. The reason and row are preserved; the
+    /// row is never reported as a completed notification.
+    /// </summary>
+    public async Task<bool> ObsoleteWatchlistFinalizationOutboxAsync(
+        long id,
+        string leaseOwner,
+        string? error,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_finalization_outbox
+SET status='obsolete',lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }

@@ -129,7 +129,8 @@ public enum WatchlistWaitAction
 public readonly record struct WatchlistBatchGate(
     bool HasActiveDownloads,
     DateTimeOffset? LastBatchCompletedUtc,
-    DateTimeOffset? NextRunUtc)
+    DateTimeOffset? NextRunUtc,
+    int ActiveDownloadCount = 0)
 {
     public bool CanRun(DateTimeOffset nowUtc)
         => !HasActiveDownloads && (!NextRunUtc.HasValue || NextRunUtc.Value <= nowUtc);
@@ -367,7 +368,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
             var scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
             var gate = await EvaluateBatchGateAsync(repository, scheduler?.CycleStartedUtc, cancellationToken);
-            var importPending = await repository.HasUnfinishedWatchlistFinalizationAsync(cancellationToken);
+            // Scoped, admitted-work finalization gate. Historical retry rows without current
+            // watchlist ownership never hold admission; genuinely downloading/importing work does.
+            var finalizationBacklog = await repository.GetWatchlistFinalizationBacklogCountsAsync(cancellationToken);
+            var importPending = finalizationBacklog.BlockingAdmission > 0;
             var missingTracksRemain = await repository.CountDuePlaylistWatchMissingTracksAsync(cancellationToken) > 0;
             var action = DecideWaitAction(
                 DateTimeOffset.UtcNow,
@@ -383,6 +387,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 await ReleaseNextAdmissionBatchAsync(repository, cancellationToken);
                 continue;
+            }
+
+            if (gate.HasActiveDownloads || importPending)
+            {
+                var blockReason = gate.HasActiveDownloads
+                    ? $"Waiting for {gate.ActiveDownloadCount} watchlist download claim(s) owned by live queue rows to finish downloading and importing."
+                    : $"Waiting for {finalizationBacklog.BlockingAdmission} admitted download(s)/import(s) with current watchlist ownership to finish finalizing.";
+                UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = blockReason });
+            }
+            else
+            {
+                UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
             }
 
             if ((gate.HasActiveDownloads || importPending)
@@ -438,6 +454,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         if (await repository.HasUnfinishedWatchlistFinalizationAsync(cancellationToken))
         {
+            var backlog = await repository.GetWatchlistFinalizationBacklogCountsAsync(cancellationToken);
+            UpdateRuntimeHealth(health => health with
+            {
+                LastAdmissionBlockReason = $"Waiting for {backlog.BlockingAdmission} admitted download(s)/import(s) with current watchlist ownership to finish finalizing."
+            });
             await ProcessWaitSignalAsync(
                 DateTimeOffset.UtcNow.AddSeconds(15),
                 TimeSpan.FromSeconds(15),
@@ -498,12 +519,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         TimeSpan watchInterval)
     {
         var queueByUuid = queueItems.ToDictionary(static item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
-        var active = claims.Any(claim =>
-            queueByUuid.TryGetValue(claim.QueueUuid, out var item)
-            && WatchlistEngine.IsPendingWatchClaimStillOwnedByQueue(item, nowUtc));
-        if (active)
+        var activeClaimUuids = claims
+            .Where(claim =>
+                queueByUuid.TryGetValue(claim.QueueUuid, out var item)
+                && WatchlistEngine.IsPendingWatchClaimStillOwnedByQueue(item, nowUtc))
+            .Select(static claim => claim.QueueUuid)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (activeClaimUuids > 0)
         {
-            return new WatchlistBatchGate(true, null, null);
+            return new WatchlistBatchGate(true, null, null, activeClaimUuids);
         }
 
         if (!batchStartedUtc.HasValue)

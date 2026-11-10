@@ -1139,6 +1139,75 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task FinalizationOutbox_TerminalDispositionsRequireTheClaimantLeaseOwner()
+    {
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(
+            "queue-block", null, ["/music/block.flac"]);
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistFinalizationOutboxAsync(
+            1, TimeSpan.FromMinutes(5), "blocker"));
+
+        Assert.False(await _repository.BlockWatchlistFinalizationOutboxAsync(claimed.Id, "impostor", 20, "wrong owner"));
+        Assert.False(await _repository.ObsoleteWatchlistFinalizationOutboxAsync(claimed.Id, "impostor", "wrong owner"));
+        var leasedRow = await _repository.GetWatchlistFinalizationOutboxByUuidAsync("queue-block");
+        Assert.NotNull(leasedRow);
+        Assert.Equal("processing", leasedRow!.Status);
+        Assert.Equal("blocker", leasedRow.LeaseOwner);
+
+        Assert.True(await _repository.ObsoleteWatchlistFinalizationOutboxAsync(claimed.Id, "blocker", "No monitored playlist still owns this finalized download."));
+        var row = await _repository.GetWatchlistFinalizationOutboxByUuidAsync("queue-block");
+        Assert.NotNull(row);
+        Assert.Equal("obsolete", row!.Status);
+        Assert.Equal(0, row.AttemptCount);
+        Assert.Null(row.LeaseOwner);
+    }
+
+    [Fact]
+    public async Task FinalizationOutbox_UntouchedSweepUpsertsPreserveStateAcrossRestarts()
+    {
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(
+            "queue-frozen", "{\"Artist\":\"Keep\"}", ["/music/final.flac"]);
+        await ExecuteSqlAsync(@"
+UPDATE watchlist_finalization_outbox
+SET status='blocked', attempt_count=20000, last_error='needs attention', updated_at='2000-01-01 00:00:00';");
+
+        foreach (var repo in new[] { _repository, NewRepository() })
+        {
+            // Repeated repair sweeps re-submit the same evidence with different JSON member order
+            // and an incidental timestamp: none of it may reopen or churn the terminal row.
+            await repo.UpsertWatchlistFinalizationOutboxAsync(
+                "queue-frozen", "{\"UpdatedUtc\":\"2026-11-10T00:00:00Z\",\"Artist\":\"Keep\"}", ["/music/FINAL.flac"]);
+        }
+
+        var row = await _repository.GetWatchlistFinalizationOutboxByUuidAsync("queue-frozen");
+        Assert.NotNull(row);
+        Assert.Equal("blocked", row!.Status);
+        Assert.Equal(20000, row.AttemptCount);
+        Assert.Equal("needs attention", row.LastError);
+        Assert.Equal("2000-01-01 00:00:00", await QueryScalarAsync(
+            "SELECT updated_at FROM watchlist_finalization_outbox WHERE queue_uuid='queue-frozen';"));
+    }
+
+    [Fact]
+    public async Task FinalizationOutbox_ScopedBlockingGateFollowsCurrentOwnership()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "scoped-list", new PlaylistWatchlistMetadataInput("Scoped", null, null, 1));
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(
+            "queue-scoped", "{\"WatchlistOrigin\":\"playlist\"}", ["/music/scoped.flac"]);
+        var backlog = await _repository.GetWatchlistFinalizationBacklogCountsAsync();
+
+        // Historical retry row with no claims for the watched playlist: never holds admission.
+        Assert.Equal(1, backlog.PendingRetry);
+        Assert.Equal(0, backlog.BlockingAdmission);
+        Assert.False(await _repository.HasUnfinishedWatchlistFinalizationAsync());
+
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
+            "spotify", "scoped-list", "sp-track-1", ["queue-scoped"], null);
+        Assert.Equal(1, (await _repository.GetWatchlistFinalizationBacklogCountsAsync()).BlockingAdmission);
+        Assert.True(await _repository.HasUnfinishedWatchlistFinalizationAsync());
+    }
+
+    [Fact]
     public async Task StalePersistedPlaylistAndArtistWork_IsRecoveredForImmediateRetry()
     {
         await _repository.AddPlaylistWatchlistAsync(

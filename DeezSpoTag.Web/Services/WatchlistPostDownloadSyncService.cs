@@ -16,6 +16,15 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     // unfixable failure (one track that will never verify, an oversized batch call) stops
     // consuming a retry slot forever and instead surfaces as "blocked" for manual attention.
     internal const int MaxSyncAttempts = 10;
+    // Finalization is bounded exactly like the coordinator's target-sync drain: one job claim at
+    // a time, at most MaxFinalizationJobsPerPass jobs per pass, and each job at most once per
+    // pass (via the claim's exclusion set). Remaining rows stay durably queued for the next pass.
+    internal const int MaxFinalizationJobsPerPass = 25;
+    // A single finalization row gets MaxFinalizationAttempts probes through the existing
+    // backoff shape (15s x 2^(attempt-1), capped at MaximumRetryDelay). Past the ceiling the row
+    // is terminally classified instead of retried: verified completion, obsolete ownership,
+    // or blocked-with-reason for attention. The row and its last error are preserved.
+    internal const int MaxFinalizationAttempts = 10;
     // Mirrors WatchlistRunCoordinator's per-source circuit breaker (SourceCircuitFailureThreshold
     // / SourceCircuitCooldownSeconds), but keyed by target media server instead of playlist
     // source: with up to 45 playlists x 3 targets, a single down/flaky target server would
@@ -192,18 +201,24 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         CancellationToken cancellationToken,
         Func<bool>? shouldStop)
     {
-        while (true)
+        // Pass-local exclusion plus the per-pass cap: a row already attempted in this pass can
+        // never be reclaimed before the pass ends, and the pass always terminates.
+        var attemptedIds = new HashSet<long>();
+        var attemptsUsed = 0;
+        while (!cancellationToken.IsCancellationRequested)
         {
-            if (shouldStop?.Invoke() == true)
+            if (shouldStop?.Invoke() == true || attemptsUsed >= MaxFinalizationJobsPerPass)
             {
-                return;
+                break;
             }
+
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             var outbox = await repository.ClaimDueWatchlistFinalizationOutboxAsync(
                 1,
                 ProcessingLease,
                 _leaseOwner,
+                attemptedIds,
                 cancellationToken);
             var work = outbox.FirstOrDefault();
             if (work == null)
@@ -211,46 +226,163 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return;
             }
 
+            attemptedIds.Add(work.Id);
+            attemptsUsed++;
+
             try
             {
+                if (work.AttemptCount >= MaxFinalizationAttempts)
+                {
+                    // Do not run audio/identity/provider work again for an exhausted row.
+                    // New material evidence is the existing, explicit way to reopen it.
+                    await ApplyFinalizationOutcomeAsync(repository, work,
+                        WatchlistFinalizationOutcome.UnresolvedWork(
+                            work.LastError ?? "Finalization attempt limit already reached."), cancellationToken);
+                    continue;
+                }
+
                 var queueRepository = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>();
                 var item = await queueRepository.GetByUuidAsync(work.QueueUuid, cancellationToken)
                     ?? BuildOutboxQueueItem(work.QueueUuid, work.PayloadJson);
 
-                var sent = await scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>()
+                var outcome = await scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>()
                     .NotifyQueueItemFinalizedAsync(
                         item,
                         work.PayloadJson ?? item.PayloadJson,
                         work.FinalFilePaths,
                         cancellationToken);
-                if (sent > 0)
-                {
-                    await repository.CompleteWatchlistFinalizationOutboxAsync(work.Id, _leaseOwner, cancellationToken);
-                    continue;
-                }
-
-                await repository.RetryWatchlistFinalizationOutboxAsync(
-                    work.Id,
-                    _leaseOwner,
-                    work.AttemptCount + 1,
-                    DateTimeOffset.UtcNow.AddMinutes(1),
-                    "Finalized files or Watchlist ownership are not verifiable yet.",
+                await ApplyFinalizationOutcomeAsync(
+                    repository,
+                    work,
+                    outcome,
                     cancellationToken);
             }
             catch (OperationCanceledException)
             {
+                // Return the claimed row without spending an attempt. The caller's token
+                // is already cancelled, so use a short independent cleanup budget.
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await repository.RetryWatchlistFinalizationOutboxAsync(
+                        work.Id, _leaseOwner, work.AttemptCount, DateTimeOffset.UtcNow,
+                        work.LastError, cleanup.Token);
+                }
+                catch (Exception cleanupError) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(cleanupError))
+                {
+                    _logger.LogWarning(cleanupError,
+                        "Watchlist cancellation could not release finalization lease for queue {QueueUuid}; it will recover at lease expiry.", work.QueueUuid);
+                }
                 throw;
             }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                await repository.RetryWatchlistFinalizationOutboxAsync(
+                // An unexpected failure must never strand a claimed row under our own lease until
+                // expiry; classify it like any other recoverable temporary failure.
+                _logger.LogWarning(
+                    ex,
+                    "Watchlist finalization attempt for queue {QueueUuid} failed unexpectedly; recording a durable retry from the outbox row.",
+                    work.QueueUuid);
+                try
+                {
+                    await ApplyFinalizationOutcomeAsync(
+                        repository,
+                        work,
+                        WatchlistFinalizationOutcome.TemporaryFailure(ex.Message),
+                        cancellationToken);
+                }
+                catch (Exception writeEx) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(writeEx))
+                {
+                    _logger.LogWarning(
+                        writeEx,
+                        "Watchlist finalization retry write failed for queue {QueueUuid}; the row stays leased and is reclaimed when the lease expires.",
+                        work.QueueUuid);
+                }
+            }
+        }
+
+        if (attemptsUsed >= MaxFinalizationJobsPerPass)
+        {
+            // Informational, matching the target-sync drain: remaining rows are untouched and
+            // durably queued for the next pass.
+            _logger.LogInformation(
+                "Watchlist finalization pass reached its per-pass cap of {MaxJobs} job(s); remaining rows stay queued for the next pass.",
+                MaxFinalizationJobsPerPass);
+        }
+    }
+
+    private async Task ApplyFinalizationOutcomeAsync(
+        LibraryRepository repository,
+        WatchlistFinalizationOutboxDto work,
+        WatchlistFinalizationOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        switch (outcome.Disposition)
+        {
+            case WatchlistFinalizationDisposition.Completed:
+                if (await repository.CompleteWatchlistFinalizationOutboxAsync(work.Id, _leaseOwner, cancellationToken))
+                {
+                    _logger.LogInformation(
+                        "Watchlist finalization completed for queue {QueueUuid} after {AttemptCount} attempts; {NotificationCount} reconciliation notification(s) sent.",
+                        work.QueueUuid,
+                        work.AttemptCount,
+                        outcome.NotificationCount);
+                }
+
+                return;
+            case WatchlistFinalizationDisposition.ObsoleteOwnership:
+                if (await repository.ObsoleteWatchlistFinalizationOutboxAsync(work.Id, _leaseOwner, outcome.Reason, cancellationToken))
+                {
+                    _logger.LogInformation(
+                        "Watchlist finalization marked obsolete for queue {QueueUuid}; reason: {Reason}",
+                        work.QueueUuid,
+                        outcome.Reason);
+                }
+
+                return;
+        }
+
+        // Temporary and unresolved outcomes share the bounded retry path: past the ceiling the
+        // row is terminally blocked with its last error preserved, never deleted and never
+        // marked completed, and existing rows above the ceiling are classified instead of
+        // expensively retried again.
+        var attempt = Math.Max(work.AttemptCount, 0)
+            + (outcome.Disposition == WatchlistFinalizationDisposition.UnresolvedWork ? 0 : 1);
+        if (outcome.Disposition == WatchlistFinalizationDisposition.UnresolvedWork || attempt >= MaxFinalizationAttempts)
+        {
+            if (await repository.BlockWatchlistFinalizationOutboxAsync(
                     work.Id,
                     _leaseOwner,
-                    work.AttemptCount + 1,
-                    DateTimeOffset.UtcNow.AddMinutes(1),
-                    ex.Message,
-                    cancellationToken);
+                    attempt,
+                    $"Gave up after {attempt} attempts: {outcome.Reason}",
+                    cancellationToken))
+            {
+                _logger.LogWarning(
+                    "Watchlist finalization job for queue {QueueUuid} blocked after {Attempt} attempts and needs attention. Last error: {LastError}",
+                    work.QueueUuid,
+                    attempt,
+                    outcome.Reason);
+                _coordinatorSignal.Request(WatchlistWakeReason.Finalization);
             }
+
+            return;
+        }
+
+        var retryDelay = TimeSpan.FromSeconds(Math.Min(
+            MaximumRetryDelay.TotalSeconds,
+            15 * Math.Pow(2, Math.Max(attempt, 1) - 1)));
+        var retried = await repository.RetryWatchlistFinalizationOutboxAsync(
+            work.Id,
+            _leaseOwner,
+            attempt,
+            DateTimeOffset.UtcNow + retryDelay,
+            outcome.Reason,
+            cancellationToken);
+        if (!retried)
+        {
+            _logger.LogDebug(
+                "Watchlist finalization row for queue {QueueUuid} changed lease ownership mid-pass; leaving it to the current lease holder.",
+                work.QueueUuid);
         }
     }
 

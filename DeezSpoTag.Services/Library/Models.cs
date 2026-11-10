@@ -1153,6 +1153,22 @@ public sealed record WatchlistFinalizationOutboxDto(
     string? LastError,
     DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// Finalization backlog disposition counts. <see cref="BlockingAdmission"/> is the admitted-work
+/// blocking count using the same current-watchlist-ownership scope as the coordinator gate, so
+/// diagnostics and the gate can never disagree.
+/// </summary>
+public sealed record WatchlistFinalizationBacklogDto(
+    int PendingRetry,
+    int Processing,
+    int Completed,
+    int Blocked,
+    int Obsolete,
+    int BlockingAdmission)
+{
+    public int Unresolved => PendingRetry + Processing;
+}
+
 public sealed record MediaServerRefreshOutboxSummary(
     long FolderId,
     string Service,
