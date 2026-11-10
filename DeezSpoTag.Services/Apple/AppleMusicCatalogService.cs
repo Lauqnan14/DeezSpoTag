@@ -69,7 +69,7 @@ public sealed class AppleMusicCatalogService
         _cache = cache;
     }
 
-    public async Task<JsonDocument> GetBrowsePageAsync(string pagePath, string storefront, string language, CancellationToken cancellationToken, bool refresh = false)
+    public async Task<JsonDocument> GetBrowsePageAsync(string pagePath, string storefront, string language, CancellationToken cancellationToken, bool refresh = false, Func<JsonDocument, bool>? validateResult = null)
     {
         var path = Uri.UnescapeDataString(pagePath.TrimStart('/'));
         if (pagePath.StartsWith("//", StringComparison.Ordinal)
@@ -80,14 +80,40 @@ public sealed class AppleMusicCatalogService
         }
         storefront = storefront.ToLowerInvariant();
         var cacheKey = $"apple:browse:{storefront}:{language}:{path}";
+        bool IsUsable(string payload)
+        {
+            if (validateResult is null) return true;
+            try
+            {
+                using var document = JsonDocument.Parse(payload);
+                return validateResult(document);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
         _cache.TryGetValue(cacheKey, out string? observed);
-        if (!refresh && !string.IsNullOrWhiteSpace(observed)) return JsonDocument.Parse(observed);
-        var gate = _browseRefreshGates.GetOrAdd($"{storefront}:{language}", _ => new SemaphoreSlim(1, 1));
+        if (!refresh && !string.IsNullOrWhiteSpace(observed))
+        {
+            if (IsUsable(observed)) return JsonDocument.Parse(observed);
+            // Unusable cached evidence must not pin an empty page for the cache lifetime:
+            // evict it and fetch a fresh response instead.
+            _cache.Remove(cacheKey);
+            observed = null;
+        }
+        // Refresh gates are scoped per page so an unrelated page's in-flight fetch cannot
+        // block another page from reaching its own handler.
+        var gate = _browseRefreshGates.GetOrAdd($"{path}:{storefront}:{language}", _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
             if (_cache.TryGetValue(cacheKey, out string? current) && !string.IsNullOrWhiteSpace(current)
-                && (!refresh || !ReferenceEquals(observed, current))) return JsonDocument.Parse(current);
+                && (!refresh || !ReferenceEquals(observed, current)))
+            {
+                if (IsUsable(current)) return JsonDocument.Parse(current);
+                _cache.Remove(cacheKey);
+            }
             return await GetCachedJsonAsync(cacheKey, path == "search" ? TimeSpan.FromHours(24) : path == "new" ? TimeSpan.FromHours(4) : TimeSpan.FromMinutes(15), async () =>
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, $"https://music.apple.com/{storefront}/{path}?l={Uri.EscapeDataString(language)}");
@@ -96,7 +122,10 @@ public sealed class AppleMusicCatalogService
                 using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
                 response.EnsureSuccessStatusCode();
                 using var document = ParseBrowsePage(await response.Content.ReadAsStringAsync(cancellationToken));
-                return document.RootElement.GetRawText();
+                var payload = document.RootElement.GetRawText();
+                // Fresh content is validated before it may replace or become the cached payload.
+                if (!IsUsable(payload)) throw new JsonException("Apple Music browse response did not contain usable content.");
+                return payload;
             }, refresh);
         }
         finally { gate.Release(); }
@@ -129,7 +158,8 @@ public sealed class AppleMusicCatalogService
     public async Task<string> ResolveStorefrontAsync(
         string? configuredStorefront,
         string? mediaUserToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? accountLookupTimeout = null)
     {
         var storefront = string.IsNullOrWhiteSpace(configuredStorefront) ? DefaultStorefront : configuredStorefront.Trim();
         if (string.IsNullOrWhiteSpace(mediaUserToken))
@@ -139,11 +169,26 @@ public sealed class AppleMusicCatalogService
 
         try
         {
-            var accountStorefront = await GetAccountStorefrontAsync(mediaUserToken, cancellationToken);
+            // GetAccountStorefrontAsync serves cached account data before any network request;
+            // the optional budget only bounds how long an uncached lookup may delay the caller.
+            var accountLookup = GetAccountStorefrontAsync(mediaUserToken, cancellationToken);
+            var accountStorefront = accountLookupTimeout is { } accountBudget
+                ? await accountLookup.WaitAsync(accountBudget, cancellationToken)
+                : await accountLookup;
             if (!string.IsNullOrWhiteSpace(accountStorefront))
             {
                 return accountStorefront;
             }
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogDebug("Apple account storefront lookup exceeded its {Budget} budget; using the configured storefront.", accountLookupTimeout);
+        }
+        catch (OperationCanceledException) when (accountLookupTimeout is not null && !cancellationToken.IsCancellationRequested)
+        {
+            // An internally cancelled/timed-out lookup under an explicit budget must not fail
+            // the caller; only the caller's own cancellation may propagate.
+            _logger.LogDebug("Apple account storefront lookup was cancelled internally; using the configured storefront.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -151,6 +196,61 @@ public sealed class AppleMusicCatalogService
         }
 
         return storefront;
+    }
+
+    /// <summary>
+    /// Homepage browse market. A signed-in account storefront wins. Otherwise an explicitly
+    /// saved non-US Apple storefront wins. The default US storefront yields to the app market
+    /// used by trending songs, and US remains only the last resort.
+    /// </summary>
+    public async Task<string> ResolveBrowseStorefrontAsync(
+        string? configuredStorefront,
+        string? appMarket,
+        string? mediaUserToken,
+        CancellationToken cancellationToken,
+        TimeSpan? accountLookupTimeout = null)
+    {
+        var configured = NormalizeStorefront(configuredStorefront);
+        var market = NormalizeStorefront(appMarket);
+        if (!string.IsNullOrWhiteSpace(mediaUserToken))
+        {
+            try
+            {
+                var accountLookup = GetAccountStorefrontAsync(mediaUserToken, cancellationToken);
+                var accountStorefront = NormalizeStorefront(accountLookupTimeout is { } accountBudget
+                    ? await accountLookup.WaitAsync(accountBudget, cancellationToken)
+                    : await accountLookup);
+                if (accountStorefront is not null)
+                {
+                    return accountStorefront;
+                }
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug("Apple account storefront lookup exceeded its {Budget} budget; using the app market.", accountLookupTimeout);
+            }
+            catch (OperationCanceledException) when (accountLookupTimeout is not null && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("Apple account storefront lookup was cancelled internally; using the app market.");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Apple browse storefront resolution from account failed; using the app market.");
+            }
+        }
+
+        if (configured is not null && !configured.Equals(DefaultStorefront, StringComparison.OrdinalIgnoreCase))
+        {
+            return configured;
+        }
+
+        return market ?? configured ?? DefaultStorefront;
+    }
+
+    private static string? NormalizeStorefront(string? storefront)
+    {
+        var normalized = storefront?.Trim().ToLowerInvariant();
+        return normalized is { Length: 2 } && normalized.All(char.IsAsciiLetter) ? normalized : null;
     }
 
     public async Task<JsonDocument> SearchAsync(

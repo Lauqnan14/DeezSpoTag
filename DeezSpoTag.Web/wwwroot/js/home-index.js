@@ -1481,6 +1481,8 @@ async function loadAppleHomeSections(requestId, refreshEnabled = false) {
             const data = await response.json();
             if (requestId !== homeLoadRequestSeq) return;
             if (!data.success || !Array.isArray(data.sections)) throw new Error(data.error || 'Apple Music browse unavailable');
+            // Defensively reject empty "success" payloads: they must not clear already loaded rows.
+            if (!data.sections.some(section => (section?.items || []).length > 0)) throw new Error('Apple Music browse returned no usable sections');
             homeAppleSections = data.sections;
             homeAppleStatus = 'ready';
             homeAppleRefresh.loadedAt = Date.now();
@@ -1496,7 +1498,12 @@ async function loadAppleHomeSections(requestId, refreshEnabled = false) {
                 if (requestId === homeLoadRequestSeq) scheduleAppleHomeRefresh();
             }
         }
-        if (requestId === homeLoadRequestSeq && homeLatestSections.length) refreshHomeProviderSections('apple');
+        if (requestId === homeLoadRequestSeq) {
+            // Apple renders as soon as its own data arrives: refresh into the rendered base feed
+            // when present, otherwise mount the provider structure without waiting for Deezer.
+            if (homeLatestSections.length) refreshHomeProviderSections('apple');
+            else mountAppleHomeSectionsWithoutBase();
+        }
     })();
     return pending.promise;
 }
@@ -1505,10 +1512,9 @@ function scheduleAppleHomeRefresh() {
     clearTimeout(homeAppleRefresh.timer);
     homeAppleRefresh.timer = null;
     if (document.hidden || new URLSearchParams(globalThis.location.search).get('channel')) return;
-    const dueAt = homeAppleRefresh.loadedAt ? homeAppleRefresh.loadedAt + homeAppleRefresh.intervalMs : 0;
     homeAppleRefresh.timer = setTimeout(() => {
         void refreshAppleHomeSectionsIfDue();
-    }, Math.max(0, dueAt - Date.now(), homeAppleRefresh.retryAt - Date.now()));
+    }, Math.max(0, nextAppleHomeRefreshAt() - Date.now()));
 }
 
 function refreshAppleHomeSectionsIfDue() {
@@ -1518,12 +1524,69 @@ function refreshAppleHomeSectionsIfDue() {
         return;
     }
     if (homeAppleRefresh.inFlight?.requestId === homeLoadRequestSeq) return homeAppleRefresh.inFlight.promise;
-    const dueAt = homeAppleRefresh.loadedAt ? homeAppleRefresh.loadedAt + homeAppleRefresh.intervalMs : 0;
-    if (Date.now() < Math.max(dueAt, homeAppleRefresh.retryAt)) {
+    if (Date.now() < nextAppleHomeRefreshAt()) {
         scheduleAppleHomeRefresh();
         return;
     }
     return loadAppleHomeSections(homeLoadRequestSeq, true);
+}
+
+// A failure retry (retryAt) always comes before the next scheduled refresh; without a
+// pending retry the ordinary four-hour deadline applies.
+function nextAppleHomeRefreshAt() {
+    const retryAt = homeAppleRefresh.retryAt || 0;
+    if (retryAt) return retryAt;
+    return homeAppleRefresh.loadedAt ? homeAppleRefresh.loadedAt + homeAppleRefresh.intervalMs : 0;
+}
+
+function mountAppleHomeSectionsWithoutBase() {
+    const container = document.getElementById('home-sections');
+    if (!container || new URLSearchParams(globalThis.location.search).get('channel')) return;
+    if (!container.querySelector('#home-trending')) {
+        container.insertAdjacentHTML('afterbegin', `<div class="home-section" id="home-trending"><div class="home-section-title">Trending Songs</div>${renderHomeTrendingProviders()}<div class="home-trending-grid">${renderHomeTrendingSectionContent()}</div></div>`);
+    }
+    removeHomeProviderSections(container, '.home-apple-section');
+    const appleRows = renderAppleHomeRows();
+    if (appleRows) container.insertAdjacentHTML('beforeend', appleRows);
+    const updated = container.querySelector('[data-apple-role="updated-playlists"]');
+    if (updated) container.querySelector('#home-popular-radio')?.after(updated);
+    observeHomeDeferredRows(container);
+    observeLazyImages(container);
+    syncHomeTrendingPlaybackFromSession();
+}
+
+function renderEmptyHomeSections(container) {
+    if (!container) return;
+    if (new URLSearchParams(globalThis.location.search).get('channel')) {
+        container.innerHTML = '<div class="empty-section">No home sections available</div>';
+        return;
+    }
+    // A successful empty base feed must keep the root provider structure. Reuse the
+    // existing mount helpers, and do not redraw rows that are already on the page.
+    const alreadyMounted = !!container.querySelector('#home-trending');
+    if (!alreadyMounted) {
+        container.innerHTML = '';
+        homeTrendingRenderEntry = null;
+        mountAppleHomeSectionsWithoutBase();
+    } else if (!container.querySelector('.home-apple-section')) {
+        const appleRows = renderAppleHomeRows();
+        if (appleRows) container.insertAdjacentHTML('beforeend', appleRows);
+    }
+    if (!container.querySelector('.home-youtube-section')) {
+        const featured = renderYouTubeFeaturedPlaylists();
+        const rows = renderYouTubeHomeRows();
+        if (featured) container.insertAdjacentHTML('beforeend', featured);
+        if (rows) container.insertAdjacentHTML('beforeend', rows);
+    }
+    observeHomeDeferredRows(container);
+    observeLazyImages(container);
+    syncHomeTrendingPlaybackFromSession();
+}
+
+function renderHomeTrendingSectionContent() {
+    if (homeTrendingProvider === 'ytmusic') return renderYouTubeHomeTrending();
+    if (homeTrendingProvider === 'apple') return renderAppleHomeTrending();
+    return `<div class="empty-section">${homeSpotifyStatus === 'loading' ? 'Loading Spotify Trending Songs...' : homeSpotifyStatus === 'error' ? 'Spotify Trending Songs unavailable' : 'No Spotify Trending Songs available'}</div>`;
 }
 
 function renderHomeTrendingProviders() {
@@ -2223,7 +2286,7 @@ function buildHomeSectionsToRender(orderedSections, computeSectionRenderMeta, is
 function renderHomeSections(sections) {
     const container = document.getElementById('home-sections');
     if (!sections || sections.length === 0) {
-        container.innerHTML = '<div class="empty-section">No home sections available</div>';
+        renderEmptyHomeSections(container);
         return;
     }
 
@@ -2475,7 +2538,7 @@ function renderHomeSections(sections) {
     });
 
     if (!sections.length) {
-        container.innerHTML = '<div class="empty-section">No home sections available</div>';
+        renderEmptyHomeSections(container);
         return;
     }
 
@@ -2516,7 +2579,7 @@ function renderHomeSections(sections) {
     );
 
     if (!sectionsToRender.length) {
-        container.innerHTML = '<div class="empty-section">No home sections available</div>';
+        renderEmptyHomeSections(container);
         return;
     }
 
@@ -2531,9 +2594,7 @@ function renderHomeSections(sections) {
         .join('');
     if (!isChannelPage) {
         if (!sectionsToRender.some(entry => entry.meta.isTrendingSongs)) {
-            const trendingItems = homeTrendingProvider === 'ytmusic' ? renderYouTubeHomeTrending() : homeTrendingProvider === 'apple' ? renderAppleHomeTrending()
-                : `<div class="empty-section">${homeSpotifyStatus === 'loading' ? 'Loading Spotify Trending Songs...' : homeSpotifyStatus === 'error' ? 'Spotify Trending Songs unavailable' : 'No Spotify Trending Songs available'}</div>`;
-            container.insertAdjacentHTML('afterbegin', `<div class="home-section" id="home-trending"><div class="home-section-title">Trending Songs</div>${renderHomeTrendingProviders()}<div class="home-trending-grid">${trendingItems}</div></div>`);
+            container.insertAdjacentHTML('afterbegin', `<div class="home-section" id="home-trending"><div class="home-section-title">Trending Songs</div>${renderHomeTrendingProviders()}<div class="home-trending-grid">${renderHomeTrendingSectionContent()}</div></div>`);
         }
         container.querySelector('#home-categories')?.insertAdjacentHTML('afterend', renderYouTubeFeaturedPlaylists());
         container.insertAdjacentHTML('beforeend', renderYouTubeHomeRows());

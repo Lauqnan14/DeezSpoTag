@@ -4,6 +4,7 @@ using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -61,11 +62,17 @@ public sealed class AppleBrowseApiController(
         try
         {
             var settings = settingsService.LoadSettings();
-            var storefront = await catalog.ResolveStorefrontAsync(settings.AppleMusic?.Storefront, settings.AppleMusic?.MediaUserToken, cancellationToken);
+            // Homepage follows the same market as trending songs. Account storefront wins; an
+            // explicit non-US Apple storefront wins; otherwise the app market is used. US is the
+            // last resort, including when the selected market feed is unusable.
+            var storefront = await catalog.ResolveBrowseStorefrontAsync(settings.AppleMusic?.Storefront, settings.DeezerCountry, settings.AppleMusic?.MediaUserToken, cancellationToken, BrowseAccountLookupBudget);
             const string language = "en-US";
             // Apple occasionally returns destinations carrying another storefront. Rebind to the resolved store.
             path = Regex.Replace(path, @"^/[a-zA-Z]{2}/", "", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
-            using var document = await catalog.GetBrowsePageAsync(path, storefront, language, cancellationToken, refresh);
+            var validation = categoriesOnly || homeOnly ? BrowseContentValidation(categoriesOnly, homeOnly) : null;
+            var loaded = await LoadBrowsePageAsync(path, storefront, language, cancellationToken, refresh, validation, homeOnly || categoriesOnly);
+            storefront = loaded.Storefront;
+            using var document = loaded.Document;
             var sections = AppleCatalogJsonHelper.MapBrowseSections(document.RootElement, categoriesOnly);
             if (homeOnly)
             {
@@ -98,5 +105,64 @@ public sealed class AppleBrowseApiController(
             logger.LogWarning(exception, "Apple Music browse request failed for {Path}", LogSanitizer.OneLine(path));
             return StatusCode(502, new { success = false, error = "Apple Music browse content is unavailable." });
         }
+    }
+
+    /// <summary>
+    /// Budget for the public browse account lookup. Successful account resolution keeps
+    /// precedence; when the lookup cannot complete within the budget, browse continues with
+    /// the user's configured storefront instead of timing the whole page out.
+    /// </summary>
+    private static readonly TimeSpan BrowseAccountLookupBudget = TimeSpan.FromSeconds(3);
+
+    private async Task<(JsonDocument Document, string Storefront)> LoadBrowsePageAsync(
+        string path,
+        string storefront,
+        string language,
+        CancellationToken cancellationToken,
+        bool refresh,
+        Func<JsonDocument, bool>? validation,
+        bool allowUsFallback)
+    {
+        try
+        {
+            return (await catalog.GetBrowsePageAsync(path, storefront, language, cancellationToken, refresh, validation), storefront);
+        }
+        catch (Exception exception) when (allowUsFallback
+            && !storefront.Equals("us", StringComparison.OrdinalIgnoreCase)
+            && exception is not ArgumentException
+            && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
+        {
+            logger.LogWarning(exception, "Apple Music {Storefront} browse feed is unusable; falling back to the US feed for {Path}", storefront, LogSanitizer.OneLine(path));
+            return (await catalog.GetBrowsePageAsync(path, "us", language, cancellationToken, refresh, validation), "us");
+        }
+    }
+
+    /// <summary>
+    /// Builds the validation callback handed to the catalog service so unusable Apple payloads
+    /// are rejected before they are reported or cached. Uses the existing browse mapper: home
+    /// responses need at least one useful item in a mapped home role, categories need at least
+    /// one useful mapped category item; legitimate partial feeds remain valid.
+    /// </summary>
+    private static Func<JsonDocument, bool> BrowseContentValidation(bool categoriesOnly, bool homeOnly)
+    {
+        return document =>
+        {
+            JsonArray sections;
+            try
+            {
+                sections = AppleCatalogJsonHelper.MapBrowseSections(document.RootElement, categoriesOnly);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+            if (!homeOnly)
+            {
+                return sections.Any(section => (section?["items"] as JsonArray)?.Count > 0);
+            }
+            return sections.Any(section =>
+                !string.IsNullOrEmpty(section?["role"]?.GetValue<string>())
+                && (section["items"] as JsonArray)?.Count > 0);
+        };
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -30,13 +31,13 @@ public sealed class AppleBrowseTest
         const ctx=vm.createContext({console:{warn:()=>{},log:()=>{},error:console.error},URLSearchParams,Date,
           location:{get search(){return search}},document:{hidden:false},setTimeout:()=>1,clearTimeout:()=>{},
           fetchSpotifyHomeEnhancements:()=>null,loadHomeCategories:()=>{},loadYouTubeHomeTrending:()=>{},loadYouTubeHomeSections:()=>{},
-          fetchHomeSections:async()=>[{}],renderHomeSectionsWithLazyImages:()=>{},refreshHomeProviderSections:()=>{},
+          fetchHomeSections:async()=>[{}],renderHomeSectionsWithLazyImages:()=>{},refreshHomeProviderSections:()=>{},mountAppleHomeSectionsWithoutBase:()=>{},
           fetch:async url=>{calls.push(url);return url.includes('refresh=1')
             ? {ok:false,status:502}
             : {ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{title:'Available cached song'}]}]})};}});
         vm.runInContext(source.slice(source.indexOf('const homeAppleRefresh ='),source.indexOf('let homeSpotifyStatus')),ctx);
         vm.runInContext("let homeLoadRequestSeq=0,homeLatestSections=[],homeAppleSections=[],homeAppleStatus='loading',homeSpotifyStatus,homeAppleCategories,homeYouTubeCategories,spotifyHomeCategories;const homeCategoryStatus={};",ctx);
-        for(const name of ['loadHomeData','loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue']){
+        for(const name of ['loadHomeData','loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue','nextAppleHomeRefreshAt']){
           const m=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(m,name);
           const start=m.index,end=source.slice(start+m[0].length).search(/\n(?:async )?function /);
           vm.runInContext(source.slice(start,end<0?undefined:start+m[0].length+end),ctx);
@@ -78,7 +79,7 @@ public sealed class AppleBrowseTest
         const state=source.slice(source.indexOf('const homeAppleRefresh ='),source.indexOf('let homeSpotifyStatus'));
         assert(state.includes('intervalMs'),'Refresh state must exist');vm.runInContext(state,ctx);
         vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{}],homeAppleSections=[],homeAppleStatus='loading';",ctx);
-        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue']){
+        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue','nextAppleHomeRefreshAt']){
           const m=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(m,name);
           const start=m.index,end=source.slice(start+m[0].length).search(/\n(?:async )?function /);
           vm.runInContext(source.slice(start,end<0?undefined:start+m[0].length+end),ctx);
@@ -222,7 +223,7 @@ public sealed class AppleBrowseTest
           fetch:async()=>({ok:true,json:async()=>({success:true,sections:[{role:'new-this-week',title:'New this week',items:[{title:'Album'}]}]})})});
         vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{title:'Base'}],homeAppleSections=[],homeAppleStatus='loading',homeTrendingProvider='spotify';const homeAppleRefresh={intervalMs:14400000,loadedAt:0,retryAt:0,inFlight:null,timer:null};const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;let homeDeferredRowObserver;",ctx);
         function load(name){const match=source.match(new RegExp('(?:async )?function '+name+'\\('));if(!match)return;const start=match.index,end=source.slice(start+match[0].length).search(/\n(?:async )?function /);vm.runInContext(source.slice(start,end<0?undefined:start+match[0].length+end),ctx)}
-        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue','refreshHomeProviderSections','renderAppleHomeRows','renderDeferredHomeRow','observeHomeDeferredRows','hydrateHomeDeferredRow','removeHomeProviderSections'])load(name);
+        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue','nextAppleHomeRefreshAt','refreshHomeProviderSections','renderAppleHomeRows','renderDeferredHomeRow','observeHomeDeferredRows','hydrateHomeDeferredRow','removeHomeProviderSections'])load(name);
         (async()=>{
           await ctx.loadAppleHomeSections(1);
           assert.equal(fullRenders,0,'Apple completion must not rebuild existing sections');
@@ -332,6 +333,14 @@ public sealed class AppleBrowseTest
         return method!;
     }
 
+    private static MethodInfo MethodWithParameters(Type type, string name, int parameterCount)
+    {
+        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
+            .FirstOrDefault(candidate => candidate.Name == name && candidate.GetParameters().Length == parameterCount);
+        Assert.True(method is not null, $"{type.Name}.{name} must accept {parameterCount} parameters");
+        return method!;
+    }
+
     [Fact]
     public void TrendingTracklist_HydratesMetadataWithoutBlockingRenderingOrChangingIds()
     {
@@ -399,7 +408,7 @@ public sealed class AppleBrowseTest
         var method = RequiredMethod(typeof(AppleMusicCatalogService), "GetBrowsePageAsync");
         await Assert.ThrowsAsync<ArgumentException>(async () =>
         {
-            var task = Assert.IsAssignableFrom<Task<JsonDocument>>(method.Invoke(service, [path, "ke", "en-US", CancellationToken.None, false]));
+            var task = Assert.IsAssignableFrom<Task<JsonDocument>>(method.Invoke(service, [path, "ke", "en-US", CancellationToken.None, false, null]));
             using var doc = await task;
         });
         Assert.Empty(handler.Requests);
@@ -415,7 +424,7 @@ public sealed class AppleBrowseTest
         var method = RequiredMethod(typeof(AppleMusicCatalogService), "GetBrowsePageAsync");
         foreach (var (store, language) in new[] { ("ke", "en-US"), ("ke", "en-US"), ("us", "en-US"), ("us", "es-MX") })
         {
-            using var doc = await Assert.IsAssignableFrom<Task<JsonDocument>>(method.Invoke(service, ["search", store, language, CancellationToken.None, false]));
+            using var doc = await Assert.IsAssignableFrom<Task<JsonDocument>>(method.Invoke(service, ["search", store, language, CancellationToken.None, false, null]));
         }
         Assert.Equal(3, handler.Requests.Count);
         Assert.Contains("/ke/search", handler.Requests[0]);
@@ -689,6 +698,7 @@ public sealed class AppleBrowseTest
             using var error = JsonDocument.Parse(JsonSerializer.Serialize(timeout.Value));
             Assert.False(error.RootElement.GetProperty("success").GetBoolean());
             Assert.Contains("timed out", error.RootElement.GetProperty("error").GetString());
+            handler.BrowseResponse = route == "categories" ? CategoriesBrowsePage() : TrendingBrowsePage("Recovered song");
             Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await Request(CancellationToken.None));
             using var canceled = new CancellationTokenSource();
             canceled.Cancel();
@@ -699,6 +709,646 @@ public sealed class AppleBrowseTest
 
     private static JsonArray Map(JsonElement root, bool categoriesOnly) =>
         Assert.IsType<JsonArray>(RequiredMethod(typeof(AppleCatalogJsonHelper), "MapBrowseSections").Invoke(null, [root, categoriesOnly]));
+
+    private static string BrowsePageScript(string serializedJson) =>
+        "<script id=\"serialized-server-data\" type=\"application/json\">" + serializedJson + "</script>";
+
+    private static JsonObject BrowseSection(string itemKind, string headerTitle, string kind, string title, string id, string url) => new()
+    {
+        ["itemKind"] = itemKind,
+        ["header"] = new JsonObject { ["item"] = new JsonObject { ["titleLink"] = new JsonObject { ["title"] = headerTitle } } },
+        ["items"] = new JsonArray(new JsonObject
+        {
+            ["title"] = title,
+            ["contentDescriptor"] = new JsonObject
+            {
+                ["kind"] = kind,
+                ["url"] = url,
+                ["identifiers"] = new JsonObject { ["storeAdamID"] = id }
+            }
+        })
+    };
+
+    private static string TrendingBrowsePage(string title) => BrowsePageScript(new JsonObject
+    {
+        ["data"] = new JsonArray(new JsonObject
+        {
+            ["data"] = new JsonObject
+            {
+                ["sections"] = new JsonArray(
+                    BrowseSection("trackLockup", "Trending Songs", "song", title, "123", "https://music.apple.com/us/song/test/123"),
+                    BrowseSection("squareLockup", "New This Week", "album", title + " album", "456", "https://music.apple.com/us/album/test/456"))
+            }
+        })
+    }.ToJsonString());
+
+    private static string UnmappedBrowsePage(string title) => BrowsePageScript(new JsonObject
+    {
+        ["data"] = new JsonArray(new JsonObject
+        {
+            ["data"] = new JsonObject
+            {
+                ["sections"] = new JsonArray(BrowseSection("squareLockup", "Mystery Section", "song", title, "123", "https://music.apple.com/us/song/test/123"))
+            }
+        })
+    }.ToJsonString());
+
+    private static string CategoriesBrowsePage() => BrowsePageScript(new JsonObject
+    {
+        ["data"] = new JsonArray(new JsonObject
+        {
+            ["data"] = new JsonObject
+            {
+                ["sections"] = new JsonArray(new JsonObject
+                {
+                    ["id"] = "browse-category-bricks - dynamic",
+                    ["itemKind"] = "brickLockup",
+                    ["header"] = new JsonObject { ["item"] = new JsonObject { ["titleLink"] = new JsonObject { ["title"] = "Browse Categories" } } },
+                    ["items"] = new JsonArray(new JsonObject
+                    {
+                        ["title"] = "Charts",
+                        ["contentDescriptor"] = new JsonObject
+                        {
+                            ["kind"] = "appleCurator",
+                            ["identifiers"] = new JsonObject { ["storeAdamID"] = "123" },
+                            ["url"] = "https://music.apple.com/us/curator/charts/123"
+                        }
+                    })
+                })
+            }
+        })
+    }.ToJsonString());
+
+    [Fact]
+    public async Task Browse_AccountLookupTimeoutFallsBackToConfiguredStorefrontAndCallerCancellationStillPropagates()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-browse-account-budget-").FullName;
+        var configFolder = System.IO.Path.Join(directory, "config");
+        System.IO.Directory.CreateDirectory(configFolder);
+        try
+        {
+            var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+                NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+            foreach (var (field, value) in new[]
+            {
+                ("_configFolder", configFolder), ("_settingsFilePath", System.IO.Path.Join(configFolder, "config.json"))
+            })
+                typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService)
+                    .GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(settings, value);
+            // Keep credentials in the per-test platform-auth overlay so the settings service
+            // never reads or writes shared authentication storage outside this directory.
+            System.IO.Directory.CreateDirectory(System.IO.Path.Join(directory, "autotag"));
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory, "autotag", "applemusic.json"),
+                "{\"mediaUserToken\":\"test-media-user-token\",\"authorizationToken\":\"eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJBTVAtc2VjdXJlIn0.c2lnbmF0dXJl\"}");
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(configFolder, "config.json"),
+                "{\"appleMusic\":{\"storefront\":\"us\",\"mediaUserToken\":\"\",\"authorizationToken\":\"\"}}");
+            using var handler = new BrowseHandler
+            {
+                BrowseResponse = TrendingBrowsePage("Budget song"),
+                AccountFailure = new TaskCanceledException("account lookup timed out"),
+            };
+            using var client = new HttpClient(handler);
+            using var cache = new MemoryCache(new MemoryCacheOptions());
+            var service = new AppleMusicCatalogService(new ClientFactory(client), settings,
+                NullLogger<AppleMusicCatalogService>.Instance, cache);
+            var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service, settings,
+                NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance)
+            { ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+
+            // An internally timed-out account lookup must not turn public browse into a 504.
+            var result = await controller.Sections(CancellationToken.None);
+            var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(result);
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+            Assert.True(json.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal("us", json.RootElement.GetProperty("storefront").GetString());
+            Assert.Equal("Budget song",
+                json.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+            Assert.Contains(handler.Requests, url => url.Contains("/us/new"));
+            Assert.Equal(1, handler.AccountRequests);
+
+            // Caller cancellation must still cancel instead of falling back.
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.Sections(canceled.Token));
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task Browse_CachedContentAndVariableConfiguredStorefrontSurviveAccountTimeout()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-browse-cached-timeout-").FullName;
+        var configFolder = System.IO.Path.Join(directory, "config");
+        System.IO.Directory.CreateDirectory(configFolder);
+        System.IO.Directory.CreateDirectory(System.IO.Path.Join(directory, "autotag"));
+        try
+        {
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory, "autotag", "applemusic.json"),
+                "{\"mediaUserToken\":\"test-media-user-token\",\"authorizationToken\":\"eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJBTVAtc2VjdXJlIn0.c2lnbmF0dXJl\"}");
+            var page = TrendingBrowsePage("Cached song");
+            var cachedJson = page[(page.IndexOf('>') + 1)..page.LastIndexOf('<')];
+
+            async Task<(Microsoft.AspNetCore.Mvc.IActionResult Result, BrowseHandler Handler)> Load(string storefront, Action<MemoryCache>? seed)
+            {
+                await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(configFolder, "config.json"),
+                    "{\"appleMusic\":{\"storefront\":\"" + storefront + "\",\"mediaUserToken\":\"\",\"authorizationToken\":\"\"}}");
+                var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+                    NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+                foreach (var (field, value) in new[]
+                {
+                    ("_configFolder", configFolder), ("_settingsFilePath", System.IO.Path.Join(configFolder, "config.json"))
+                })
+                    typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService)
+                        .GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(settings, value);
+                var handler = new BrowseHandler
+                {
+                    AccountFailure = new TaskCanceledException("account lookup timed out"),
+                    BrowseResponse = TrendingBrowsePage("Fetched song"),
+                };
+                var cache = new MemoryCache(new MemoryCacheOptions());
+                seed?.Invoke(cache);
+                var service = new AppleMusicCatalogService(new ClientFactory(new HttpClient(handler)), settings,
+                    NullLogger<AppleMusicCatalogService>.Instance, cache);
+                var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service, settings,
+                    NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance)
+                { ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+                return (await controller.Sections(CancellationToken.None), handler);
+            }
+
+            var cached = await Load("gb", cache => cache.Set("apple:browse:gb:en-US:new", cachedJson, TimeSpan.FromHours(4)));
+            var cachedOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(cached.Result);
+            using var cachedJsonDoc = JsonDocument.Parse(JsonSerializer.Serialize(cachedOk.Value));
+            Assert.Equal("gb", cachedJsonDoc.RootElement.GetProperty("storefront").GetString());
+            Assert.Equal("Cached song", cachedJsonDoc.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+            Assert.DoesNotContain(cached.Handler.Requests, url => url.Contains("/new"));
+            Assert.Equal(1, cached.Handler.AccountRequests);
+
+            var fetched = await Load("de", null);
+            var fetchedOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(fetched.Result);
+            using var fetchedJson = JsonDocument.Parse(JsonSerializer.Serialize(fetchedOk.Value));
+            Assert.Equal("de", fetchedJson.RootElement.GetProperty("storefront").GetString());
+            Assert.Equal("Fetched song", fetchedJson.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+            Assert.Contains(fetched.Handler.Requests, url => url.Contains("/de/new"));
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task Homepage_UsesAppMarketLikeTrendingSongsAndFallsBackToUsWhenThatFeedIsUnusable()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-browse-market-").FullName;
+        var configFolder = System.IO.Path.Join(directory, "config");
+        System.IO.Directory.CreateDirectory(configFolder);
+        System.IO.Directory.CreateDirectory(System.IO.Path.Join(directory, "autotag"));
+        try
+        {
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory, "autotag", "applemusic.json"),
+                "{\"mediaUserToken\":\"test-media-user-token\",\"authorizationToken\":\"eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJBTVAtc2VjdXJlIn0.c2lnbmF0dXJl\"}");
+
+            async Task<(Microsoft.AspNetCore.Mvc.IActionResult Result, BrowseHandler Handler)> Load(
+                string appleStorefront,
+                string deezerCountry,
+                string? mediaUserToken,
+                BrowseHandler handler)
+            {
+                await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(configFolder, "config.json"),
+                    "{\"deezerCountry\":\"" + deezerCountry + "\",\"appleMusic\":{\"storefront\":\"" + appleStorefront + "\",\"mediaUserToken\":\"\",\"authorizationToken\":\"\"}}");
+                if (!string.IsNullOrEmpty(mediaUserToken))
+                {
+                    await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory, "autotag", "applemusic.json"),
+                        "{\"mediaUserToken\":\"" + mediaUserToken + "\",\"authorizationToken\":\"eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJBTVAtc2VjdXJlIn0.c2lnbmF0dXJl\"}");
+                }
+                else
+                {
+                    System.IO.File.Delete(System.IO.Path.Join(directory, "autotag", "applemusic.json"));
+                }
+                var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+                    NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+                foreach (var (field, value) in new[]
+                {
+                    ("_configFolder", configFolder), ("_settingsFilePath", System.IO.Path.Join(configFolder, "config.json"))
+                })
+                    typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService)
+                        .GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(settings, value);
+                var service = new AppleMusicCatalogService(new ClientFactory(new HttpClient(handler)), settings,
+                    NullLogger<AppleMusicCatalogService>.Instance, new MemoryCache(new MemoryCacheOptions()));
+                typeof(AppleMusicCatalogService).GetField("_cachedToken", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(service, "existing-token");
+                typeof(AppleMusicCatalogService).GetField("_cachedTokenExpiresAt", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(service, DateTimeOffset.UtcNow.AddHours(1));
+                var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service, settings,
+                    NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance)
+                { ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+                return (await controller.Sections(CancellationToken.None), handler);
+            }
+
+            var market = await Load("us", "ke", null, new BrowseHandler { BrowseResponse = TrendingBrowsePage("Kenyan song") });
+            var marketOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(market.Result);
+            using var marketJson = JsonDocument.Parse(JsonSerializer.Serialize(marketOk.Value));
+            Assert.Equal("ke", marketJson.RootElement.GetProperty("storefront").GetString());
+            Assert.Equal("Kenyan song", marketJson.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+            Assert.Contains(market.Handler.Requests, url => url.Contains("/ke/new"));
+            Assert.DoesNotContain(market.Handler.Requests, url => url.Contains("/us/new"));
+
+            var explicitStore = await Load("gb", "ke", null, new BrowseHandler { BrowseResponse = TrendingBrowsePage("British song") });
+            var explicitOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(explicitStore.Result);
+            using var explicitJson = JsonDocument.Parse(JsonSerializer.Serialize(explicitOk.Value));
+            Assert.Equal("gb", explicitJson.RootElement.GetProperty("storefront").GetString());
+            Assert.Contains(explicitStore.Handler.Requests, url => url.Contains("/gb/new"));
+
+            var account = await Load("us", "ke", "account-token", new BrowseHandler
+            {
+                AccountResponse = "{\"meta\":{\"subscription\":{\"storefront\":\"jp\",\"active\":true}}}",
+                BrowseResponse = TrendingBrowsePage("Japanese song"),
+            });
+            var accountOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(account.Result);
+            using var accountJson = JsonDocument.Parse(JsonSerializer.Serialize(accountOk.Value));
+            Assert.Equal("jp", accountJson.RootElement.GetProperty("storefront").GetString());
+            Assert.Contains(account.Handler.Requests, url => url.Contains("/jp/new"));
+
+            var fallback = await Load("us", "ke", null, new BrowseHandler
+            {
+                BrowseResponseFor = url => url.Contains("/ke/")
+                    ? "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>"
+                    : TrendingBrowsePage("US fallback song"),
+            });
+            var fallbackOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(fallback.Result);
+            using var fallbackJson = JsonDocument.Parse(JsonSerializer.Serialize(fallbackOk.Value));
+            Assert.Equal("us", fallbackJson.RootElement.GetProperty("storefront").GetString());
+            Assert.Equal("US fallback song", fallbackJson.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+            Assert.Contains(fallback.Handler.Requests, url => url.Contains("/ke/new"));
+            Assert.Contains(fallback.Handler.Requests, url => url.Contains("/us/new"));
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task ResolveStorefront_BoundedAccountBudgetFallsBackWhileSuccessfulAccountStillWins()
+    {
+        using var handler = new BrowseHandler
+        {
+            AccountResponse = "{\"meta\":{\"subscription\":{\"storefront\":\"ke\",\"active\":true}}}",
+        };
+        using var client = new HttpClient(handler);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(client, cache);
+        typeof(AppleMusicCatalogService).GetField("_cachedToken", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, "existing-token");
+        typeof(AppleMusicCatalogService).GetField("_cachedTokenExpiresAt", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, DateTimeOffset.UtcNow.AddHours(1));
+
+        // A successful account resolution retains precedence even under a bounded budget...
+        var resolve = MethodWithParameters(typeof(AppleMusicCatalogService), "ResolveStorefrontAsync", 4);
+        static async Task<string> ResolveAsync(MethodInfo resolve, AppleMusicCatalogService service, string token, TimeSpan budget)
+            => await (Task<string>)resolve.Invoke(service, ["us", token, CancellationToken.None, budget])!;
+        Assert.Equal("ke", await ResolveAsync(resolve, service, "account-token", TimeSpan.FromSeconds(3)));
+
+        // ...while an expiring budget falls back to the configured storefront, repeatedly.
+        handler.HoldAccountResponse = true;
+        Assert.Equal("us", await ResolveAsync(resolve, service, "waiting-token", TimeSpan.FromMilliseconds(250)));
+        Assert.Equal("us", await ResolveAsync(resolve, service, "waiting-token", TimeSpan.FromMilliseconds(250)));
+        handler.Release.TrySetResult();
+        await Task.Delay(500); // let the abandoned lookups settle into the cache
+        Assert.Equal("ke", await ResolveAsync(resolve, service, "waiting-token", TimeSpan.FromMilliseconds(250)));
+    }
+
+    [Fact]
+    public async Task BrowsePageGate_IsScopedPerPage()
+    {
+        using var handler = new BrowseHandler();
+        using var client = new HttpClient(handler);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(client, cache);
+
+        handler.HoldPredicate = url => url.Contains("/search");
+        var categories = service.GetBrowsePageAsync("search", "ke", "en-US", CancellationToken.None);
+        await handler.Started.Task;
+        var home = service.GetBrowsePageAsync("new", "ke", "en-US", CancellationToken.None);
+        var homeCompleted = await Task.WhenAny(home, Task.Delay(5000)) == home;
+        handler.HoldPredicate = null;
+        handler.Release.TrySetResult();
+        using var categoriesDoc = await categories;
+        using var homeDoc = await home;
+        Assert.True(homeCompleted, "A held categories refresh must not block the home page");
+        Assert.Contains(handler.Requests, url => url.Contains("/new"));
+    }
+
+    [Fact]
+    public async Task BrowsePageGate_IsReleasedAfterFailureAndCancellation()
+    {
+        using var handler = new BrowseHandler { BrowseResponse = "<html>unexpected</html>" };
+        using var client = new HttpClient(handler);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(client, cache);
+
+        // A failed refresh releases its page gate for later callers.
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            service.GetBrowsePageAsync("search", "ke", "en-US", CancellationToken.None, refresh: true));
+        handler.BrowseResponse = CategoriesBrowsePage();
+        using (var recovered = await service.GetBrowsePageAsync("search", "ke", "en-US", CancellationToken.None, refresh: true))
+        {
+            Assert.Equal("browse-category-bricks - dynamic",
+                recovered.RootElement.GetProperty("data")[0].GetProperty("data").GetProperty("sections")[0].GetProperty("id").GetString());
+        }
+
+        // A cancelled caller releases the gate so the next caller can proceed.
+        handler.Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.HoldResponse = true;
+        var heldCall = service.GetBrowsePageAsync("search", "ke", "en-US", CancellationToken.None, refresh: true);
+        await handler.Started.Task;
+        using var cts = new CancellationTokenSource();
+        var canceledCall = service.GetBrowsePageAsync("search", "ke", "en-US", cts.Token, refresh: true);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledCall);
+        handler.HoldResponse = false;
+        handler.Release.TrySetResult();
+        using var afterCancellation = await heldCall;
+        Assert.NotNull(afterCancellation);
+    }
+
+    [Fact]
+    public async Task BrowseController_RejectsUnusableHomeAndCategoryResponsesInsteadOfSuccessWithNothing()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-browse-validation-").FullName;
+        var configFolder = System.IO.Path.Join(directory, "config");
+        System.IO.Directory.CreateDirectory(configFolder);
+        try
+        {
+            var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+                NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+            foreach (var (field, value) in new[]
+            {
+                ("_configFolder", configFolder), ("_settingsFilePath", System.IO.Path.Join(configFolder, "config.json"))
+            })
+                typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService)
+                    .GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(settings, value);
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(configFolder, "config.json"),
+                "{\"appleMusic\":{\"storefront\":\"us\",\"mediaUserToken\":\"\"}}");
+            using var handler = new BrowseHandler();
+            using var client = new HttpClient(handler);
+            using var cache = new MemoryCache(new MemoryCacheOptions());
+            var service = new AppleMusicCatalogService(new ClientFactory(client), settings,
+                NullLogger<AppleMusicCatalogService>.Instance, cache);
+            var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service, settings,
+                NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance)
+            { ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+
+            // A structurally valid but completely empty home feed is a failure, not success.
+            var emptyHome = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(await controller.Sections(CancellationToken.None));
+            Assert.Equal(502, emptyHome.StatusCode);
+            using var homeError = JsonDocument.Parse(JsonSerializer.Serialize(emptyHome.Value));
+            Assert.False(homeError.RootElement.GetProperty("success").GetBoolean());
+
+            // Same for an empty categories feed.
+            var emptyCategories = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(await controller.Categories(CancellationToken.None));
+            Assert.Equal(502, emptyCategories.StatusCode);
+
+            // A home feed whose sections map to no known role is unusable too.
+            handler.BrowseResponse = UnmappedBrowsePage("Mystery item");
+            var unmapped = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(await controller.Sections(CancellationToken.None));
+            Assert.Equal(502, unmapped.StatusCode);
+
+            // Legitimate partial feeds stay acceptable: one useful mapped row is enough.
+            handler.BrowseResponse = TrendingBrowsePage("Partial song");
+            var partial = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await controller.Sections(CancellationToken.None));
+            using var partialJson = JsonDocument.Parse(JsonSerializer.Serialize(partial.Value));
+            Assert.True(partialJson.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal("Partial song",
+                partialJson.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString());
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task BrowseCache_ValidationEvictsInvalidEntriesAndPreservesValidPayloadOnFailedRefresh()
+    {
+        using var handler = new BrowseHandler();
+        using var client = new HttpClient(handler);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(client, cache);
+        static bool HasUsefulContent(JsonDocument document) =>
+            AppleCatalogJsonHelper.TryGetDataArray(document.RootElement, out var data) && data.GetArrayLength() > 0;
+        var browse = MethodWithParameters(typeof(AppleMusicCatalogService), "GetBrowsePageAsync", 6);
+
+        // An old invalid cache entry must be evicted and replaced by a fresh fetch, not served.
+        cache.Set("apple:browse:ke:en-US:new", "{\"data\":[]}", TimeSpan.FromHours(4));
+        handler.BrowseResponse = TrendingBrowsePage("Fresh song");
+        using var document = await (Task<JsonDocument>)browse.Invoke(
+            service, ["new", "ke", "en-US", CancellationToken.None, false, (Func<JsonDocument, bool>)HasUsefulContent])!;
+        Assert.Single(handler.Requests);
+
+        // A failed refresh must not overwrite the previously valid payload.
+        handler.Requests.Clear();
+        handler.BrowseResponse = "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
+        await Assert.ThrowsAnyAsync<Exception>(() => (Task<JsonDocument>)browse.Invoke(
+            service, ["new", "ke", "en-US", CancellationToken.None, true, (Func<JsonDocument, bool>)HasUsefulContent])!);
+        handler.Requests.Clear();
+        using var preserved = await (Task<JsonDocument>)browse.Invoke(
+            service, ["new", "ke", "en-US", CancellationToken.None, false, (Func<JsonDocument, bool>)HasUsefulContent])!;
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void AppleHomeMountsWithoutBaseProviderAndRejectsEmptySuccessResponses()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        const matches=(part,sel)=>{
+          if(sel.startsWith('#'))return part.includes(sel.slice(1));
+          if(sel.startsWith('.'))return part.includes(sel.slice(1).split('.')[0].split(' ')[0]);
+          if(sel.startsWith('[')){const attr=sel.slice(1,-1).replace(/"/g,'');return part.replace(/"/g,'').includes(attr);}
+          return part.includes(sel);
+        };
+        const makeContainer=()=>{
+          let parts=[];
+          const node=(index)=>({dataset:{},style:{},remove:()=>{parts[index]=null;},after:()=>{},
+            querySelector:()=>null,querySelectorAll:()=>[]});
+          return{
+            get innerHTML(){return parts.filter(Boolean).join('')},set innerHTML(v){parts=String(v).length?[String(v)]:[]},
+            insertAdjacentHTML:(position,markup)=>{if(position==='afterbegin')parts.unshift(markup);else parts.push(markup);},
+            querySelector:sel=>{const index=parts.findIndex(p=>p&&matches(p,sel));return index<0?null:node(index);},
+            querySelectorAll:sel=>parts.map((p,i)=>({p,i})).filter(({p})=>p&&matches(p,sel)).map(({i})=>node(i))};
+        };
+        let now=100000,calls=[],timers=[],currentSearch='';
+        const appleOk=()=>({ok:true,json:async()=>({success:true,sections:[
+          {role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',id:'1',title:'Apple Song'}]},
+          {role:'new-this-week',title:'New This Week',items:[{source:'apple',type:'album',id:'2',title:'Apple Album'}]}]})});
+        const build=fetchImpl=>{
+          const container=makeContainer();
+          const ctx=vm.createContext({console,URLSearchParams,URL,Date:{now:()=>now},escapeHtml:String,
+            location:{get search(){return currentSearch},set search(value){currentSearch=value},origin:'http://localhost'},
+            document:{hidden:false,getElementById:id=>id==='home-sections'?container:null,querySelectorAll:()=>[]},
+            setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length},clearTimeout:()=>{},
+            IntersectionObserver:class{observe(){}unobserve(){}},getComputedStyle:()=>({getPropertyValue:()=>''}),
+            HomeViewHelpers:{renderAppleBrowseItem:item=>`<div>apple-${item.title}</div>`},
+            renderHomeItem:item=>`<div>${item.title}</div>`,
+            getBrowserTimeZone:()=>'UTC',
+            renderYouTubeHomeTrending:()=>'yt-trending',
+            renderHomeSectionsWithLazyImages:()=>{},
+            fetchSpotifyHomeEnhancements:()=>null,loadHomeCategories:async()=>{},
+            loadYouTubeHomeTrending:async()=>{},loadYouTubeHomeSections:async()=>{},
+            syncHomeTrendingPlaybackFromSession:()=>{},observeLazyImages:()=>{},
+            fetch:fetchImpl});
+          return {ctx,container};
+        };
+        const load=(ctx,name)=>{const match=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(match,name+' must exist');
+          const start=match.index,end=source.slice(start+match[0].length).search(/\n(?:async )?function /);
+          vm.runInContext(source.slice(start,end<0?undefined:start+match[0].length+end),ctx);};
+        const seed=ctx=>vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[],homeAppleSections=[],homeAppleStatus='loading',homeTrendingProvider='spotify',homeSpotifyStatus='loading';const homeAppleRefresh={intervalMs:14400000,loadedAt:0,retryAt:0,inFlight:null,timer:null};const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;let homeDeferredRowObserver;const homeCategoryStatus={};",ctx);
+        const names=['loadHomeData','buildHomeRequestUrl','fetchHomeSections','loadAppleHomeSections','scheduleAppleHomeRefresh',
+          'refreshAppleHomeSectionsIfDue','nextAppleHomeRefreshAt','mountAppleHomeSectionsWithoutBase','renderHomeTrendingSectionContent','refreshHomeProviderSections',
+          'renderAppleHomeRows','renderAppleHomeTrending','renderHomeTrendingProviders','renderDeferredHomeRow','removeHomeProviderSections','observeHomeDeferredRows'];
+        const track=ctx=>{const pending=[];const loadApple=ctx.loadAppleHomeSections;
+          ctx.loadAppleHomeSections=(...args)=>{const p=loadApple(...args);pending.push(p);return p;};
+          ctx.pendingApple=async()=>await Promise.all(pending);};
+        const count=(text,needle)=>text.split(needle).length-1;
+        (async()=>{
+          // Phase 1: Apple succeeds before the base provider fails (Apple provider selected).
+          calls=[];timers=[];currentSearch='';
+          const first=build(async url=>{calls.push(url);if(url.startsWith('/api/apple/'))return appleOk();throw Error('base provider down');});
+          seed(first.ctx);names.forEach(name=>load(first.ctx,name));track(first.ctx);
+          vm.runInContext("homeTrendingProvider='apple'",first.ctx);
+          await first.ctx.loadAppleHomeSections(1);
+          assert(first.container.innerHTML.includes('id="home-trending"'),'Apple must mount the trending section without the base feed');
+          assert(first.container.innerHTML.includes('home-trending-providers'),'Apple must mount the trending provider controls');
+          assert(first.container.innerHTML.includes('apple-Apple Song'),'Apple trending content must render');
+          assert(first.container.innerHTML.includes('data-apple-role="new-this-week"'),'Apple rows must mount without the base feed');
+          await first.ctx.loadHomeData();await first.ctx.pendingApple();
+          assert(first.container.innerHTML.includes('data-apple-role="new-this-week"'),'A base-provider failure must not wipe mounted Apple rows');
+
+          // Phase 2: the base provider fails before Apple succeeds.
+          calls=[];timers=[];currentSearch='';
+          let releaseBase;const baseHold=new Promise(resolve=>releaseBase=resolve);
+          const second=build(async url=>{calls.push(url);if(url.startsWith('/api/apple/'))return appleOk();await baseHold;throw Error('base provider down');});
+          seed(second.ctx);names.forEach(name=>load(second.ctx,name));track(second.ctx);
+          const homeData=second.ctx.loadHomeData();
+          await second.ctx.pendingApple();
+          assert(second.container.innerHTML.includes('home-trending-providers'),'Apple must mount while the base provider is still pending');
+          releaseBase();await homeData;
+          assert(second.container.innerHTML.includes('data-apple-role="new-this-week"'),'A late base failure must not overwrite Apple rows');
+          assert.equal(vm.runInContext('homeAppleStatus',second.ctx),'ready');
+
+          // Phase 3: an empty success must not clear rows and must retry within 30 seconds.
+          calls=[];timers=[];currentSearch='';
+          const third=build(async url=>{calls.push(url);return{ok:true,json:async()=>({success:true,sections:[
+            {role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',id:'9',title:'Kept Song'}]},
+            {role:'new-this-week',title:'New This Week',items:[{source:'apple',type:'album',id:'10',title:'Kept Album'}]}]})};});
+          seed(third.ctx);names.forEach(name=>load(third.ctx,name));track(third.ctx);
+          await third.ctx.loadAppleHomeSections(1);
+          assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',third.ctx),'Kept Song');
+          assert(third.container.innerHTML.includes('data-apple-role="new-this-week"'),'Apple rows must mount without the base feed');
+          now+=60000; // far from the four-hour deadline
+          third.ctx.fetch=async url=>{calls.push(url);return{ok:true,json:async()=>({success:true,sections:[]})}};
+          await third.ctx.loadAppleHomeSections(1,true);
+          assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',third.ctx),'Kept Song','An empty success must not clear loaded rows');
+          assert.equal(vm.runInContext('homeAppleStatus',third.ctx),'ready');
+          assert(timers.at(-1).delay<=30000,'A rejected empty response must retry within 30 seconds even with the four-hour deadline far away');
+          now+=31000;calls=[];
+          third.ctx.fetch=async url=>{calls.push(url);return{ok:true,json:async()=>({success:true,sections:[
+            {role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',id:'11',title:'Recovered Song'}]},
+            {role:'new-this-week',title:'New This Week',items:[{source:'apple',type:'album',id:'12',title:'Recovered Album'}]}]})}};
+          await third.ctx.refreshAppleHomeSectionsIfDue();
+          assert(calls.some(url=>url.includes('refresh=1')),'The failure retry must run after its 30 second deadline');
+          assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',third.ctx),'Recovered Song','A successful retry must replace the retained rows');
+
+          // Phase 4: stale completions and channel pages must not mount anything.
+          calls=[];timers=[];currentSearch='';
+          const fourth=build(async url=>{calls.push(url);return appleOk();});
+          seed(fourth.ctx);names.forEach(name=>load(fourth.ctx,name));track(fourth.ctx);
+          await fourth.ctx.loadAppleHomeSections(0);
+          assert.equal(calls.length,0,'Stale Apple requests must be ignored');
+          assert.equal(fourth.container.innerHTML,'','Stale Apple responses must not mount sections');
+          vm.runInContext("location.search='?channel=explore'",fourth.ctx);
+          vm.runInContext('mountAppleHomeSectionsWithoutBase()',fourth.ctx);
+          assert.equal(fourth.container.innerHTML,'','Channel pages must not mount provider rows');
+
+          // Phase 5: base recovery must not duplicate mounted sections.
+          vm.runInContext('homeLatestSections=[{title:"Deezer base"}]',third.ctx);
+          vm.runInContext("location.search=''",third.ctx);
+          await third.ctx.loadAppleHomeSections(1,true);
+          assert.equal(count(third.container.innerHTML,'id="home-trending"'),1,'Recovery must not duplicate the trending section');
+          assert.equal(count(third.container.innerHTML,'data-apple-role="new-this-week"'),1,'Recovery must not duplicate Apple rows');
+        })().catch(error=>{console.error(error);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public void EmptyBaseFeedMountsProvidersAndLaterRecoveryKeepsAppleRows()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        const matches=(part,sel)=>{
+          if(sel.startsWith('#'))return part.includes(sel.slice(1));
+          if(sel.startsWith('.'))return part.includes(sel.slice(1).split('.')[0].split(' ')[0]);
+          if(sel.startsWith('[')){const attr=sel.slice(1,-1).replace(/"/g,'');return part.replace(/"/g,'').includes(attr);}
+          return part.includes(sel);
+        };
+        const makeContainer=()=>{
+          let parts=[],writes=0;
+          const node=()=>({dataset:{},style:{},remove(){},after(){},querySelector:()=>null,querySelectorAll:()=>[]});
+          return{
+            writes:()=>writes,
+            get innerHTML(){return parts.filter(Boolean).join('')},
+            set innerHTML(v){writes++;parts=String(v).length?[String(v)]:[]},
+            insertAdjacentHTML:(position,markup)=>{if(!markup)return;if(position==='afterbegin')parts.unshift(markup);else parts.push(markup);},
+            querySelector:sel=>{const index=parts.findIndex(p=>p&&matches(p,sel));return index<0?null:node();},
+            querySelectorAll:sel=>parts.filter(p=>p&&matches(p,sel)).map(()=>node())};
+        };
+        const container=makeContainer();
+        const ctx=vm.createContext({console,URLSearchParams,URL,Map,Set,Intl,Date,escapeHtml:String,
+          location:{search:'',origin:'http://localhost'},
+          document:{hidden:false,addEventListener(){},body:{addEventListener(){}},
+            getElementById:id=>id==='home-sections'?container:{addEventListener(){},placeholder:''},
+            querySelector:()=>null,querySelectorAll:()=>[]},
+          IntersectionObserver:class{observe(){}unobserve(){}disconnect(){}},
+          getComputedStyle:()=>({getPropertyValue:()=>''}),
+          localStorage:{getItem:()=>null,setItem(){}},setTimeout:()=>1,clearTimeout:()=>{},
+          HomeViewHelpers:{showToast(){},setHomeTrendingPreviewButtonState(){},renderTopGenresItem:()=>'',
+            buildSpotifyBrowseClick:()=>'',buildHomeClick:()=>'',openSpotifyArtistFallback(){},openSpotifyArtist(){},
+            renderAppleBrowseItem:item=>`<div>apple-${item.title}</div>`,renderYouTubeBrowseItem:()=>'<div>yt</div>'}});
+        ctx.globalThis=ctx;
+        vm.runInContext(source,ctx);
+        vm.runInContext("homeAppleSections=[{role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',id:'1',title:'Apple Song'}]},{role:'new-this-week',title:'New This Week',items:[{source:'apple',type:'album',id:'2',title:'Apple Album'}]}];homeAppleStatus='ready';homeTrendingProvider='apple';",ctx);
+        ctx.renderHomeSections([]);
+        assert(container.innerHTML.includes('id="home-trending"'),'An empty base feed must mount trending controls');
+        assert(container.innerHTML.includes('home-trending-providers'));
+        assert(container.innerHTML.includes('apple-Apple Song'));
+        assert(container.innerHTML.includes('data-apple-role="new-this-week"'));
+        assert(!container.innerHTML.includes('No home sections available'));
+        const writes=container.writes();
+        ctx.renderHomeSections([]);
+        assert.equal(container.writes(),writes,'A later empty base success must not redraw mounted provider rows');
+        assert(container.innerHTML.includes('data-apple-role="new-this-week"'));
+        vm.runInContext("location.search='?channel=explore'",ctx);
+        ctx.renderHomeSections([]);
+        assert(container.innerHTML.includes('No home sections available'),'Channel pages keep the empty-feed message');
+        assert(!container.innerHTML.includes('data-apple-role="new-this-week"'));
+        vm.runInContext("location.search='';homeAppleSections=[{role:'new-this-week',title:'New This Week',items:[{source:'apple',type:'album',id:'2',title:'Apple Album'}]}];",ctx);
+        ctx.renderHomeSections([{title:'Discover',items:[{title:'One'},{title:'Two'},{title:'Three'},{title:'Four'}]}]);
+        const html=container.innerHTML;
+        assert(html.includes('Discover'),'A recovered base feed must render');
+        assert.equal(html.split('data-apple-role="new-this-week"').length-1,1,'Recovery must keep one Apple row, not a duplicate');
+        assert(!html.includes('No home sections available'));
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
 
     private static AppleMusicCatalogService CreateService(HttpClient client, IMemoryCache cache) =>
         new(new ClientFactory(client), null!, NullLogger<AppleMusicCatalogService>.Instance, cache);
@@ -712,22 +1362,35 @@ public sealed class AppleBrowseTest
     {
         public string? BrowseResponse;
         public Exception? NextFailure;
+        public Exception? AccountFailure;
         public bool HoldResponse;
+        public bool HoldAccountResponse;
+        public Func<string, bool>? HoldPredicate;
+        public int AccountRequests;
         public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public List<string> Requests { get; } = [];
         public List<bool> AuthorizationPresent { get; } = [];
         public string? AccountResponse { get; init; }
+        public Func<string, string?>? BrowseResponseFor { get; init; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            if (request.RequestUri.AbsolutePath.Contains("/me/account"))
+            {
+                AccountRequests++;
+                if (AccountFailure is { } accountFailure) throw accountFailure;
+                if (HoldAccountResponse) await Release.Task.WaitAsync(token);
+            }
             if (NextFailure is { } failure) { NextFailure = null; throw failure; }
             Requests.Add(request.RequestUri!.ToString());
             AuthorizationPresent.Add(request.Headers.Authorization != null);
             Started.TrySetResult();
-            if (HoldResponse) await Release.Task.WaitAsync(token);
+            if (HoldResponse || (HoldPredicate?.Invoke(request.RequestUri.ToString()) ?? false)) await Release.Task.WaitAsync(token);
             var response = request.RequestUri.AbsolutePath.Contains("/me/account")
                 ? AccountResponse!
-                : BrowseResponse ?? "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
+                : BrowseResponseFor?.Invoke(request.RequestUri.ToString())
+                    ?? BrowseResponse
+                    ?? "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) };
         }
     }

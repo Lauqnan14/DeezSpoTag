@@ -22,7 +22,7 @@ public sealed class AppleBrowseRefreshHostedService(
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                     deadline.CancelAfter(TimeSpan.FromSeconds(60));
                     var settings = settingsService.LoadSettings();
-                    var storefront = await catalog.ResolveStorefrontAsync(settings.AppleMusic?.Storefront, settings.AppleMusic?.MediaUserToken, deadline.Token);
+                    var storefront = await catalog.ResolveBrowseStorefrontAsync(settings.AppleMusic?.Storefront, settings.DeezerCountry, settings.AppleMusic?.MediaUserToken, deadline.Token, TimeSpan.FromSeconds(3));
                     using var home = await catalog.GetBrowsePageAsync("new", storefront, "en-US", deadline.Token, refresh: true);
                     if (categoriesStorefront != storefront || DateTimeOffset.UtcNow - categoriesRefreshedAt >= TimeSpan.FromHours(24))
                     {
