@@ -1165,6 +1165,44 @@ body.autotag-col-resizing * {
     white-space: nowrap;
 }
 
+#personalGenrePage:not(.pg-editing) .genre-intelligence-edit-only {
+    display: none;
+}
+
+#personalGenrePage.pg-editing .pg-token-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+#personalGenrePage.pg-editing .pg-token-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+#personalGenrePage .pg-research {
+    min-width: 180px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+#personalGenrePage .genre-intelligence-conventions {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+}
+
+#personalGenrePage .genre-intelligence-conventions li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+}
+
 #autotag-genre-intelligence-panel .genre-intelligence-badge {
     display: inline-flex;
     align-items: center;

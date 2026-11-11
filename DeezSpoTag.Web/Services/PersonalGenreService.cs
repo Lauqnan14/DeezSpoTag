@@ -58,7 +58,8 @@ public sealed class PersonalGenreService
         CancellationToken cancellationToken = default)
     {
         var custom = await _store.GetCustomTaxaAsync(cancellationToken);
-        return new PersonalGenreCatalog(custom).Taxa;
+        var settings = await _store.GetSettingsAsync(cancellationToken);
+        return new PersonalGenreCatalog(custom, settings.TermEdits).Taxa;
     }
 
     public Task<IReadOnlyList<PersonalGenreTaxon>> GetCustomTaxaAsync(
@@ -609,7 +610,10 @@ public sealed class PersonalGenreService
             cancellationToken);
 
         return GenreCleanupPreviewBuilder.Build(
-            context.Resolve(), context.PostSnapshot.Observations, context.RemovedByNormalization);
+            context.Resolve(), context.PostSnapshot.Observations, context.RemovedByNormalization,
+            normalization: context.Normalization,
+            catalog: new PersonalGenreCatalog(context.CustomTaxa, context.Settings.TermEdits),
+            spellingConventions: context.Settings.SpellingConventions);
     }
 
     /// <summary>Evaluates construction research against current cleaned file evidence without saving or writing.</summary>
@@ -761,17 +765,15 @@ public sealed class PersonalGenreService
         GenreNormalizationResult post,
         GenreNormalizationResult? pre)
     {
-        var output = new List<RemovedGenreTagValue>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var removal in post.Removed.Concat(pre?.Removed ?? Array.Empty<RemovedGenreTagValue>()))
-        {
-            if (seen.Add($"{removal.InputField}:{removal.Value}"))
-            {
-                output.Add(removal);
-            }
-        }
-
-        return output;
+        // The composite key collapses the pair exactly as the earlier
+        // "InputField:Value" string did, so distinct-by keeps the first
+        // occurrence per key in encounter order.
+        return post.Removed
+            .Concat(pre?.Removed ?? Array.Empty<RemovedGenreTagValue>())
+            .DistinctBy(
+                removal => $"{removal.InputField}:{removal.Value}",
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool SameMappingIdentity(

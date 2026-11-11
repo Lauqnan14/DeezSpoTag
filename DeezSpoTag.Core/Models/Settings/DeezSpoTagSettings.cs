@@ -94,45 +94,30 @@ public class DeezSpoTagSettings
     /// </summary>
     [JsonIgnore]
     public GenreNormalizationOptions GenreNormalization { get; set; } = GenreNormalizationOptions.Default;
-    // ─────────────────────────────────────────────────────────────────────────
-    // DEPRECATED — MIGRATION ONLY. Genre Intelligence owns these now.
-    //
-    // They are still deserialized so an existing configuration file keeps
-    // loading, and they are imported exactly once into Genre Intelligence. After
-    // that no runtime code reads them, nothing writes them, and the Settings page
-    // does not expose them. They exist only so a user's existing preferences can
-    // be carried across, and can be deleted in a later schema cleanup.
-    // ─────────────────────────────────────────────────────────────────────────
-    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.NormalizeGenreTags instead.")]
-    public bool NormalizeGenreTags { get; set; } = false;
+    /// <summary>Input retained for migration and hosts without a Genre Intelligence store.</summary>
+    [JsonIgnore]
+    public LegacyGenreNormalizationSettings LegacyGenreNormalization { get; } = new();
 
-    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.GenreTagBlockList instead.")]
-    public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
-
-    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.GenreTagAliasRules instead.")]
-    public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
+    [JsonInclude, JsonPropertyName("normalizeGenreTags")]
+    private bool LegacyNormalizeGenreTags
     {
-        new GenreTagAliasRule
-        {
-            Alias = "Afro-Pop",
-            Canonical = "Afropop"
-        },
-        new GenreTagAliasRule
-        {
-            Alias = "Afro Pop",
-            Canonical = "Afropop"
-        },
-        new GenreTagAliasRule
-        {
-            Alias = "Hip-Hop",
-            Canonical = "HipHop"
-        },
-        new GenreTagAliasRule
-        {
-            Alias = "Hip Hop",
-            Canonical = "HipHop"
-        }
-    };
+        get => LegacyGenreNormalization.NormalizeGenreTags;
+        set => LegacyGenreNormalization.NormalizeGenreTags = value;
+    }
+
+    [JsonInclude, JsonPropertyName("genreTagBlockList")]
+    private List<string> LegacyGenreTagBlockList
+    {
+        get => LegacyGenreNormalization.GenreTagBlockList;
+        set => LegacyGenreNormalization.GenreTagBlockList = value;
+    }
+
+    [JsonInclude, JsonPropertyName("genreTagAliasRules")]
+    private List<GenreTagAliasRule> LegacyGenreTagAliasRules
+    {
+        get => LegacyGenreNormalization.GenreTagAliasRules;
+        set => LegacyGenreNormalization.GenreTagAliasRules = value;
+    }
 
     // Artwork preference + fallback
     public bool ArtworkFallbackEnabled { get; set; } = true;
@@ -503,6 +488,38 @@ public sealed class GenreTagAliasRule
 {
     public string Alias { get; set; } = string.Empty;
     public string Canonical { get; set; } = string.Empty;
+}
+
+/// <summary>The old configuration payload, isolated from current runtime preferences.</summary>
+public sealed class LegacyGenreNormalizationSettings
+{
+    public bool NormalizeGenreTags { get; set; } = false;
+
+    public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
+
+    public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
+    {
+        new GenreTagAliasRule
+        {
+            Alias = "Afro-Pop",
+            Canonical = "Afropop"
+        },
+        new GenreTagAliasRule
+        {
+            Alias = "Afro Pop",
+            Canonical = "Afropop"
+        },
+        new GenreTagAliasRule
+        {
+            Alias = "Hip-Hop",
+            Canonical = "HipHop"
+        },
+        new GenreTagAliasRule
+        {
+            Alias = "Hip Hop",
+            Canonical = "HipHop"
+        }
+    };
 }
 
 /// <summary>

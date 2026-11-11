@@ -119,7 +119,8 @@ public sealed record GenreIntelligenceResolutionContext(
             // in either snapshot stays blocked and is never resurrected.
             originalObservations: NormalizedPre?.Observations,
             removedByNormalization: RemovedByNormalization,
-            blockedIdentities: Normalization.BlockList);
+            blockedIdentities: Normalization.BlockList,
+            termEdits: Settings.TermEdits);
 }
 
 /// <summary>

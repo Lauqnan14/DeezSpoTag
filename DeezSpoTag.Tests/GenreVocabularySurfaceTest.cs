@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Genre;
 using Microsoft.Extensions.Configuration;
@@ -225,6 +226,10 @@ public sealed class GenreVocabularySurfaceTest : IDisposable
         var ccm = taxa.Single(item => item.GetProperty("name").GetString() == "alternative ccm");
         Assert.Equal("Alternative CCM", ccm.GetProperty("displayName").GetString());
         Assert.Equal("alternative ccm", ccm.GetProperty("name").GetString());
+        // Browse load must not carry research. That graph is what made the page wait.
+        var kapuka = taxa.Single(item => item.GetProperty("id").GetString() == "kapuka");
+        Assert.Equal(JsonValueKind.Null, kapuka.GetProperty("research").ValueKind);
+        Assert.Equal("africa", kapuka.GetProperty("regions")[0].GetString());
         var script = File.ReadAllText(RepoFile("DeezSpoTag.Web", "wwwroot", "js", "personal-genre.js"));
         Assert.Contains("byId('pgTaxonName').value = taxon.name", script);
     }

@@ -41,6 +41,7 @@
       the catalog and never needs the spreadsheet or a loose file at runtime.
     -->
     <EmbeddedResource Include="Genre/Data/genre-intelligence-taxonomy.json" />
+    <EmbeddedResource Include="Genre/Data/genre-research-geo.json" />
     <EmbeddedResource Include="Genre/Data/style-construction-rules.json" />
   </ItemGroup>
 

@@ -62,7 +62,8 @@ public static class PersonalGenreResolver
         IReadOnlyList<GenreArtistLocationContext>? artistLocations = null,
         IReadOnlyList<GenreTagObservation>? originalObservations = null,
         IReadOnlyList<RemovedGenreTagValue>? removedByNormalization = null,
-        IReadOnlyCollection<string>? blockedIdentities = null)
+        IReadOnlyCollection<string>? blockedIdentities = null,
+        IReadOnlyList<PersonalGenreTermEdit>? termEdits = null)
     {
         settings ??= new PersonalGenreSettings();
         var blockedKeys = BuildBlockedKeys(blockedIdentities);
@@ -75,7 +76,7 @@ public static class PersonalGenreResolver
             })
             .ToList();
 
-        var catalog = new PersonalGenreCatalog(customTaxa);
+        var catalog = new PersonalGenreCatalog(customTaxa, termEdits);
         var effectiveMappings = mappings ?? Array.Empty<PersonalGenreMapping>();
         var effectiveRules = rules ?? Array.Empty<PersonalGenreRule>();
 
@@ -645,9 +646,10 @@ public static class PersonalGenreResolver
         PersonalGenreCatalog catalog,
         HashSet<string> blockedKeys)
     {
-        // Parent links exist only on the built-in taxonomy. The researched master
-        // does not publish parents, so this walk is incomplete and must not be
-        // treated as a researched hierarchy or as Style Construction.
+        // One walk covers built-in and researched parents. They are already one
+        // effective taxonomy. The walk adds Genre ancestors only, which is the
+        // output rule this setting has always had. It is not Style Construction:
+        // a parent edge never creates the child style.
         if (!settings.IncludeParentGenres)
         {
             return classifications.ToList();
@@ -662,34 +664,61 @@ public static class PersonalGenreResolver
         }
 
         var output = classifications.ToList();
+        var present = output
+            .Select(item => item.TaxonId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var classification in classifications
             .Where(item => item.Kind is PersonalGenreTaxonKind.Style or PersonalGenreTaxonKind.Substyle))
         {
-            if (!catalog.TryGetById(classification.TaxonId, out var taxon)
-                || taxon.ParentIds is not { Count: > 0 })
+            var stack = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { classification.TaxonId };
+            ExpandGenreAncestors(classification.TaxonId, classification.OriginFields, stack);
+        }
+
+        return output;
+
+        void ExpandGenreAncestors(
+            string taxonId,
+            IReadOnlyList<PersonalGenreTaxonKind> originFields,
+            HashSet<string> stack)
+        {
+            if (!catalog.TryGetById(taxonId, out var taxon) || taxon.ParentIds is not { Count: > 0 })
             {
-                continue;
+                return;
             }
 
             foreach (var parentId in taxon.ParentIds)
             {
-                if (!catalog.TryGetById(parentId, out var parent)
-                    || parent.Kind != PersonalGenreTaxonKind.Genre
-                    || IsBlocked(parent, blockedKeys)
-                    || output.Any(item => string.Equals(item.TaxonId, parent.Id, StringComparison.OrdinalIgnoreCase)))
+                // Catalog validation rejects cycles. The stack still stops a cycle
+                // from turning parent expansion into an unbounded walk.
+                if (!stack.Add(parentId))
                 {
                     continue;
                 }
 
-                output.Add(new PersonalGenreClassification(
-                    parent.Id,
-                    parent.Name,
-                    parent.Kind,
-                    classification.OriginFields));
+                if (!catalog.TryGetById(parentId, out var parent) || IsBlocked(parent, blockedKeys))
+                {
+                    stack.Remove(parentId);
+                    continue;
+                }
+
+                if (parent.Kind == PersonalGenreTaxonKind.Genre && present.Add(parent.Id))
+                {
+                    output.Add(new PersonalGenreClassification(
+                        parent.Id,
+                        parent.Name,
+                        parent.Kind,
+                        originFields));
+                }
+
+                if (parent.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
+                    or PersonalGenreTaxonKind.Substyle)
+                {
+                    ExpandGenreAncestors(parent.Id, originFields, stack);
+                }
+
+                stack.Remove(parentId);
             }
         }
-
-        return output;
     }
 
     private static List<(PersonalGenreLock Lock, PersonalGenreTaxon Taxon)> GetMostSpecificLocks(

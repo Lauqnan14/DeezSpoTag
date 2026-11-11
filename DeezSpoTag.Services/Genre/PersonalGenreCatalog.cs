@@ -50,7 +50,9 @@ public sealed class PersonalGenreCatalog
     /// </remarks>
     public static PersonalGenreCatalog Default { get; } = new();
 
-    public PersonalGenreCatalog(IReadOnlyList<PersonalGenreTaxon>? customTaxa = null)
+    public PersonalGenreCatalog(
+        IReadOnlyList<PersonalGenreTaxon>? customTaxa = null,
+        IReadOnlyList<PersonalGenreTermEdit>? edits = null)
     {
         var baseCatalog = Base.Value;
         _byId = baseCatalog.ById;
@@ -61,6 +63,13 @@ public sealed class PersonalGenreCatalog
             // The shared lookup is used directly, so the common path allocates
             // nothing beyond the catalog itself.
             _byLookup = baseCatalog.Lookup;
+            if (edits is { Count: > 0 })
+            {
+                var edited = ApplyEdits(Taxa.ToList(), edits);
+                _byLookup = BuildLookup(edited, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                _byId = edited.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+                Taxa = edited;
+            }
             return;
         }
 
@@ -97,9 +106,121 @@ public sealed class PersonalGenreCatalog
         // A user's own term is registered alongside the built-ins in one lookup, so a
         // name the user defined still wins over a built-in spelling that reduces to
         // the same key.
+        if (edits is { Count: > 0 })
+        {
+            merged = ApplyEdits(merged, edits);
+        }
+
         _byLookup = BuildLookup(merged, customIds);
         _byId = merged.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
         Taxa = merged;
+    }
+
+    /// <summary>
+    /// Applies a user's vocabulary edits without changing the shipped term id.
+    /// An unknown parent is ignored. A merge keeps the source name as an alias of
+    /// the target and removes the source from the effective catalog.
+    /// </summary>
+    private static List<PersonalGenreTaxon> ApplyEdits(
+        List<PersonalGenreTaxon> merged,
+        IReadOnlyList<PersonalGenreTermEdit> edits)
+    {
+        foreach (var edit in edits)
+        {
+            if (string.IsNullOrWhiteSpace(edit.TaxonId))
+            {
+                continue;
+            }
+
+            var index = merged.FindIndex(item =>
+                string.Equals(item.Id, edit.TaxonId, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                continue;
+            }
+
+            var taxon = merged[index];
+            if (!string.IsNullOrWhiteSpace(edit.MergedInto)
+                && merged.Any(item => string.Equals(item.Id, edit.MergedInto, StringComparison.OrdinalIgnoreCase)))
+            {
+                var targetIndex = merged.FindIndex(item =>
+                    string.Equals(item.Id, edit.MergedInto, StringComparison.OrdinalIgnoreCase));
+                var target = merged[targetIndex];
+                var aliases = (target.Aliases ?? []).Append(taxon.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                merged[targetIndex] = target with { Aliases = aliases };
+                merged.RemoveAt(index);
+                continue;
+            }
+
+            var name = taxon.Name;
+            var renameRefused = false;
+            var aliasList = (taxon.Aliases ?? []).ToList();
+            if (!string.IsNullOrWhiteSpace(edit.OriginalName)
+                && (string.Equals(edit.OriginalName, taxon.Name, StringComparison.OrdinalIgnoreCase)
+                    || aliasList.Any(alias => string.Equals(alias, edit.OriginalName, StringComparison.OrdinalIgnoreCase))))
+            {
+                if (!string.Equals(edit.OriginalName, taxon.Name, StringComparison.Ordinal))
+                {
+                    // A rename must not hide another canonical term. If the alias the
+                    // user promotes is also a different term's name (or id), the
+                    // spelling choice is refused and both terms keep their spelling.
+                    // The resolver is built on every read path, so a stale or
+                    // colliding saved edit degrades to "no rename" here rather than
+                    // breaking recognition; the vocabulary editor validates the same
+                    // rule before saving so the user sees the refusal.
+                    var collideName = Normalize(edit.OriginalName);
+                    renameRefused = merged.Any(other =>
+                        !string.Equals(other.Id, taxon.Id, StringComparison.OrdinalIgnoreCase)
+                        && (Normalize(other.Name) == collideName
+                            || Normalize(other.Id) == collideName));
+                    if (!renameRefused)
+                    {
+                        aliasList.RemoveAll(alias => string.Equals(alias, edit.OriginalName, StringComparison.OrdinalIgnoreCase));
+                        aliasList.Insert(0, taxon.Name);
+                        name = edit.OriginalName;
+                    }
+                }
+            }
+
+            if (edit.Aliases is not null)
+            {
+                aliasList = edit.Aliases
+                    .Where(alias => !string.IsNullOrWhiteSpace(alias))
+                    .Select(alias => alias.Trim())
+                    .Where(alias => !string.Equals(alias, name, StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            if (renameRefused
+                && !string.IsNullOrWhiteSpace(edit.OriginalName)
+                && !string.Equals(edit.OriginalName, name, StringComparison.OrdinalIgnoreCase)
+                && aliasList.All(alias => !string.Equals(alias, edit.OriginalName, StringComparison.OrdinalIgnoreCase)))
+            {
+                // The refusal keeps the promoted spelling as an alias even when the
+                // client's own alias list already reflected the rejected swap.
+                aliasList.Insert(0, edit.OriginalName.Trim());
+            }
+
+            IReadOnlyList<string>? parents = taxon.ParentIds;
+            if (edit.ParentIds is not null)
+            {
+                parents = edit.ParentIds
+                    .Where(id => merged.Any(item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))
+                        && !string.Equals(id, taxon.Id, StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+
+            merged[index] = taxon with
+            {
+                Name = name,
+                Aliases = aliasList.Count == 0 ? null : aliasList,
+                ParentIds = parents is { Count: 0 } ? null : parents
+            };
+        }
+
+        return merged;
     }
 
     /// <summary>Every term in the effective taxonomy, built-ins and researched first.</summary>
@@ -241,12 +362,14 @@ public sealed class PersonalGenreCatalog
     /// </summary>
     /// <remarks>
     /// A built-in term that the research also covers keeps its id, its display
-    /// spelling and its parents, and adopts only the researched kind and regions.
-    /// That is what lets a saved lock keep working while the classification becomes
-    /// the researched one. A researched Genre or Style whose label is already a
-    /// Context, Scene or Language is added beside it, with a distinct id when the
-    /// built-in id has to stay. A researched term the built-ins do not have is
-    /// added as a new entry.
+    /// spelling and its parents, and adopts the researched kind, regions, and any
+    /// verified parent ids the research adds. Parents are a union: a researched
+    /// batch does not delete a built-in parent by omitting it. A researched Genre
+    /// or Style whose label is already a Context, Scene or Language is added
+    /// beside it, with a distinct id when the built-in id has to stay. A researched
+    /// term the built-ins do not have is added as a new entry. Research parent ids
+    /// are translated through the research-id to runtime-id map, because a saved
+    /// built-in id can differ from the research id of the same identity.
     /// </remarks>
     private static CatalogBase BuildBase()
     {
@@ -254,6 +377,7 @@ public sealed class PersonalGenreCatalog
         var researched = ResearchedGenreCatalog.Current;
 
         var merged = new List<PersonalGenreTaxon>(builtIns.Count + researched.Terms.Count);
+        var researchRuntimeIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var builtIn in builtIns)
         {
@@ -285,48 +409,90 @@ public sealed class PersonalGenreCatalog
                     Regions = regions.Length > 0 ? regions : null,
                     Aliases = aliases.Length > 0 ? aliases : null
                 };
+                AssignResearchRuntimeId(researchRuntimeIds, match.Id, builtIn.Id);
             }
 
             merged.Add(NormalizeTaxon(result));
         }
 
+        var researchedOnly = new List<(ResearchedGenreTerm Term, string RuntimeId)>();
         foreach (var term in researched.Terms)
         {
             var nameKey = Normalize(term.Name);
             var idKey = Normalize(term.Id);
             // A built-in Genre or Style with this name already carries the musical
             // identity. A Context, Scene or Language with the same label does not.
-            var represented = merged.Any(item =>
-                item.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
-                && (Normalize(item.Name) == nameKey || Normalize(item.Id) == idKey));
-            if (represented)
+            var musicalMatches = merged
+                .Where(item => item.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
+                    && (Normalize(item.Name) == nameKey || Normalize(item.Id) == idKey))
+                .GroupBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+            if (musicalMatches.Count > 1)
             {
+                throw new InvalidOperationException(
+                    $"Researched {term.Kind} '{term.Name}' ({term.Id}) matches multiple runtime identities: "
+                    + string.Join(", ", musicalMatches.Select(item => item.Id)) + ".");
+            }
+
+            if (musicalMatches.Count == 1)
+            {
+                AssignResearchRuntimeId(researchRuntimeIds, term.Id, musicalMatches[0].Id);
                 continue;
             }
 
             var runtimeId = term.Id.Trim();
-            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase)))
+            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase))
+                || researchedOnly.Any(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase)))
             {
                 // The saved built-in id stays on the non-musical identity.
                 runtimeId = term.Id.Trim() + "-" + term.Kind.ToLowerInvariant();
             }
 
-            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase)))
+            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase))
+                || researchedOnly.Any(item => string.Equals(item.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException(
                     $"Researched {term.Kind} '{term.Name}' ({term.Id}) has no free runtime id.");
             }
 
+            AssignResearchRuntimeId(researchRuntimeIds, term.Id, runtimeId);
+            researchedOnly.Add((term, runtimeId));
+        }
+
+        foreach (var (term, runtimeId) in researchedOnly)
+        {
+            var parents = ResolveResearchParents(term, researchRuntimeIds);
             merged.Add(NormalizeTaxon(new PersonalGenreTaxon(
                 runtimeId,
                 term.Name,
                 Enum.Parse<PersonalGenreTaxonKind>(term.Kind),
-                ParentIds: null,
+                ParentIds: parents,
                 ContextOnly: false,
                 Aliases: term.Aliases.Count > 0 ? term.Aliases.ToArray() : null,
                 Regions: term.Regions.Count > 0 ? term.Regions.ToArray() : null)));
         }
 
+        for (var index = 0; index < merged.Count; index++)
+        {
+            var taxon = merged[index];
+            if (taxon.Kind is not (PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style)
+                || !researched.TryMatch(taxon.Name, out var match, out _)
+                || match.Kind is not (nameof(PersonalGenreTaxonKind.Genre) or nameof(PersonalGenreTaxonKind.Style))
+                || !researchRuntimeIds.TryGetValue(match.Id, out var runtimeId)
+                || !string.Equals(runtimeId, taxon.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var union = UnionParents(taxon.ParentIds, ResolveResearchParents(match, researchRuntimeIds));
+            if (!SameParents(taxon.ParentIds, union))
+            {
+                merged[index] = taxon with { ParentIds = union };
+            }
+        }
+
+        EnsureParentGraphIsSafe(merged);
         GenreTaxonomyReconciliations.EnsureNoSuppressedMusicalIdentities(merged, researched);
 
         var byId = merged.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
@@ -335,6 +501,157 @@ public sealed class PersonalGenreCatalog
         // researched term as personal would misattribute it.
         var lookup = BuildLookup(merged, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         return new CatalogBase(merged, lookup, byId);
+    }
+
+    private static void AssignResearchRuntimeId(
+        Dictionary<string, string> researchRuntimeIds,
+        string researchId,
+        string runtimeId)
+    {
+        if (researchRuntimeIds.TryGetValue(researchId, out var existing)
+            && !string.Equals(existing, runtimeId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Researched id '{researchId}' maps to both runtime ids '{existing}' and '{runtimeId}'.");
+        }
+
+        researchRuntimeIds[researchId] = runtimeId;
+    }
+
+    /// <summary>
+    /// Translates researched parent ids to the runtime ids that actually exist
+    /// after built-in identities keep their saved ids.
+    /// </summary>
+    private static IReadOnlyList<string>? ResolveResearchParents(
+        ResearchedGenreTerm term,
+        IReadOnlyDictionary<string, string> researchRuntimeIds)
+    {
+        if (term.ParentIds.Count == 0)
+        {
+            return null;
+        }
+
+        var resolved = new List<string>(term.ParentIds.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parentResearchId in term.ParentIds)
+        {
+            if (!researchRuntimeIds.TryGetValue(parentResearchId, out var runtimeId))
+            {
+                throw new InvalidOperationException(
+                    $"Researched term '{term.Id}' parents '{parentResearchId}', which has no runtime id.");
+            }
+
+            if (seen.Add(runtimeId))
+            {
+                resolved.Add(runtimeId);
+            }
+        }
+
+        return resolved.Count == 0 ? null : resolved;
+    }
+
+    private static IReadOnlyList<string>? UnionParents(
+        IReadOnlyList<string>? existing,
+        IReadOnlyList<string>? researchedParents)
+    {
+        var union = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parentId in existing ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(parentId) && seen.Add(parentId))
+            {
+                union.Add(parentId);
+            }
+        }
+
+        foreach (var parentId in researchedParents ?? [])
+        {
+            if (seen.Add(parentId))
+            {
+                union.Add(parentId);
+            }
+        }
+
+        return union.Count == 0 ? null : union;
+    }
+
+    private static bool SameParents(IReadOnlyList<string>? left, IReadOnlyList<string>? right)
+    {
+        var a = left ?? [];
+        var b = right ?? [];
+        if (a.Count != b.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < a.Count; index++)
+        {
+            if (!string.Equals(a[index], b[index], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The effective parent graph has to name real Genre or Style ids and must not cycle.
+    /// </summary>
+    private static void EnsureParentGraphIsSafe(IReadOnlyList<PersonalGenreTaxon> taxa)
+    {
+        var byId = taxa.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        var state = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var stack = new List<string>();
+
+        foreach (var taxon in taxa)
+        {
+            if (taxon.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style)
+            {
+                Visit(taxon.Id);
+            }
+        }
+
+        void Visit(string id)
+        {
+            if (state.TryGetValue(id, out var mark))
+            {
+                if (mark == 1)
+                {
+                    var start = stack.FindIndex(item => string.Equals(item, id, StringComparison.OrdinalIgnoreCase));
+                    var cycle = start < 0 ? stack.Append(id) : stack.Skip(start).Append(id);
+                    throw new InvalidOperationException(
+                        "Effective taxonomy parent cycle: " + string.Join(" -> ", cycle) + ".");
+                }
+
+                return;
+            }
+
+            state[id] = 1;
+            stack.Add(id);
+            if (byId.TryGetValue(id, out var taxon) && taxon.ParentIds is not null)
+            {
+                foreach (var parentId in taxon.ParentIds)
+                {
+                    if (!byId.TryGetValue(parentId, out var parent))
+                    {
+                        throw new InvalidOperationException(
+                            $"Taxonomy term '{id}' parents '{parentId}', which is not in the effective taxonomy.");
+                    }
+
+                    if (parent.Kind is not (PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style))
+                    {
+                        throw new InvalidOperationException(
+                            $"Taxonomy term '{id}' parents '{parentId}', which is not a Genre or Style.");
+                    }
+
+                    Visit(parentId);
+                }
+            }
+
+            stack.RemoveAt(stack.Count - 1);
+            state[id] = 2;
+        }
     }
 
     /// <summary>

@@ -154,7 +154,7 @@ public sealed class GenreIntelligenceWriteCorrectnessTest : IDisposable
 
         Assert.Equal(new[] { "Trap" }, resolution.Styles);
         Assert.DoesNotContain(resolution.Genres, value => value.Equals("Hip-Hop", StringComparison.OrdinalIgnoreCase));
-        AssertFields(path, genres: [], styles: ["Trap"]);
+        AssertFields(path, genres: ["Rap"], styles: ["Trap"]);
     }
 
     [Fact]

@@ -176,7 +176,8 @@ internal static class GenreSemanticTagIo
         bool capitalizeGenres = true,
         string? canonicalStyleField = null,
         GenreNormalizationSnapshot? normalization = null,
-        PersonalGenreCatalog? catalog = null)
+        PersonalGenreCatalog? catalog = null,
+        IReadOnlyList<DeezSpoTag.Services.Genre.PersonalGenreSpellingConvention>? spellingConventions = null)
     {
         var plan = new Dictionary<PersonalGenreTaxonKind, List<string>>();
         var seen = new Dictionary<PersonalGenreTaxonKind, HashSet<string>>();
@@ -234,6 +235,11 @@ internal static class GenreSemanticTagIo
                 if (format && spellingAliases is not null)
                 {
                     output = GenreTagAliasNormalizer.NormalizeValue(output, spellingAliases);
+                }
+
+                if (format && spellingConventions is { Count: > 0 })
+                {
+                    output = GenreSpellingConventions.Apply(output, spellingConventions);
                 }
                 if (normalization is not null
                     && field is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style

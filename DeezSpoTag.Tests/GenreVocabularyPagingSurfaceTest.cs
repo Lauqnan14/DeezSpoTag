@@ -184,6 +184,90 @@ public sealed class GenreVocabularyPagingSurfaceTest
             """);
     }
 
+    /// <summary>
+    /// The alias and parent chips read like the terms they name, using the same
+    /// capitalization rule the writer applies. The stored spelling is untouched:
+    /// the edit actions and saved edits still travel with the raw value.
+    /// </summary>
+    [Fact]
+    public void TokenChipsReadCapitalizedWhileEditActionsKeepTheStoredSpelling()
+    {
+        Run("""
+            state.taxonomy = [makeTerm(0, {
+                name:'kenyan drill',
+                aliases:['boomba','kapuka rap','afro hip hop','2-step'],
+                parentIds:['hip-hop','r&b']
+            })];
+            renderTaxonomy();
+            const html = byId('pgTaxonomyBody').innerHTML;
+            assert.ok(html.includes('<span>Boomba</span>'));
+            assert.ok(html.includes('<span>Kapuka Rap</span>'));
+            assert.ok(html.includes('<span>Afro Hip Hop</span>'));
+            assert.ok(html.includes('<span>Hip-Hop</span>'));
+            assert.ok(html.includes('<span>R&amp;B</span>'));
+            // A digit-led compound is one lexical unit, not a title split on a hyphen.
+            assert.ok(html.includes('<span>2-step</span>'));
+            // The raw values still drive editing and the saved edits.
+            assert.ok(html.includes('data-pg-token="hip-hop"'));
+            assert.ok(html.includes('data-pg-make-original="boomba"'));
+            assert.ok(!html.includes('<span>hip-hop</span>'));
+            assert.ok(!html.includes('<span>boomba</span>'));
+            """);
+    }
+
+    /// <summary>
+    /// The research column cites no source URLs: a stale payload that still carries
+    /// them must not make the app render a Sources row.
+    /// </summary>
+    [Fact]
+    public void ResearchPanelNeverRendersSourceUrls()
+    {
+        Run("""
+            const stale = renderResearch({
+                research: {
+                    status: 'Verified',
+                    era: '1990s',
+                    sources: ['https://en.wikipedia.org/wiki/Genre', 'https://web.archive.org/x']
+                }
+            });
+            assert.ok(!stale.toLowerCase().includes('sources'), stale);
+            assert.ok(!stale.includes('wikipedia'));
+            assert.ok(!stale.includes('https://'));
+            assert.ok(stale.includes('Verified'));
+            assert.ok(!stale.toLowerCase().includes('location'));
+            const chips = renderResearch({
+                research: {
+                    status: 'Verified',
+                    places: [{ slug: 'lagos', name: 'Lagos' }],
+                    countries: [{ slug: 'nigeria', name: 'Nigeria' }],
+                    location: 'Lagos, Nigeria',
+                    memberCountries: 'nigeria'
+                }
+            });
+            assert.ok(chips.includes('>Lagos<'));
+            assert.ok(chips.includes('>Nigeria<'));
+            const era = renderResearch({
+                research: {
+                    status: 'Verified',
+                    era: { label: 'Late 1960s–1970s', ranges: [{ start: 1967, end: 1979 }] }
+                }
+            });
+            assert.ok(era.includes('1967–1979'));
+            assert.ok(!era.includes('Late 1960s'));
+            const named = renderResearch({
+                research: { status: 'Verified', era: { label: 'colonial era–present', ranges: [] } }
+            });
+            assert.ok(named.includes('colonial era–present'));
+            const staleEra = renderResearch({ research: { status: 'Verified', era: '1990s–' } });
+            assert.ok(!staleEra.includes('1990s'));
+            assert.ok(!chips.includes('lagos'));
+            assert.ok(!chips.includes('nigeria'));
+            assert.ok(!chips.includes('Lagos, Nigeria'));
+            const missing = renderResearch({});
+            assert.ok(missing.includes('No research record.'));
+            """);
+    }
+
     // ------------------------------------------------------------------ row count
 
     /// <summary>
@@ -276,6 +360,40 @@ public sealed class GenreVocabularyPagingSurfaceTest
     /// originally hundreds of rows down is still found by searching for it. Paging first
     /// would make search silently miss it.
     /// </summary>
+    /// <summary>
+    /// Kapuka is an African style. Selecting Africa and searching its name or its
+    /// alias must find it even though it is not a global term and not on page 1.
+    /// </summary>
+    [Fact]
+    public void SearchingKapukaUnderAfricaFindsIt()
+    {
+        Run("""
+            state.region = 'africa';
+            state.taxonomy = [
+                ...Array.from({ length: 250 }, (_, i) => makeTerm(i, { regions: ['africa'], kind: 'style' })),
+                makeTerm(900, {
+                    id: 'kapuka',
+                    name: 'Kapuka',
+                    displayName: 'Kapuka',
+                    kind: 'style',
+                    regions: ['africa'],
+                    aliases: ['Boomba', 'Kapuka rap']
+                })
+            ];
+            byId('pgTaxonomySearch').value = 'Kapuka';
+            byId('pgTaxonomySearch').handlers.input();
+            assert.equal(rowCount(), 1);
+            assert.ok(byId('pgTaxonomyBody').innerHTML.includes('kapuka'));
+            byId('pgTaxonomySearch').value = 'Boomba';
+            byId('pgTaxonomySearch').handlers.input();
+            assert.equal(rowCount(), 1);
+            state.region = 'global';
+            byId('pgTaxonomySearch').value = 'Kapuka';
+            byId('pgTaxonomySearch').handlers.input();
+            assert.ok(byId('pgTaxonomyBody').innerHTML.includes('No matching taxonomy terms.'));
+            """);
+    }
+
     [Fact]
     public void SearchFindsATermThatWasOnAnotherPage()
     {

@@ -548,8 +548,8 @@ public sealed class GenreTaxonomyRegionTest : IDisposable
 
         var resolution = PersonalGenreResolver.Resolve(
             [new GenreTagObservation("Rap", PersonalGenreTaxonKind.Genre)]);
-        Assert.Equal("rap", resolution.PrimaryGenre);
-        Assert.Equal(["rap"], resolution.Genres);
+        Assert.Equal("Rap", resolution.PrimaryGenre);
+        Assert.Equal(["Rap"], resolution.Genres);
     }
 
     // =================================================================

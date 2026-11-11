@@ -23,12 +23,24 @@ namespace DeezSpoTag.Tests;
 public sealed class GenreRegionUiGuardrailTest
 {
     [Fact]
-    public void GenreIntelligence_StillHasExactlySevenTopLevelCards()
+    public void GenreIntelligence_StillHasExactlySixTopLevelCards()
     {
         var root = LoadGenreMarkup();
 
         var cards = root.Elements("article").ToList();
-        Assert.Equal(7, cards.Count);
+        Assert.Equal(6, cards.Count);
+        var vocabulary = cards.Single(card => card.Descendants().Any(node => node.Attribute("id")?.Value == "pgTaxonomyBody"));
+        Assert.Contains(vocabulary.Descendants(), node => node.Attribute("id")?.Value == "pgExportButton");
+        var tools = vocabulary.Descendants().Single(node => node.Attribute("id")?.Value == "pgVocabularyEditTools");
+        Assert.Equal("hidden", tools.Attribute("hidden")?.Value);
+
+        // The Edit toggle lives inside the collapsible custom-taxon panel, beside
+        // that form's own action buttons, rather than on the card header.
+        var details = vocabulary.Descendants().Single(node => node.Attribute("id")?.Value == "pgTaxonDetails");
+        var editButton = vocabulary.Descendants().Single(node => node.Attribute("id")?.Value == "pgVocabularyEdit");
+        Assert.Contains(editButton, details.Descendants());
+        Assert.Contains(details.Descendants(), node => node.Attribute("id")?.Value == "pgTaxonReset");
+        Assert.Equal("hidden", details.Attribute("open")?.Value ?? "hidden");
 
         // The structure the existing AutoTag-card idiom requires is unchanged.
         Assert.All(cards, card =>
@@ -679,8 +691,8 @@ public sealed class GenreRegionUiGuardrailTest
         Assert.DoesNotContain("samba", rendered, StringComparison.Ordinal);
 
         // One canonical entry, listed once.
-        Assert.Equal(1, CountOccurrences(rendered, "hip-hop"));
-        Assert.Equal(1, CountOccurrences(rendered, "k-pop"));
+        Assert.Equal(1, CountOccurrences(rendered, "data-pg-taxon=\"hip-hop\""));
+        Assert.Equal(1, CountOccurrences(rendered, "data-pg-taxon=\"k-pop\""));
     }
 
     [Fact]
@@ -694,7 +706,7 @@ public sealed class GenreRegionUiGuardrailTest
 
         foreach (var id in new[] { "hip-hop", "k-pop", "samba" })
         {
-            Assert.Equal(1, CountOccurrences(rendered, id));
+            Assert.Equal(1, CountOccurrences(rendered, "data-pg-taxon=\"" + id + "\""));
         }
     }
 

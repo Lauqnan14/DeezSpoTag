@@ -209,6 +209,25 @@ public sealed record PersonalGenreTrackScope(
 public sealed record PersonalGenreAliasRule(string Alias, string Canonical);
 
 /// <summary>
+/// A user's edit of one existing term. The id stays. A null list means that
+/// part was not edited. <see cref="MergedInto"/> hides this term and keeps its
+/// name as an alias of the target.
+/// </summary>
+public sealed record PersonalGenreTermEdit(
+    string TaxonId,
+    string? OriginalName = null,
+    IReadOnlyList<string>? Aliases = null,
+    IReadOnlyList<string>? ParentIds = null,
+    string? MergedInto = null);
+
+/// <summary>
+/// One shared spelling. <see cref="Key"/> is the lookup key of the word, such as
+/// hiphop. <see cref="Spelling"/> is what should be written wherever that word
+/// appears. It does not merge the terms that contain the word.
+/// </summary>
+public sealed record PersonalGenreSpellingConvention(string Key, string Spelling);
+
+/// <summary>
 /// Shared Genre Intelligence configuration.
 ///
 /// The three normalization fields are owned here rather than in the general
@@ -226,7 +245,9 @@ public sealed record PersonalGenreSettings(
     bool IncludeParentGenres = false,
     bool NormalizeGenreTags = false,
     IReadOnlyList<PersonalGenreAliasRule>? GenreTagAliasRules = null,
-    IReadOnlyList<string>? GenreTagBlockList = null)
+    IReadOnlyList<string>? GenreTagBlockList = null,
+    IReadOnlyList<PersonalGenreTermEdit>? TermEdits = null,
+    IReadOnlyList<PersonalGenreSpellingConvention>? SpellingConventions = null)
 {
     /// <summary>
     /// The effective alias rules, falling back to the shipped defaults when a user

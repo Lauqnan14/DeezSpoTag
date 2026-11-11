@@ -77,15 +77,17 @@ DeezSpoTag automates music workflows end-to-end:
 
 ---
 
-## Public Download APIs and SpotiFLAC Mobile
+## Public Download APIs and Mornye
 
-DeezSpoTag provides access to three public download APIs made available through [SpotiFLAC Mobile](https://github.com/zarzet/SpotiFLAC-Mobile). These APIs are available from the login tabs for:
+DeezSpoTag provides access to three public download APIs originally made available through SpotiFLAC Mobile, now [Mornye](https://github.com/mornyeapp/Mornye). These APIs are available from the login tabs for:
 
 - Amazon Music
 - Qobuz
 - Tidal
 
-The public APIs may occasionally require manual verification before downloads can continue. Please consider supporting SpotiFLAC Mobile and its contributors to help keep projects and services like these freely available to the public.
+The public APIs may occasionally require manual verification before downloads can continue. Please consider supporting Mornye and its contributors to help keep projects and services like these freely available to the public.
+
+The original SpotiFLAC GitHub repositories have been removed. Historical acknowledgements below retain attribution for the work that informed DeezSpoTag; the current mobile project is Mornye.
 
 ## Login Requirements
 

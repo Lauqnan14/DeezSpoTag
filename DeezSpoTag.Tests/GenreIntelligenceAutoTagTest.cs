@@ -164,7 +164,7 @@ public sealed class GenreIntelligenceAutoTagTest
                 .Any(value => value.StartsWith("pg-", StringComparison.Ordinal) && value != "pg-muted"));
 
         var cards = root.Elements("article").ToList();
-        Assert.Equal(7, cards.Count);
+        Assert.Equal(6, cards.Count);
         Assert.All(cards, card =>
         {
             Assert.True(HasClass(card, "card"));
@@ -229,9 +229,9 @@ public sealed class GenreIntelligenceAutoTagTest
 
         // Present in the Genre Intelligence tab.
         Assert.Contains("id=\"pgNormalizeGenreTags\"", genreTab);
-        Assert.Contains("id=\"pgAliasRulesBody\"", genreTab);
-        Assert.Contains("id=\"pgAliasRuleAdd\"", genreTab);
         Assert.Contains("id=\"pgGenreBlockList\"", genreTab);
+        Assert.Contains("id=\"pgVocabularyEdit\"", genreTab);
+        Assert.DoesNotContain("id=\"pgAliasRulesBody\"", genreTab);
         Assert.Contains("id=\"pgSaveNormalization\"", genreTab);
         Assert.Contains("Genre Normalization", genreTab);
 
@@ -274,6 +274,9 @@ public sealed class GenreIntelligenceAutoTagTest
                 rules: [{id:2,matchValue:'Rule',targetTaxonId:'custom',priority:1000,enabled:true}]
             };
             const context = {console,Headers,
+                // The sandbox simulates a browser, and the page defers the taxon
+                // select population until after the first paint via setTimeout.
+                setTimeout,
                 DeezSpoTag:{ui:{confirm:async(message, options)=>{confirmations.push({message,options}); return false;}}},
                 document:{getElementById:get,querySelectorAll:()=>[],addEventListener:(_,fn)=>{start=fn;}},
                 fetch:async url=>({ok:true,status:200,text:async()=>JSON.stringify(fixtures[url.split('/').pop()])})};

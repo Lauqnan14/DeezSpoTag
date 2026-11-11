@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -58,14 +59,29 @@ public sealed class GenreNormalizationMigrationTest : IDisposable
         IEnumerable<GenreTagAliasRule>? aliases = null,
         IEnumerable<string>? blocked = null)
     {
-#pragma warning disable CS0618 // Constructing the deprecated shape is the point of this test.
-        return new DeezSpoTagSettings
+        // Exercise the actual legacy JSON shape, rather than a removed runtime settings API.
+        return JsonSerializer.Deserialize<DeezSpoTagSettings>(JsonSerializer.Serialize(new
         {
-            NormalizeGenreTags = enabled,
-            GenreTagAliasRules = (aliases ?? new[] { new GenreTagAliasRule { Alias = "Afro-Pop", Canonical = "Afropop" } }).ToList(),
-            GenreTagBlockList = (blocked ?? new[] { "other", "others", "Worldwide" }).ToList()
-        };
-#pragma warning restore CS0618
+            normalizeGenreTags = enabled,
+            genreTagAliasRules = (aliases ?? new[] { new GenreTagAliasRule { Alias = "Afro-Pop", Canonical = "Afropop" } }).ToList(),
+            genreTagBlockList = (blocked ?? new[] { "other", "others", "Worldwide" }).ToList()
+        }))!;
+    }
+
+    [Fact]
+    public void LegacyPreferencesRoundTripThroughTheCompatibilityPayload()
+    {
+        var settings = LegacySettings(enabled: true,
+            aliases: [new GenreTagAliasRule { Alias = "Custom", Canonical = "Canonical" }],
+            blocked: ["blocked"]);
+        var json = JsonSerializer.Serialize(settings);
+        using var document = JsonDocument.Parse(json);
+        Assert.True(document.RootElement.GetProperty("normalizeGenreTags").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("LegacyGenreNormalization", out _));
+        var roundTrip = JsonSerializer.Deserialize<DeezSpoTagSettings>(json)!;
+        Assert.True(roundTrip.LegacyGenreNormalization.NormalizeGenreTags);
+        Assert.Equal("Canonical", Assert.Single(roundTrip.LegacyGenreNormalization.GenreTagAliasRules).Canonical);
+        Assert.Equal(new[] { "blocked" }, roundTrip.LegacyGenreNormalization.GenreTagBlockList);
     }
 
     [Theory]

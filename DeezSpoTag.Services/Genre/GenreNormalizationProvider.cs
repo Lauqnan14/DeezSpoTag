@@ -126,23 +126,21 @@ public sealed class GenreNormalizationProvider
         }
 
         var current = await _store.GetSettingsAsync(cancellationToken);
-#pragma warning disable CS0618 // The one and only runtime read of the deprecated values.
         var migrated = current with
         {
-            NormalizeGenreTags = legacy.NormalizeGenreTags,
+            NormalizeGenreTags = legacy.LegacyGenreNormalization.NormalizeGenreTags,
             // The user's own rules are kept and the shipped defaults are folded
             // back in, which is what the settings normalizer used to do on save.
             GenreTagAliasRules = GenreNormalizationSnapshot.MergeDefaultAliasRules(
-                legacy.GenreTagAliasRules?
+                legacy.LegacyGenreNormalization.GenreTagAliasRules?
                     .Where(rule => !string.IsNullOrWhiteSpace(rule.Alias) && !string.IsNullOrWhiteSpace(rule.Canonical))
                     .Select(rule => new PersonalGenreAliasRule(rule.Alias.Trim(), rule.Canonical.Trim()))
                     .ToArray(),
                 PersonalGenreSettings.DefaultAliasRules),
             GenreTagBlockList = GenreTagAliasNormalizer
-                .NormalizeBlockedValues(legacy.GenreTagBlockList ?? [])
+                .NormalizeBlockedValues(legacy.LegacyGenreNormalization.GenreTagBlockList ?? [])
                 .ToArray()
         };
-#pragma warning restore CS0618
 
         await _store.SaveSettingsAsync(migrated, cancellationToken);
         await _store.MarkMigrationAsync(

@@ -205,8 +205,9 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         // MaxGenres is a retired stored value. Cleanup keeps every recognized genre.
         AssertSameResolution(autotag, preview);
         Assert.Equal(
-            new[] { "Hip-Hop", "Bongo Flava", "Amapiano", "Reggae", "Gospel" },
+            new[] { "Hip-Hop", "Bongo Flava", "Reggae", "Gospel" },
             autotag.Genres.ToArray());
+        Assert.Contains("Amapiano", autotag.Styles);
     }
 
     [Fact]
@@ -231,14 +232,19 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         // The profile keeps preservation on and parent derivation off. MaxGenres
         // no longer drops Bongo Flava, Amapiano, Reggae, or Gospel.
         Assert.Equal(
-            new[] { "Bongo Flava", "Amapiano", "Reggae", "Gospel" },
+            new[] { "Bongo Flava", "Reggae", "Gospel" },
             autotag.Resolution.Genres.ToArray());
+        Assert.Contains("Amapiano", autotag.Resolution.Styles);
         Assert.Contains(autotag.Resolution.Preserved, item => item.Value == "My Personal Genre");
         Assert.DoesNotContain(autotag.Resolution.Classifications, item => item.Status == "derived_parent");
         Assert.NotNull(preview);
-        // Saved preview settings still turn preservation off and derive Hip-Hop.
+        // Saved preview settings still turn preservation off and derive parents.
+        // Hip-Hop comes from Bongo Flava, and House is now derived from Amapiano
+        // because the v7 research verified Amapiano's house parentage. The spelling
+        // follows the saved default alias rule (Hip-Hop -> HipHop), exactly like the
+        // write.
         Assert.Equal(
-            new[] { "Bongo Flava", "Amapiano", "Reggae", "Gospel", "Hip-Hop" },
+            new[] { "Bongo Flava", "Reggae", "Gospel", "HipHop", "House" },
             preview.AfterGenres.ToArray());
         Assert.DoesNotContain("My Personal Genre", preview.AfterGenres);
     }
@@ -252,7 +258,8 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         var (autotag, preview) = await ResolveBothWaysAsync();
 
         AssertSameResolution(autotag, preview);
-        Assert.Equal(new[] { "Amapiano" }, autotag.Genres.ToArray());
+        Assert.Equal(new[] { "Bongo Flava" }, autotag.Genres.ToArray());
+        Assert.Contains("Amapiano", autotag.Styles);
     }
 
     [Fact]
@@ -315,8 +322,9 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         var (_, preview) = await ResolveBothWaysAsync();
 
         // The file mentions no place, so there is nothing to corroborate and no term
-        // appears that the file did not already hold.
-        Assert.Equal(new[] { "Hip-Hop" }, preview.AfterGenres.ToArray());
+        // appears that the file did not already hold. The spelling follows the saved
+        // default alias rule (Hip-Hop -> HipHop), exactly like the write.
+        Assert.Equal(new[] { "HipHop" }, preview.AfterGenres.ToArray());
         Assert.Empty(preview.AfterStyles);
         Assert.Empty(preview.Moved);
     }
@@ -409,11 +417,20 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         return (resolved.Result.Resolution, preview.Removed.ToArray());
     }
 
-    private static void AssertSameResolution(PersonalGenreResolution left, GenreCleanupPreview preview)
+    private PersonalGenreSettings? _savedSettings;
+
+    private void AssertSameResolution(PersonalGenreResolution left, GenreCleanupPreview preview)
     {
-        // The preview carries the write plan, which is derived from the resolution, so
-        // comparing them is what proves the two paths produced the same decision state.
-        var plan = DeezSpoTag.Web.Services.AutoTag.GenreSemanticTagIo.PlanFields(left);
+        // The preview carries the write plan, which is derived from the resolution,
+        // so comparing them is what proves the two paths produced the same decision
+        // state. The plan is built with the same normalization snapshot and saved
+        // spelling conventions the writer passes, because those change what is
+        // written even when the classification itself is identical.
+        var settings = _savedSettings ?? new PersonalGenreSettings();
+        var plan = DeezSpoTag.Web.Services.AutoTag.GenreSemanticTagIo.PlanFields(
+            left,
+            normalization: GenreNormalizationSnapshot.Create(settings),
+            spellingConventions: settings.SpellingConventions);
         Assert.Equal(
             plan.TryGetValue(PersonalGenreTaxonKind.Genre, out var genres) ? genres.ToArray() : [],
             preview.AfterGenres.ToArray());
@@ -453,15 +470,19 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         _fixture.GenreIntelligence.PreserveUnmappedTags = state.PreserveUnmappedTags;
         _fixture.GenreIntelligence.IncludeParentGenres = state.IncludeParentGenres;
 
-        await _fixture.Store.SaveSettingsAsync(new PersonalGenreSettings(
+        var stored = new PersonalGenreSettings(
             Enabled: true,
             MaxGenres: state.MaxGenres,
             PreserveUnmappedTags: state.PreserveUnmappedTags,
             IncludeParentGenres: state.IncludeParentGenres,
             NormalizeGenreTags: true,
             GenreTagAliasRules: state.AliasRules,
-            GenreTagBlockList: state.BlockList));
-
+            GenreTagBlockList: state.BlockList);
+        await _fixture.Store.SaveSettingsAsync(stored);
+        // The helper that compares the write plan with the preview needs the same
+        // formatting inputs the writer passes, which are all derived from these
+        // saved settings.
+        _savedSettings = stored;
         if (state.StoredLocation is { } location)
         {
             await _fixture.Overrides.SetAsync(1, location.Item2, location.Item1, "US");

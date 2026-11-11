@@ -1533,7 +1533,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_observation_history (
 -- origin_fields_json records which file fields a classification was seen in,
 -- which is what makes a field correction auditable. confidence/sources_json/
 -- evidence_state are provider-era columns: they are left in place so existing
--- history is not destroyed, and nothing writes them any more.
+-- history is not destroyed, and nothing writes them any more. An install that
+-- still has them NOT NULL is relaxed below; this statement does not add them.
 CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
     resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
     taxon_id TEXT NOT NULL,
@@ -1599,6 +1600,10 @@ CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
         await EnsureColumnAsync(connection, "personal_genre_track", "post_autotag_json", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, "personal_genre_resolution_history", "preserved_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(connection, "personal_genre_classification_history", "origin_fields_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        // confidence/sources_json/evidence_state are left in place, but a provider-era
+        // NOT NULL flag rejects the insert that no longer writes them. Relax the flag.
+        // Do not fill confidence with a placeholder.
+        await SqliteSchemaUtils.RelaxObsoleteClassificationHistoryConstraintsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "personal_genre_observation_history", "origin", "TEXT NOT NULL DEFAULT 'post_platform'", cancellationToken);
 
         // Genre normalization moved here from the general application settings.

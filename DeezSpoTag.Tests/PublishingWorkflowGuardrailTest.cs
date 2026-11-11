@@ -295,6 +295,42 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.TaggingProfileCanonicalizerTest.", fixture.Calls[1]);
     }
 
+    /// <summary>
+    /// The Genre Intelligence candidate files have no test class named after them,
+    /// so each needs an explicit affected-test mapping in scripts/guardrails.sh.
+    /// This proves the mapping still resolves to real test selectors.
+    /// </summary>
+    [Theory]
+    [InlineData("DeezSpoTag.Services/DeezSpoTag.Services.csproj")]
+    [InlineData("DeezSpoTag.Services/Utils/SqliteSchemaUtils.cs")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/PersonalGenreApiController.cs")]
+    [InlineData("DeezSpoTag.Web/Services/GenreIntelligenceResolutionContext.cs")]
+    [InlineData("DeezSpoTag.Web/Services/PersonalGenreService.cs")]
+    [InlineData("scripts/genre/build_genre_taxonomy.py")]
+    [InlineData("scripts/genre/merge_regional_taxonomy.py")]
+    public async Task GenreIntelligenceCandidateFiles_SelectTheirMappedRegressions(string sourcePath)
+    {
+        var expectedTests = sourcePath switch
+        {
+            "DeezSpoTag.Services/DeezSpoTag.Services.csproj" => new[] { "GenreResearchGeoTest", "GenreTaxonomyCatalogTest" },
+            "DeezSpoTag.Services/Utils/SqliteSchemaUtils.cs" => new[] { "PersonalGenreClassificationHistorySchemaTest", "GenreNormalizationMigrationTest" },
+            "DeezSpoTag.Web/Controllers/Api/PersonalGenreApiController.cs" => new[] { "GenreVocabularySurfaceTest", "GenreVocabularyEditTest", "GenreTaxonomyRegionTest", "GenreNormalizationMigrationTest", "StyleConstructionPreviewTest" },
+            "DeezSpoTag.Web/Services/PersonalGenreService.cs" => new[] { "GenreVocabularySurfaceTest", "GenreVocabularyEditTest", "GenreTaxonomyRegionTest", "GenreNormalizationMigrationTest", "StyleConstructionPreviewTest" },
+            "DeezSpoTag.Web/Services/GenreIntelligenceResolutionContext.cs" => new[] { "GenreIntelligenceResolutionParityTest" },
+            _ => new[] { "GenreEraTest" },
+        };
+
+        using var fixture = await GuardrailFixture.CreateAsync();
+        await fixture.CommitFileAsync(sourcePath, "// genre intelligence candidate changed");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        foreach (var expected in expectedTests)
+        {
+            Assert.Contains($"FullyQualifiedName~DeezSpoTag.Tests.{expected}.", fixture.Calls[1]);
+        }
+    }
+
     [Fact]
     public async Task UnmappedSourceChange_BlocksWithoutRunningUnrelatedTests()
     {

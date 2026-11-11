@@ -22,7 +22,7 @@ public sealed class PersonalGenreApiController : ControllerBase
         => DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.CapitalizeGenre(name);
 
     [HttpGet("taxonomy")]
-    public async Task<IActionResult> GetTaxonomy(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetTaxonomy(CancellationToken cancellationToken, bool includeResearch = false)
     {
         var taxa = await _service.GetTaxonomyAsync(cancellationToken);
 
@@ -50,10 +50,13 @@ public sealed class PersonalGenreApiController : ControllerBase
                 researched.Version,
                 researched.Genres,
                 researched.Styles,
+                researched.ParentEdges,
+                researched.MultiParentTerms,
                 AliasCount = researched.Aliases.Count,
                 ExclusionCount = researched.ExclusionReasons.Count,
                 AmbiguityCount = researched.AmbiguityReasons.Count,
-                SourceSha256 = researched.SourceSha256
+                SourceSha256 = researched.SourceSha256,
+                Sources = researched.Sources
             },
             // Explains where the values this stage interprets actually come from.
             input = "audio-file-tags",
@@ -88,9 +91,44 @@ public sealed class PersonalGenreApiController : ControllerBase
                     ? (coreIds.Contains(item.Id) ? "core" : "researched")
                     : "custom",
                 editable = customIds.Contains(item.Id),
-                builtIn = !customIds.Contains(item.Id)
+                builtIn = !customIds.Contains(item.Id),
+                research = includeResearch ? TryProjectResearch(item.Id) : null
             })
         });
+    }
+
+    private static object? TryProjectResearch(string taxonId)
+    {
+        if (!ResearchedGenreCatalog.Current.TryGetById(taxonId, out var term) || term.Research is null)
+        {
+            return null;
+        }
+
+        var research = term.Research;
+        return new
+        {
+            research.Status,
+            research.Label,
+            Era = research.Era is null
+                ? null
+                : new
+                {
+                    research.Era.Label,
+                    Ranges = research.Era.Ranges.Select(range => new { range.Start, range.End })
+                },
+            research.RegionTokens,
+            Places = research.Places.Select(slug => new
+            {
+                slug,
+                name = GenreResearchGeoCatalog.Current.PlaceName(slug)
+            }),
+            Countries = research.MemberCountries.Select(slug => new
+            {
+                slug,
+                name = GenreResearchGeoCatalog.Current.CountryName(slug)
+            }),
+            research.ResearchedKind
+        };
     }
 
     [HttpGet("taxonomy/custom")]
@@ -149,7 +187,9 @@ public sealed class PersonalGenreApiController : ControllerBase
             genreTagAliasRules = settings.GenreTagAliasRules?
                 .Select(rule => new { rule.Alias, rule.Canonical })
                 .ToArray() ?? [],
-            genreTagBlockList = settings.GenreTagBlockList ?? []
+            genreTagBlockList = settings.GenreTagBlockList ?? [],
+            termEdits = settings.TermEdits ?? [],
+            spellingConventions = settings.SpellingConventions ?? []
         });
     }
 
@@ -171,7 +211,9 @@ public sealed class PersonalGenreApiController : ControllerBase
             request.IncludeParentGenres ?? current.IncludeParentGenres,
             request.NormalizeGenreTags ?? current.NormalizeGenreTags,
             request.GenreTagAliasRules?.ToArray() ?? current.GenreTagAliasRules,
-            request.GenreTagBlockList?.ToArray() ?? current.GenreTagBlockList);
+            request.GenreTagBlockList?.ToArray() ?? current.GenreTagBlockList,
+            request.TermEdits?.ToArray() ?? current.TermEdits,
+            request.SpellingConventions?.ToArray() ?? current.SpellingConventions);
 
         await _service.SaveSettingsAsync(merged, cancellationToken);
         return await GetSettings(cancellationToken);
@@ -433,4 +475,8 @@ public sealed class PersonalGenreSettingsRequest
     public List<PersonalGenreAliasRule>? GenreTagAliasRules { get; set; }
 
     public List<string>? GenreTagBlockList { get; set; }
+
+    public List<PersonalGenreTermEdit>? TermEdits { get; set; }
+
+    public List<PersonalGenreSpellingConvention>? SpellingConventions { get; set; }
 }

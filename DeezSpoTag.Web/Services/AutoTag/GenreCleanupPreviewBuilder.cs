@@ -23,7 +23,12 @@ internal static class GenreCleanupPreviewBuilder
     public static GenreCleanupPreview Build(
         PersonalGenreResolution resolution,
         IReadOnlyList<GenreTagObservation> beforeObservations,
-        IReadOnlyList<RemovedGenreTagValue> removedByNormalization)
+        IReadOnlyList<RemovedGenreTagValue> removedByNormalization,
+        bool capitalizeGenres = true,
+        string? canonicalStyleField = null,
+        GenreNormalizationSnapshot? normalization = null,
+        PersonalGenreCatalog? catalog = null,
+        IReadOnlyList<PersonalGenreSpellingConvention>? spellingConventions = null)
     {
         var beforeGenres = ValuesOf(beforeObservations, PersonalGenreTaxonKind.Genre);
         var beforeStyles = ValuesOf(beforeObservations, PersonalGenreTaxonKind.Style);
@@ -55,7 +60,8 @@ internal static class GenreCleanupPreviewBuilder
 
         // The after-lists are formatted exactly as the writer will format them, so
         // what the preview shows is what would be written.
-        var plan = GenreSemanticTagIo.PlanFields(resolution);
+        var plan = GenreSemanticTagIo.PlanFields(
+            resolution, capitalizeGenres, canonicalStyleField, normalization, catalog, spellingConventions);
         var afterGenres = PlanOrEmpty(plan, PersonalGenreTaxonKind.Genre);
         var afterStyles = PlanOrEmpty(plan, PersonalGenreTaxonKind.Style);
 

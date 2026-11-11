@@ -7,12 +7,46 @@ using System.Text.Json.Serialization;
 /// <summary>
 /// One researched canonical term from the runtime catalog.
 /// </summary>
+/// <summary>
+    /// Research notes for one term. Context prose and source URLs are not stored.
+    /// Location is not prose either: <see cref="Places"/> and
+    /// <see cref="MemberCountries"/> are slugs from
+    /// <see cref="GenreResearchGeoCatalog"/>, so a city cannot be mistaken for a
+    /// country and neither list is free text.
+    /// </summary>
+    public sealed record ResearchedGenreResearch(
+    string Status,
+    string? Label,
+    ResearchEra? Era,
+    IReadOnlyList<string> RegionTokens,
+    IReadOnlyList<string> Places,
+    IReadOnlyList<string> MemberCountries,
+    string? ResearchedKind);
+
+/// <summary>
+/// One researched era. <see cref="Label"/> is the research wording.
+/// <see cref="Ranges"/> are the years a file update may match. A label with no
+/// range, such as colonial or medieval, matches no year.
+/// </summary>
+public sealed record ResearchEra(string Label, IReadOnlyList<ResearchEraRange> Ranges)
+{
+    public bool Contains(int year) => Ranges.Any(range => range.Contains(year));
+}
+
+/// <summary>An inclusive year span. A null <see cref="End"/> is still open.</summary>
+public sealed record ResearchEraRange(int Start, int? End)
+{
+    public bool Contains(int year) => year >= Start && (End is null || year <= End.Value);
+}
+
 public sealed record ResearchedGenreTerm(
     string Id,
     string Name,
     string Kind,
     IReadOnlyList<string> Regions,
-    IReadOnlyList<string> Aliases);
+    IReadOnlyList<string> Aliases,
+    IReadOnlyList<string> ParentIds,
+    ResearchedGenreResearch? Research = null);
 
 /// <summary>
 /// A researched value that is known not to be a Genre or a Style.
@@ -76,21 +110,25 @@ public sealed class ResearchedGenreCatalog
     private ResearchedGenreCatalog(
         string version,
         string sourceSha256,
+        IReadOnlyList<ResearchedGenreSource> sources,
         IReadOnlyList<ResearchedGenreTerm> terms,
         IReadOnlyList<ResearchedGenreAlias> aliases,
         IReadOnlyDictionary<string, string> exclusions,
         IReadOnlyDictionary<string, string> ambiguities,
         IReadOnlyDictionary<string, string> reconciledSpellings,
-        IReadOnlyDictionary<string, string> resolvedExclusionCollisions)
+        IReadOnlyDictionary<string, string> resolvedExclusionCollisions,
+        ResearchedGenreImportDiff? importDiff)
     {
         Version = version;
         SourceSha256 = sourceSha256;
+        Sources = sources;
         Terms = terms;
         Aliases = aliases;
         ExclusionReasons = exclusions;
         AmbiguityReasons = ambiguities;
         ReconciledSpellings = reconciledSpellings;
         ResolvedExclusionCollisions = resolvedExclusionCollisions;
+        ImportDiff = importDiff;
 
         _byId = terms.ToDictionary(term => term.Id, StringComparer.OrdinalIgnoreCase);
         _byKey = new Dictionary<string, ResearchedGenreTerm>(StringComparer.Ordinal);
@@ -124,10 +162,14 @@ public sealed class ResearchedGenreCatalog
     public string Version { get; }
 
     /// <summary>
-    /// The SHA-256 of the research spreadsheet the catalog was generated from. It is
-    /// provenance, not a runtime check: the spreadsheet is not a runtime dependency.
+    /// The SHA-256 of the vocabulary spreadsheet the terms were generated from.
+    /// Parentage added by a later batch is not covered by this hash. See
+    /// <see cref="Sources"/> for every research artifact.
     /// </summary>
     public string SourceSha256 { get; }
+
+    /// <summary>Every research artifact that produced this catalog, in import order.</summary>
+    public IReadOnlyList<ResearchedGenreSource> Sources { get; }
 
     public IReadOnlyList<ResearchedGenreTerm> Terms { get; }
 
@@ -158,9 +200,19 @@ public sealed class ResearchedGenreCatalog
     /// </summary>
     public IReadOnlyDictionary<string, string> ResolvedExclusionCollisions { get; }
 
+    /// <summary>
+    /// The generator's diff against the previous researched catalog.
+    /// Null on a document that did not record one.
+    /// </summary>
+    public ResearchedGenreImportDiff? ImportDiff { get; }
+
     public int Genres => Terms.Count(term => term.Kind == nameof(PersonalGenreTaxonKind.Genre));
 
     public int Styles => Terms.Count(term => term.Kind == nameof(PersonalGenreTaxonKind.Style));
+
+    public int ParentEdges => Terms.Sum(term => term.ParentIds.Count);
+
+    public int MultiParentTerms => Terms.Count(term => term.ParentIds.Count > 1);
 
     /// <summary>The single loaded instance.</summary>
     public static ResearchedGenreCatalog Current => Instance.Value;
@@ -236,6 +288,14 @@ public sealed class ResearchedGenreCatalog
         return !string.IsNullOrWhiteSpace(id) && _byId.TryGetValue(id.Trim(), out term!);
     }
 
+    /// <summary>
+    /// Terms whose researched era contains <paramref name="year"/>. This is how a
+    /// file update selects the terms that apply to a file's year. It does not
+    /// invent a genre from the year.
+    /// </summary>
+    public IReadOnlyList<ResearchedGenreTerm> TermsActiveIn(int year)
+        => Terms.Where(term => term.Research?.Era?.Contains(year) == true).ToArray();
+
     /// <summary>The shared lookup key. Mirrors the generator's normalize().</summary>
     private static string Key(string? value)
         => string.IsNullOrWhiteSpace(value)
@@ -282,6 +342,7 @@ public sealed class ResearchedGenreCatalog
         }
 
         var terms = new List<ResearchedGenreTerm>(document.Terms.Count);
+        var rawParents = new List<IReadOnlyList<string>>(document.Terms.Count);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keys = new Dictionary<string, string>(StringComparer.Ordinal);
         var aliasKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -340,12 +401,17 @@ public sealed class ResearchedGenreCatalog
                 }
             }
 
+            // Missing parentIds is an older document. It means no researched
+            // hierarchy, not a corrupt file.
+            rawParents.Add(raw.ParentIds ?? []);
             terms.Add(new ResearchedGenreTerm(
                 raw.Id.Trim(),
                 raw.Name.Trim(),
                 kind,
                 regions,
-                raw.Aliases ?? []));
+                raw.Aliases ?? [],
+                [],
+                ReadResearch(raw.Id.Trim(), raw.Research)));
         }
 
         var idSet = terms.Select(term => term.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -505,15 +571,302 @@ public sealed class ResearchedGenreCatalog
             ambiguities[ambiguityKey] = entry.Reason ?? "Held: insufficient evidence to classify.";
         }
 
+        var byId = terms.ToDictionary(term => term.Id, StringComparer.OrdinalIgnoreCase);
+        var validated = new List<ResearchedGenreTerm>(terms.Count);
+        for (var index = 0; index < terms.Count; index++)
+        {
+            validated.Add(terms[index] with
+            {
+                ParentIds = NormalizeParents(terms[index], rawParents[index], byId, aliasKeys, exclusions, ambiguities)
+            });
+        }
+
+        EnsureAcyclic(validated);
+        EnsureCounts(document, validated, aliases, exclusions, ambiguities);
+
         return new ResearchedGenreCatalog(
             document.Version.Trim(),
             document.Source?.Sha256 ?? string.Empty,
-            terms,
+            ReadSources(document.Source),
+            validated,
             aliases,
             exclusions,
             ambiguities,
             document.ResolvedCanonicalCollisions ?? new Dictionary<string, string>(),
-            resolvedExclusions);
+            resolvedExclusions,
+            document.ImportDiff);
+    }
+
+    /// <summary>
+    /// Resolves parent references to canonical term ids.
+    /// </summary>
+    /// <remarks>
+    /// A parent is an id, never a display name, an alias, or an ambiguous label.
+    /// Duplicate ids are dropped in first-seen order. A missing id, a self-parent,
+    /// an alias, an exclusion, or an ambiguous label fails the catalog.
+    /// </remarks>
+    private static IReadOnlyList<string> NormalizeParents(
+        ResearchedGenreTerm term,
+        IReadOnlyList<string> rawParents,
+        IReadOnlyDictionary<string, ResearchedGenreTerm> byId,
+        IReadOnlySet<string> aliasKeys,
+        IReadOnlyDictionary<string, string> exclusions,
+        IReadOnlyDictionary<string, string> ambiguities)
+    {
+        var parents = new List<string>(rawParents.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in rawParents)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{term.Id}' has a blank parent id.");
+            }
+
+            var token = raw.Trim();
+            if (!byId.TryGetValue(token, out var parent))
+            {
+                var key = Key(token);
+                if (aliasKeys.Contains(key))
+                {
+                    throw new InvalidOperationException(
+                        $"Researched taxonomy is corrupt: term '{term.Id}' parents alias '{token}'. "
+                        + "Resolve the alias to its canonical id before writing parentIds.");
+                }
+
+                if (ambiguities.ContainsKey(key))
+                {
+                    throw new InvalidOperationException(
+                        $"Researched taxonomy is corrupt: term '{term.Id}' uses ambiguous label '{token}' as a parent id.");
+                }
+
+                if (exclusions.ContainsKey(key))
+                {
+                    throw new InvalidOperationException(
+                        $"Researched taxonomy is corrupt: term '{term.Id}' parents exclusion '{token}'.");
+                }
+
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{term.Id}' parents unknown id '{token}'.");
+            }
+
+            if (string.Equals(parent.Id, term.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{term.Id}' parents itself.");
+            }
+
+            if (parent.Kind is not (nameof(PersonalGenreTaxonKind.Genre) or nameof(PersonalGenreTaxonKind.Style)))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: parent '{parent.Id}' of '{term.Id}' is not a Genre or Style.");
+            }
+
+            var parentNameKey = Key(parent.Name);
+            if (exclusions.ContainsKey(parentNameKey) || exclusions.ContainsKey(Key(parent.Id)))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{term.Id}' parents exclusion '{parent.Id}'.");
+            }
+
+            if (!seen.Add(parent.Id))
+            {
+                continue;
+            }
+
+            parents.Add(parent.Id);
+        }
+
+        return parents;
+    }
+
+    /// <summary>
+    /// Rejects a parent cycle and names every id on it.
+    /// </summary>
+    private static void EnsureAcyclic(IReadOnlyList<ResearchedGenreTerm> terms)
+    {
+        var byId = terms.ToDictionary(term => term.Id, StringComparer.OrdinalIgnoreCase);
+        var state = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var stack = new List<string>();
+
+        foreach (var term in terms)
+        {
+            Visit(term.Id);
+        }
+
+        void Visit(string id)
+        {
+            if (state.TryGetValue(id, out var mark))
+            {
+                if (mark == 1)
+                {
+                    var start = stack.FindIndex(item => string.Equals(item, id, StringComparison.OrdinalIgnoreCase));
+                    var cycle = start < 0 ? stack.Append(id) : stack.Skip(start).Append(id);
+                    throw new InvalidOperationException(
+                        "Researched taxonomy is corrupt: parent cycle " + string.Join(" -> ", cycle) + ".");
+                }
+
+                return;
+            }
+
+            state[id] = 1;
+            stack.Add(id);
+            if (byId.TryGetValue(id, out var term))
+            {
+                foreach (var parentId in term.ParentIds)
+                {
+                    Visit(parentId);
+                }
+            }
+
+            stack.RemoveAt(stack.Count - 1);
+            state[id] = 2;
+        }
+    }
+
+    private static void EnsureCounts(
+        CatalogDocument document,
+        IReadOnlyList<ResearchedGenreTerm> terms,
+        IReadOnlyList<ResearchedGenreAlias> aliases,
+        IReadOnlyDictionary<string, string> exclusions,
+        IReadOnlyDictionary<string, string> ambiguities)
+    {
+        if (document.Counts is null)
+        {
+            return;
+        }
+
+        var counts = document.Counts;
+        var genres = terms.Count(term => term.Kind == nameof(PersonalGenreTaxonKind.Genre));
+        var styles = terms.Count(term => term.Kind == nameof(PersonalGenreTaxonKind.Style));
+        var parentEdges = terms.Sum(term => term.ParentIds.Count);
+        var multiParent = terms.Count(term => term.ParentIds.Count > 1);
+        RequireCount("genres", counts.Genres, genres);
+        RequireCount("styles", counts.Styles, styles);
+        RequireCount("terms", counts.Terms, terms.Count);
+        RequireCount("aliases", counts.Aliases, aliases.Count);
+        RequireCount("exclusions", counts.Exclusions, exclusions.Count);
+        RequireCount("ambiguous", counts.Ambiguous, ambiguities.Count);
+        RequireCount("parentEdges", counts.ParentEdges, parentEdges);
+        RequireCount("multiParentTerms", counts.MultiParentTerms, multiParent);
+    }
+
+    private static void RequireCount(string name, int? declared, int actual)
+    {
+        if (declared is null || declared.Value == actual)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Researched taxonomy is corrupt: counts.{name} is {declared.Value} but the document contains {actual}.");
+    }
+
+    private static ResearchedGenreResearch? ReadResearch(string termId, CatalogResearch? research)
+    {
+        if (research is null || string.IsNullOrWhiteSpace(research.Status))
+        {
+            return null;
+        }
+
+        var geo = GenreResearchGeoCatalog.Current;
+        return new ResearchedGenreResearch(
+            research.Status.Trim(),
+            BlankToNull(research.Label),
+            ReadEra(termId, research.Era),
+            research.RegionTokens ?? [],
+            ReadGeoSlugs(termId, "place", research.Places, geo.IsPlace),
+            ReadGeoSlugs(termId, "country", research.MemberCountries, geo.IsCountry),
+            BlankToNull(research.ResearchedKind));
+    }
+
+    private static ResearchEra? ReadEra(string termId, CatalogEra? era)
+    {
+        if (era is null || string.IsNullOrWhiteSpace(era.Label) && era.Ranges is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var ranges = new List<ResearchEraRange>();
+        foreach (var range in era.Ranges ?? [])
+        {
+            if (range is null)
+            {
+                throw new InvalidOperationException($"Researched taxonomy is corrupt: term '{termId}' has an empty era range.");
+            }
+
+            if (range.Start is < 1 or > 2100)
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{termId}' has era start '{range.Start}'.");
+            }
+
+            if (range.End is < 1 or > 2100 || range.End < range.Start)
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{termId}' has era end '{range.End}'.");
+            }
+
+            ranges.Add(new ResearchEraRange(range.Start, range.End));
+        }
+
+        return new ResearchEra(era.Label?.Trim() ?? string.Empty, ranges);
+    }
+
+    private static IReadOnlyList<string> ReadGeoSlugs(
+        string termId,
+        string kind,
+        List<string>? values,
+        Func<string, bool> known)
+    {
+        var slugs = new List<string>();
+        foreach (var value in values ?? [])
+        {
+            var slug = value?.Trim() ?? string.Empty;
+            if (slug.Length == 0)
+            {
+                continue;
+            }
+
+            if (!known(slug))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: term '{termId}' cites unknown {kind} '{slug}'.");
+            }
+
+            if (!slugs.Contains(slug))
+            {
+                slugs.Add(slug);
+            }
+        }
+
+        return slugs;
+    }
+
+    private static string? BlankToNull(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static IReadOnlyList<ResearchedGenreSource> ReadSources(CatalogSource? source)
+    {
+        if (source?.Inputs is { Count: > 0 })
+        {
+            return source.Inputs
+                .Select(input => new ResearchedGenreSource(
+                    input.Role ?? string.Empty,
+                    input.File ?? string.Empty,
+                    input.Sha256 ?? string.Empty))
+                .ToArray();
+        }
+
+        if (string.IsNullOrWhiteSpace(source?.Sha256) && string.IsNullOrWhiteSpace(source?.File))
+        {
+            return [];
+        }
+
+        return
+        [
+            new ResearchedGenreSource("vocabulary", source?.File ?? string.Empty, source?.Sha256 ?? string.Empty)
+        ];
     }
 
     // ------------------------------------------------------------------ document shape
@@ -522,6 +875,8 @@ public sealed class ResearchedGenreCatalog
     {
         public string? Version { get; set; }
         public CatalogSource? Source { get; set; }
+        public CatalogCounts? Counts { get; set; }
+        public ResearchedGenreImportDiff? ImportDiff { get; set; }
         public List<CatalogTerm>? Terms { get; set; }
         public Dictionary<string, CatalogAlias>? Aliases { get; set; }
         public Dictionary<string, CatalogEntry>? Exclusions { get; set; }
@@ -539,7 +894,30 @@ public sealed class ResearchedGenreCatalog
 
     public sealed class CatalogSource
     {
+        public string? File { get; set; }
         public string? Sha256 { get; set; }
+        public string? Note { get; set; }
+        public List<CatalogSourceInput>? Inputs { get; set; }
+    }
+
+    public sealed class CatalogSourceInput
+    {
+        public string? Role { get; set; }
+        public string? File { get; set; }
+        public string? Sha256 { get; set; }
+    }
+
+    public sealed class CatalogCounts
+    {
+        public int? Genres { get; set; }
+        public int? Styles { get; set; }
+        public int? Terms { get; set; }
+        public int? Aliases { get; set; }
+        public int? Regions { get; set; }
+        public int? Exclusions { get; set; }
+        public int? Ambiguous { get; set; }
+        public int? ParentEdges { get; set; }
+        public int? MultiParentTerms { get; set; }
     }
 
     public sealed class CatalogTerm
@@ -549,6 +927,33 @@ public sealed class ResearchedGenreCatalog
         public string? Kind { get; set; }
         public List<string>? Regions { get; set; }
         public List<string>? Aliases { get; set; }
+        public List<string>? ParentIds { get; set; }
+        public CatalogResearch? Research { get; set; }
+    }
+
+    public sealed class CatalogResearch
+    {
+        public string? Status { get; set; }
+        public string? Label { get; set; }
+        public CatalogEra? Era { get; set; }
+        public List<string>? RegionTokens { get; set; }
+        public List<string>? Places { get; set; }
+        public List<string>? MemberCountries { get; set; }
+        public string? ResearchedKind { get; set; }
+    }
+
+    public sealed class CatalogEra
+    {
+        public string? Label { get; set; }
+
+        public List<CatalogEraRange>? Ranges { get; set; }
+    }
+
+    public sealed class CatalogEraRange
+    {
+        public int Start { get; set; }
+
+        public int? End { get; set; }
     }
 
     public sealed class CatalogAlias
@@ -564,4 +969,30 @@ public sealed class ResearchedGenreCatalog
         public string? Reason { get; set; }
         public string? Source { get; set; }
     }
+}
+
+/// <summary>One research artifact recorded in the catalog provenance manifest.</summary>
+public sealed record ResearchedGenreSource(string Role, string File, string Sha256);
+
+/// <summary>
+/// Generator summary of what an import changed relative to the previous catalog.
+/// Destructive counts are expected to be zero for an additive batch.
+/// </summary>
+public sealed record ResearchedGenreImportDiff
+{
+    public string? PreviousVersion { get; set; }
+    public int TermsAdded { get; set; }
+    public int TermsRemoved { get; set; }
+    public int TermsChanged { get; set; }
+    public int GenresAdded { get; set; }
+    public int StylesAdded { get; set; }
+    public int ParentEdgesAdded { get; set; }
+    public int ParentEdgesRemoved { get; set; }
+    public int MultiParentTermsAdded { get; set; }
+    public int AliasesAdded { get; set; }
+    public int AliasesRemoved { get; set; }
+    public int KindChanges { get; set; }
+    public int IdChanges { get; set; }
+    public int RegionChanges { get; set; }
+    public int ExcludedRows { get; set; }
 }

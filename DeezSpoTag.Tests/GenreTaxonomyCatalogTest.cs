@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Services.Genre;
@@ -35,9 +36,68 @@ public sealed class GenreTaxonomyCatalogTest
     [Fact]
     public void TheCatalogCarriesItsSourceProvenance()
     {
-        Assert.Equal("researched-master-2026-10-06-v1", Catalog.Version);
+        Assert.Equal("researched-master-2026-11-10-v8", Catalog.Version);
         Assert.Equal(64, Catalog.SourceSha256.Length);
         Assert.All(Catalog.SourceSha256, character => Assert.Contains(character, "0123456789abcdef"));
+        Assert.Equal(8, Catalog.Sources.Count);
+        Assert.Contains(Catalog.Sources, source => source.Role == "regional-vocabulary"
+            && source.File == "global-taxonomy-v123-latam-q.xlsx");
+        Assert.Contains(Catalog.Sources, source => source.Role == "regional-vocabulary"
+            && source.File == "global-taxonomy-v170-eu-final-audited.xlsx"
+            && source.Sha256 == "386f31cee3a3d7c199809597d68f2d319eb9e381dbd126942cb00cfc9d66d464");
+        Assert.Contains(Catalog.Sources, source => source.Role == "vocabulary" && source.Sha256 == Catalog.SourceSha256);
+        Assert.Contains(Catalog.Sources, source =>
+            source.Role == "global-parentage"
+            && source.File == "DeezSpoTag_Global_Style_Genre_Parentage_Research_v16.xlsx"
+            && source.Sha256.Length == 64);
+        Assert.Contains(Catalog.Sources, source =>
+            source.Role == "global-parentage"
+            && source.File == "DeezSpoTag_Global_Style_Genre_Parentage_Research_v17.xlsx"
+            && source.Sha256.Length == 64);
+        Assert.Contains(Catalog.Sources, source =>
+            source.Role == "global-parentage"
+            && source.File == "DeezSpoTag_Global_Style_Genre_Parentage_Research_v26_COMPLETE.xlsx"
+            && source.Sha256 == "6f217d411f0c24fb3e45125033450b55f29ba389deb20b341158c1ebe607e874");
+        Assert.Contains(Catalog.Sources, source =>
+            source.Role == "global-parentage"
+            && source.File == "DeezSpoTag_Africa_Style_Genre_Parentage_Research_v2_COMPLETE.xlsx"
+            && source.Sha256 == "0f8ea7f34b7ed65385ee2666355c7a5a0271e8ee45719270b61cc468a467d2f3");
+        Assert.Contains(Catalog.Sources, source =>
+            source.Role == "global-parentage"
+            && source.File == "DeezSpoTag_Latin_America_Caribbean_Style_Genre_Parentage_Research_v1_COMPLETE.xlsx"
+            && source.Sha256 == "48e4715c8b22b5f4a5101f0cffc73091d3ee835d94e29abd15e06e3f938f50ca");
+    }
+
+    /// <summary>
+    /// Per-term research deliberately carries no source URLs: provenance lives in
+    /// the catalog manifest only, and the vocabulary editor never cites links. A
+    /// pinned raw scan keeps a regenerated catalog from re-adding them.
+    /// </summary>
+    [Fact]
+    public void PerTermResearchCarriesNoSourceUrls()
+    {
+        // The record type itself has no Sources member for a term's research.
+        Assert.Null(typeof(ResearchedGenreResearch).GetProperty("Sources"));
+
+        // The shipped resource carries no per-term "sources" anywhere outside the
+        // provenance manifest, which is a single document-level "source" object.
+        var path = Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..",
+            "DeezSpoTag.Services", "Genre", "Data", "genre-intelligence-taxonomy.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        foreach (var term in document.RootElement.GetProperty("terms").EnumerateArray())
+        {
+            if (!term.TryGetProperty("research", out var research))
+            {
+                continue;
+            }
+
+            Assert.False(research.EnumerateObject().Any(property => property.Name == "sources"),
+                "Term research must not carry source URLs: " + term.GetProperty("id").GetString());
+            Assert.False(research.EnumerateObject().Any(property => property.Name == "location"),
+                "Term research must not carry location prose: " + term.GetProperty("id").GetString());
+        }
     }
 
     /// <summary>
@@ -49,9 +109,22 @@ public sealed class GenreTaxonomyCatalogTest
     [Fact]
     public void TheCatalogHoldsTheResearchedGenreAndStyleCounts()
     {
-        Assert.Equal(1351, Catalog.Genres);
-        Assert.Equal(2394, Catalog.Styles);
-        Assert.Equal(3745, Catalog.Terms.Count);
+        Assert.Equal(1460, Catalog.Genres);
+        Assert.Equal(2699, Catalog.Styles);
+        Assert.Equal(4159, Catalog.Terms.Count);
+        Assert.Equal(2644, Catalog.ParentEdges);
+        Assert.Equal(660, Catalog.MultiParentTerms);
+        var diff = Catalog.ImportDiff;
+        Assert.NotNull(diff);
+        Assert.Equal("researched-master-2026-11-07-v7", diff!.PreviousVersion);
+        Assert.Equal(41, diff.TermsAdded);
+        Assert.Equal(0, diff.TermsRemoved);
+        Assert.True(Catalog.Terms.Any(term => term.Regions.Contains("europe")));
+        Assert.True(Catalog.TryGetById("kapuka", out var kapuka));
+        Assert.Contains("Boomba", kapuka.Aliases);
+        Assert.Contains("nairobi", kapuka.Research?.Places!);
+        Assert.Contains("kenya", kapuka.Research?.MemberCountries!);
+        Assert.DoesNotContain("nairobi", kapuka.Research?.MemberCountries!);
     }
 
     /// <summary>
@@ -93,9 +166,9 @@ public sealed class GenreTaxonomyCatalogTest
     [InlineData("neo swing", "swing revival", true)]
     [InlineData("neo-swing", "swing revival", true)]
     [InlineData("desi hip-hop", "Desi Hip Hop", false)]
-    [InlineData("swedish hip-hop", "Swedish Hip Hop", false)]
+    [InlineData("swedish hip-hop", "Swedish Hip-Hop", false)]
     [InlineData("powernoise", "power noise", false)]
-    [InlineData("spanish rock", "rock en español", true)]
+    [InlineData("spanish rock", "Rock En Español", true)]
     [InlineData("modern melodic death metal", "melodic death metal", true)]
     public void AResearchedReconciliationResolvesToItsCanonicalTerm(
         string alias,
@@ -168,7 +241,7 @@ public sealed class GenreTaxonomyCatalogTest
     [Fact]
     public void ResearchedExclusionsAreRecognisedAsExclusionsRatherThanUnknown()
     {
-        Assert.Equal(65, Catalog.ExclusionReasons.Count);
+        Assert.Equal(62, Catalog.ExclusionReasons.Count);
         Assert.Equal("greek-pop", Catalog.ResolvedExclusionCollisions["greekpop"]);
         Assert.False(Catalog.IsExcluded("Greek Pop"));
         Assert.True(Catalog.TryMatch("Greek Pop", out var greekPop, out _));
@@ -435,5 +508,138 @@ public sealed class GenreTaxonomyCatalogTest
 
         Assert.True(catalog.IsExcluded("Scene Tag"));
         Assert.Equal("scene, not a musical classification", catalog.ExclusionReason("Scene Tag"));
+    }
+
+    [Fact]
+    public void ADocumentWithoutParentIdsLoadsWithAnEmptyParentList()
+    {
+        var catalog = ResearchedGenreCatalog.BuildFromJson(ValidJson);
+
+        Assert.All(catalog.Terms, term => Assert.Empty(term.ParentIds));
+    }
+
+    [Fact]
+    public void DuplicateParentIdsAreDeduplicatedWithoutChangingOrder()
+    {
+        var catalog = ResearchedGenreCatalog.BuildFromJson("""
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": [] },
+            { "id": "trap", "name": "Trap", "kind": "Style", "regions": [], "aliases": [],
+              "parentIds": ["rock", "ROCK", "rock"] }
+          ]
+        }
+        """);
+
+        var trap = catalog.Terms.Single(term => term.Id == "trap");
+        Assert.Equal(["rock"], trap.ParentIds);
+    }
+
+    [Fact]
+    public void ATermCannotParentItself()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson("""
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": [], "parentIds": ["rock"] }
+          ]
+        }
+        """));
+        Assert.Contains("parents itself", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rock", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AnUnknownParentIdIsRejected()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson("""
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": [] },
+            { "id": "trap", "name": "Trap", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["missing-parent"] }
+          ]
+        }
+        """));
+        Assert.Contains("unknown id", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("missing-parent", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AParentCycleNamesTheIdsOnIt()
+    {
+        const string json = """
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "a", "name": "A", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["b"] },
+            { "id": "b", "name": "B", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["c"] },
+            { "id": "c", "name": "C", "kind": "Genre", "regions": [], "aliases": [], "parentIds": ["a"] }
+          ]
+        }
+        """;
+
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson(json));
+        Assert.Contains("a -> b -> c -> a", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnAliasCannotBeWrittenAsAParent()
+    {
+        const string json = """
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": ["punk rock"] },
+            { "id": "trap", "name": "Trap", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["punk rock"] }
+          ],
+          "aliases": { "punkrock": { "value": "punk rock", "target": "rock" } }
+        }
+        """;
+
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson(json));
+        Assert.Contains("alias", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AnAmbiguousLabelCannotBeSelectedAsAParent()
+    {
+        const string json = """
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": [] },
+            { "id": "trap", "name": "Trap", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["Bollywood"] }
+          ],
+          "ambiguous": {
+            "bollywood": { "value": "Bollywood", "reason": "two identities" }
+          }
+        }
+        """;
+
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson(json));
+        Assert.Contains("ambiguous", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AnExclusionCannotBeAParent()
+    {
+        const string json = """
+        {
+          "version": "test-v1",
+          "terms": [
+            { "id": "rock", "name": "Rock", "kind": "Genre", "regions": [], "aliases": [] },
+            { "id": "trap", "name": "Trap", "kind": "Style", "regions": [], "aliases": [], "parentIds": ["Scene Tag"] }
+          ],
+          "exclusions": {
+            "scenetag": { "value": "Scene Tag", "reason": "not musical" }
+          }
+        }
+        """;
+
+        var error = Assert.Throws<InvalidOperationException>(() => ResearchedGenreCatalog.BuildFromJson(json));
+        Assert.Contains("exclusion", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

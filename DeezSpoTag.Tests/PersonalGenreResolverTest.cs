@@ -53,7 +53,8 @@ public sealed class PersonalGenreResolverTest
             new GenreTagObservation("Amapiano", PersonalGenreTaxonKind.Style)
         ]);
 
-        Assert.Equal("Amapiano", resolution.PrimaryGenre);
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Contains("Amapiano", resolution.Styles);
         Assert.Contains("Afrosounds", resolution.Contexts);
         Assert.DoesNotContain("Afrosounds", resolution.Genres);
     }
@@ -68,7 +69,8 @@ public sealed class PersonalGenreResolverTest
         ]);
 
         Assert.Contains("Afrobeat", resolution.Genres);
-        Assert.Contains("Afrobeats", resolution.Genres);
+        Assert.Contains("Afrobeats", resolution.Styles);
+        Assert.DoesNotContain("Afrobeats", resolution.Genres);
         Assert.NotEqual(
             PersonalGenreTaxonomy.Normalize("Afrobeat"),
             PersonalGenreTaxonomy.Normalize("Afrobeats"));
@@ -215,17 +217,24 @@ public sealed class PersonalGenreResolverTest
     }
 
     [Fact]
-    public void AResearchedStyleWithoutABuiltInParentGainsNoParent()
+    public void AResearchedStyleWithVerifiedParentsExpandsWhenRequested()
     {
-        // IncludeParentGenres walks built-in ParentIds only. The researched
-        // master has no parent relationships, so this is not a researched hierarchy.
-        var resolution = PersonalGenreResolver.Resolve(
-            [new GenreTagObservation("alternative pop/rock", PersonalGenreTaxonKind.Style)],
+        // alternative pop/rock used to prove the researched master had no parents.
+        // That limit is gone. dance-pop is a verified style under Pop. A style whose
+        // parentage was not approved still gains nothing.
+        var expanded = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("dance-pop", PersonalGenreTaxonKind.Style)],
             settings: new PersonalGenreSettings(IncludeParentGenres: true));
+        Assert.Equal(["dance-pop"], expanded.Styles);
+        Assert.Equal(["dance", "Pop"], expanded.Genres);
+        Assert.Contains(expanded.Classifications, item => item.TaxonId == "pop" && item.Status == "derived_parent");
 
-        Assert.Contains("alternative pop/rock", resolution.Styles);
-        Assert.Empty(resolution.Genres);
-        Assert.DoesNotContain(resolution.Classifications, item => item.Status == "derived_parent");
+        var withheld = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("Kapuka", PersonalGenreTaxonKind.Style)],
+            settings: new PersonalGenreSettings(IncludeParentGenres: false));
+        Assert.Contains("Kapuka", withheld.Styles);
+        Assert.Empty(withheld.Genres);
+        Assert.DoesNotContain(withheld.Classifications, item => item.Status == "derived_parent");
     }
 
     [Fact]
@@ -425,7 +434,7 @@ public sealed class PersonalGenreResolverTest
         Assert.Equal("Bongo Flava", resolution.PrimaryGenre);
         Assert.DoesNotContain("Hip-Hop", resolution.Genres);
         Assert.DoesNotContain("Afrobeats", resolution.Genres);
-        Assert.Equal("bongo-flava", Assert.Single(resolution.Classifications.Where(item => item.UserLocked)).TaxonId);
+        Assert.Equal("bongo-flava", Assert.Single(resolution.Classifications.Where(item => item.UserLocked && item.Kind == PersonalGenreTaxonKind.Genre)).TaxonId);
     }
 
     [Fact]
@@ -441,7 +450,7 @@ public sealed class PersonalGenreResolverTest
 
         Assert.Equal("Hip-Hop", resolution.PrimaryGenre);
         Assert.DoesNotContain("Afrobeats", resolution.Genres);
-        Assert.Equal("hip-hop", Assert.Single(resolution.Classifications.Where(item => item.UserLocked)).TaxonId);
+        Assert.Equal("hip-hop", Assert.Single(resolution.Classifications.Where(item => item.UserLocked && item.Kind == PersonalGenreTaxonKind.Genre)).TaxonId);
     }
 
     [Fact]
@@ -910,7 +919,7 @@ public sealed class PersonalGenreResolverTest
         Assert.Equal("Hip-Hop", resolution.PrimaryGenre);
         // Two Genres, not one: Rap is classified as its own Genre and the two are
         // never merged without the user saying so.
-        Assert.Equal(["Hip-Hop", "rap"], resolution.Genres);
+        Assert.Equal(["Hip-Hop", "Rap"], resolution.Genres);
         Assert.Empty(resolution.Preserved);
     }
 

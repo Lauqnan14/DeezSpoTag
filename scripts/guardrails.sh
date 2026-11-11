@@ -201,6 +201,16 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(PlaylistPlatformSnapshotTest|WatchlistPlatformProgressTest)$' ;;
       *Recommendation*|*Pathfinder*) add_tests_matching '(Recommendation|WeeklyPathfinder)' ;;
       DeezSpoTag.Services/Genre/*) add_tests_matching '(Genre|PersonalGenre|ResearchedGenre)' ;;
+      DeezSpoTag.Services/DeezSpoTag.Services.csproj)
+        add_tests_matching '^(GenreResearchGeo|GenreTaxonomyCatalog)Test$' ;;
+      DeezSpoTag.Services/Utils/SqliteSchemaUtils.cs)
+        add_tests_matching '^(PersonalGenreClassificationHistorySchema|GenreNormalizationMigration)Test$' ;;
+      DeezSpoTag.Web/Controllers/Api/PersonalGenreApiController.cs|DeezSpoTag.Web/Services/PersonalGenreService.cs)
+        add_tests_matching '^(GenreVocabularySurface|GenreVocabularyEdit|GenreTaxonomyRegion|GenreNormalizationMigration|StyleConstructionPreview)Test$' ;;
+      DeezSpoTag.Web/Services/GenreIntelligenceResolutionContext.cs)
+        add_tests_matching '^GenreIntelligenceResolutionParityTest$' ;;
+      scripts/genre/build_genre_taxonomy.py|scripts/genre/merge_regional_taxonomy.py)
+        add_tests_matching '^GenreEraTest$' ;;
       DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)
         add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;

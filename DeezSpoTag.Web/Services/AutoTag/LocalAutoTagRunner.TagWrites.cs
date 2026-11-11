@@ -179,7 +179,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // full record of what was found rather than a half-written file.
             var plan = GenreSemanticTagIo.PlanFields(
                 resolution, context.Plan.Config.CapitalizeGenres, stylesTagName,
-                resolved.Context.Normalization, catalog);
+                resolved.Context.Normalization, catalog, genreSettings.SpellingConventions);
 
             // The proposed transformation is computed from the same plan the writer
             // consumes, and it is computed before the write. Describing the moves
@@ -191,7 +191,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // ones the resolver was told about — the same list the cleanup preview
             // endpoint shows for this file.
             var preview = GenreCleanupPreviewBuilder.Build(
-                resolution, postSnapshot.Observations, resolved.Context.RemovedByNormalization);
+                resolution, postSnapshot.Observations, resolved.Context.RemovedByNormalization,
+                context.Plan.Config.CapitalizeGenres, stylesTagName,
+                resolved.Context.Normalization, catalog, genreSettings.SpellingConventions);
 
             await store.SaveAutoTagResultAsync(
                 context.Plan.JobId, context.File, knownTrackId, resolution, "resolved", context.Token);

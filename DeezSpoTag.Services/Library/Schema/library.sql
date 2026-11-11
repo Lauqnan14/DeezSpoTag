@@ -1488,7 +1488,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_observation_history (
 -- origin_fields_json records which file fields a classification was seen in,
 -- which is what makes a field correction auditable. confidence/sources_json/
 -- evidence_state are provider-era columns: they are left in place so existing
--- history is not destroyed, and nothing writes them any more.
+-- history is not destroyed, and nothing writes them any more. A database that
+-- still has them as NOT NULL is relaxed in place; this script does not add them.
 CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
     resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
     taxon_id TEXT NOT NULL,

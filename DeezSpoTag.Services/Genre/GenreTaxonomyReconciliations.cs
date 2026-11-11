@@ -16,7 +16,7 @@ namespace DeezSpoTag.Services.Genre;
 /// </summary>
 public static class GenreTaxonomyReconciliations
 {
-    public const string VocabularyVersion = "researched-master-2026-10-06-v1";
+    public const string VocabularyVersion = "researched-master-2026-10-13-v3";
 
     public sealed record BuiltInResearchConflict(
         string LookupKey,

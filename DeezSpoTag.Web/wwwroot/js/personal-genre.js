@@ -22,6 +22,8 @@
         bindMappings();
         bindRules();
         bindPortability();
+        bindVocabularyEdit();
+        bindVocabularyMerge();
         void loadAll();
     });
 
@@ -39,13 +41,19 @@
             // The region vocabulary comes from the same response as the taxonomy, so
             // the names are never written out a second time on the client.
             readRegionDirectory(taxonomy && taxonomy.regions);
+            state.researchLoaded = false;
             state.settings = results[1] || {};
             state.mappings = Array.isArray(results[2]) ? results[2] : [];
             state.rules = Array.isArray(results[3]) ? results[3] : [];
             renderSettings();
             renderAliasRules();
             renderTaxonomy();
-            populateTaxonSelects();
+            if (byId('personalGenrePage')?.classList.contains('pg-editing')) {
+                ensureResearch().then(() => renderTaxonomy()).catch(error => setStatus(error.message, 'error'));
+            }
+            // The table is on screen first. The mapping and rule pickers are filled
+            // after that paint so 4,000 options do not block the vocabulary.
+            scheduleTaxonSelects();
             renderMappings();
             renderRules();
             setStatus(
@@ -259,9 +267,25 @@
         state.aliasRules = Array.isArray(settings.genreTagAliasRules)
             ? settings.genreTagAliasRules
             : [];
+        state.termEdits = Array.isArray(settings.termEdits) ? settings.termEdits : [];
+        state.spellingConventions = Array.isArray(settings.spellingConventions) ? settings.spellingConventions : [];
         if (byId('pgGenreBlockList')) {
             byId('pgGenreBlockList').value = (settings.genreTagBlockList || []).join('\n');
         }
+        renderSpellingConventions();
+    }
+
+    function renderSpellingConventions() {
+        const list = byId('pgSpellingList');
+        if (!list) return;
+        const conventions = state.spellingConventions || [];
+        list.innerHTML = conventions.length
+            ? '<ul class="genre-intelligence-conventions">' + conventions.map((item, index) =>
+                '<li><span>Write <strong>' + escapeHtml(item.key) + '</strong> as <strong>' +
+                escapeHtml(item.spelling) + '</strong></span>' +
+                '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-remove-spelling="' +
+                index + '">Remove</button></li>').join('') + '</ul>'
+            : '<p class="helper mb-0">No shared spelling conventions yet.</p>';
     }
 
     function readRegionDirectory(regions) {
@@ -283,11 +307,11 @@
     /// Africa would be lying about the vocabulary. The two groups stay visually
     /// distinct, and neither is duplicated: this is one filter over one list.
     function matchesRegion(item) {
-        const current = state.region;
+        const current = String(state.region || '').toLowerCase();
         if (current === 'all') return true;
         const regions = Array.isArray(item.regions) ? item.regions : [];
         if (current === 'global') return regions.length === 0;
-        return regions.indexOf(current) !== -1 || regions.length === 0;
+        return regions.some(slug => String(slug || '').toLowerCase() === current) || regions.length === 0;
     }
 
     function isUniversal(item) {
@@ -398,9 +422,12 @@
             renderRegionMap();
         };
 
-        tabs.addEventListener('shown.bs.tab', apply);
-        tabs.addEventListener('show.bs.tab', apply);
+        // Capture runs before Bootstrap moves the active class. The region comes
+        // from the clicked tab, never from whichever tab is still marked active.
         tabs.addEventListener('click', apply);
+        tabs.addEventListener('click', apply, true);
+        tabs.addEventListener('show.bs.tab', apply);
+        tabs.addEventListener('shown.bs.tab', apply);
     }
 
     /// Wires the vocabulary filters, sort and pager.
@@ -510,6 +537,8 @@
                 return;
             }
 
+            if (handleVocabularyTokenClick(event)) return;
+
             const remove = event.target.closest('[data-pg-delete-taxon]');
             if (!remove) return;
             const id = remove.dataset.pgDeleteTaxon;
@@ -531,10 +560,26 @@
         const taxonomy = await requestJson(apiBase + '/taxonomy');
         state.taxonomy = Array.isArray(taxonomy && taxonomy.taxa) ? taxonomy.taxa : [];
         readRegionDirectory(taxonomy && taxonomy.regions);
+        state.researchLoaded = false;
+        if (byId('personalGenrePage')?.classList.contains('pg-editing')) {
+            await ensureResearch();
+        }
         renderTaxonomy();
-        populateTaxonSelects();
+        scheduleTaxonSelects();
         renderMappings();
         renderRules();
+    }
+
+    /// Research is not part of the browse payload. It is fetched once, when the
+    /// user actually opens edit mode, so the first paint does not wait on it.
+    async function ensureResearch() {
+        if (state.researchLoaded) return;
+        const payload = await requestJson(apiBase + '/taxonomy?includeResearch=true');
+        const byIdMap = new Map((payload && payload.taxa || []).map(item => [item.id, item.research || null]));
+        state.taxonomy.forEach(item => {
+            if (byIdMap.has(item.id)) item.research = byIdMap.get(item.id);
+        });
+        state.researchLoaded = true;
     }
 
     /// Page state for the vocabulary table.
@@ -569,8 +614,8 @@
             if (origin && taxonomyOrigin(item) !== origin) return false;
             if (!query) return true;
             const haystack = [
-                item.id, item.name, item.kind
-            ].concat(item.parentIds || [], item.aliases || []).join(' ').toLowerCase();
+                item.id, item.name, item.displayName, item.kind
+            ].concat(item.parentIds || [], item.aliases || [], item.regions || []).join(' ').toLowerCase();
             return haystack.includes(query);
         });
 
@@ -578,7 +623,7 @@
         const sorted = filtered.slice().sort(comparatorFor(sort));
 
         if (!sorted.length) {
-            body.innerHTML = '<tr><td colspan="7" class="text-muted">No matching taxonomy terms.</td></tr>';
+            body.innerHTML = '<tr><td colspan="9" class="text-muted">No matching taxonomy terms.</td></tr>';
             renderTaxonomyPager(0, 0, 0);
             return;
         }
@@ -613,23 +658,105 @@
         return byName;
     }
 
+    function capWord(word) {
+        const chars = [...word];
+        if (chars.length === 0) return word;
+        chars[0] = chars[0].toUpperCase();
+        for (let c = 1; c < chars.length; c++) {
+            // Both '&' and '-' start a new part of a compound, matching the
+            // writer's CapitalizeGenre exactly: R&B, K-Pop and Hip-Hop keep
+            // their capitals, and digit-led compounds such as "2-step" stay
+            // untouched.
+            const previous = chars[c - 1];
+            const started = (previous === '&' || (previous === '-' && /[A-Za-z]/.test(chars[c - 2] ?? '')));
+            if (started && /[0-9A-Za-z]/.test(chars[c])) {
+                chars[c] = chars[c].toUpperCase();
+            }
+        }
+        return chars.join('');
+    }
+
+    /// A display-only spelling for token chips. The stored value keeps its raw
+    /// casing for edits, so the chips read like the terms they name.
+    function displaySpelling(value) {
+        return String(value || '').trim().split(/\s+/).filter(Boolean).map(capWord).join(' ');
+    }
+
+    function renderTokenList(values, kind) {
+        const items = (values || []).filter(Boolean);
+        const list = items.length
+            ? items.map(value =>
+                '<li><span>' + escapeHtml(displaySpelling(value)) + '</span>' +
+                (kind === 'alias'
+                    ? '<button class="action-btn action-btn-sm genre-intelligence-edit-only" type="button" data-pg-make-original="' + escapeAttribute(value) + '">Make original name</button>'
+                    : '') +
+                '<button class="action-btn action-btn-sm btn-danger genre-intelligence-edit-only" type="button" data-pg-remove-token="' + escapeAttribute(kind) + '" data-pg-token="' + escapeAttribute(value) + '">Remove</button></li>')
+                .join('')
+            : '<li><span class="text-muted">—</span></li>';
+        return '<ul class="pg-token-list" data-pg-tokens="' + kind + '">' + list + '</ul>' +
+            '<div class="genre-intelligence-edit-only">' +
+            '<input data-pg-add="' + kind + '" placeholder="' + (kind === 'alias' ? 'Add alias' : 'Add parent id') + '" /> ' +
+            '<button class="action-btn action-btn-sm" type="button" data-pg-add-token="' + kind + '">Add</button></div>';
+    }
+
+    /// Year span a file update can match. A leftover prose string is not a range,
+    /// so it is not shown as if a year could fall in it.
+    function eraText(era) {
+        if (!era || typeof era === 'string') return '';
+        const spans = (era.ranges || []).map(range => {
+            const start = range.start;
+            if (start == null) return '';
+            if (range.end == null) return start + '–present';
+            return start === range.end ? String(start) : start + '–' + range.end;
+        }).filter(Boolean);
+        if (spans.length) return spans.join('; ');
+        return era.label || '';
+    }
+
+    function renderResearch(item) {
+        const research = item.research;
+        if (!research) {
+            return '<span class="text-muted">No research record.</span>';
+        }
+        const line = (label, value) => '<div><strong>' + label + '</strong> ' + escapeHtml(value || '—') + '</div>';
+        // Places and countries arrive as {slug, name}. The name is what the user
+        // reads. A raw slug, a leftover prose location, or a source URL is not shown.
+        const chips = (entries) => (entries || [])
+            .map(entry => entry && typeof entry === 'object' ? entry.name : '')
+            .filter(Boolean)
+            .map(name => '<span class="pg-geo-chip">' + escapeHtml(name) + '</span>')
+            .join(' ');
+        const chipLine = (label, entries) => {
+            const rendered = chips(entries);
+            return '<div><strong>' + label + '</strong> ' + (rendered || '—') + '</div>';
+        };
+        return '<div class="pg-research">' +
+            line('Status', research.status) +
+            chipLine('Places', research.places) +
+            line('Label', research.label) +
+            line('Era', eraText(research.era)) +
+            line('Region', (research.regionTokens || []).join('; ')) +
+            chipLine('Countries', research.countries) +
+            '</div>';
+    }
+
     function renderTaxonomyRow(item) {
-        const parents = (item.parentIds || []).map(escapeHtml).join(', ') || '<span class="text-muted">—</span>';
-        const aliases = (item.aliases || []).map(escapeHtml).join(', ') || '<span class="text-muted">—</span>';
         const actions = item.editable === true
-            ? '<div class="genre-intelligence-row-actions">' +
+            ? '<div class="genre-intelligence-row-actions genre-intelligence-edit-only">' +
                 '<button class="action-btn action-btn-sm" type="button" data-pg-edit-taxon="' + escapeAttribute(item.id) + '">Edit</button>' +
                 '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-delete-taxon="' + escapeAttribute(item.id) + '">Delete</button>' +
                 '</div>'
             : '';
-        return '<tr' + (isUniversal(item) ? ' class="genre-intelligence-row-universal"' : '') + '>' +
+        return '<tr data-pg-taxon="' + escapeAttribute(item.id) + '"' + (isUniversal(item) ? ' class="genre-intelligence-row-universal"' : '') + '>' +
+            '<td class="genre-intelligence-edit-only"><input type="checkbox" data-pg-select-taxon="' + escapeAttribute(item.id) + '" aria-label="Select ' + escapeAttribute(item.name) + '" /></td>' +
             '<td><strong>' + escapeHtml(item.displayName ?? item.name) + '</strong><br><span class="text-muted">' + escapeHtml(item.id) + '</span></td>' +
             '<td><span class="genre-intelligence-badge genre-intelligence-badge-kind">' + escapeHtml(item.kind) + '</span>' +
                 (item.contextOnly ? '<br><span class="text-muted">context-only</span>' : '') + '</td>' +
-            '<td>' + parents + '</td>' +
-            '<td>' + aliases + '</td>' +
+            '<td>' + renderTokenList(item.parentIds, 'parent') + '</td>' +
+            '<td>' + renderTokenList(item.aliases, 'alias') + '</td>' +
             '<td>' + renderRegionsCell(item) + '</td>' +
             '<td>' + renderOriginCell(item) + '</td>' +
+            '<td class="genre-intelligence-edit-only">' + renderResearch(item) + '</td>' +
             '<td>' + actions + '</td>' +
             '</tr>';
     }
@@ -779,6 +906,7 @@
         byId('pgMappingValue').value = item.matchValue || '';
         byId('pgMappingSource').value = item.inputField || '';
         byId('pgMappingAction').value = String(normalizeMappingActionValue(item.action));
+        populateTaxonSelects();
         byId('pgMappingTarget').value = item.targetTaxonId || '';
         byId('pgMappingPriority').value = item.priority ?? 100;
         byId('pgMappingEnabled').checked = item.enabled !== false;
@@ -869,6 +997,7 @@
         byId('pgRuleId').value = item.id || 0;
         byId('pgRuleValue').value = item.matchValue || '';
         byId('pgRuleSource').value = item.inputField || '';
+        populateTaxonSelects();
         byId('pgRuleTarget').value = item.targetTaxonId || '';
         byId('pgRulePriority').value = item.priority ?? 1000;
         byId('pgRuleEnabled').checked = item.enabled !== false;
@@ -880,6 +1009,12 @@
         byId('pgRuleId').value = 0;
         byId('pgRulePriority').value = 1000;
         byId('pgRuleEnabled').checked = true;
+    }
+
+    function scheduleTaxonSelects() {
+        setTimeout(() => {
+            if (state.taxonomy.length) populateTaxonSelects();
+        }, 0);
     }
 
     function populateTaxonSelects() {
@@ -911,6 +1046,168 @@
             select.innerHTML = html;
             if (previous && state.taxonomy.some(item => item.id === previous)) {
                 select.value = previous;
+            }
+        });
+    }
+
+    function setVocabularyEditing(on) {
+        const page = byId('personalGenrePage');
+        const tools = byId('pgVocabularyEditTools');
+        const button = byId('pgVocabularyEdit');
+        page?.classList.toggle('pg-editing', on);
+        if (tools) tools.hidden = !on;
+        // The Edit button and the editing tools both live inside the collapsed
+        // custom-taxon panel, so entering edit mode opens it.
+        const details = byId('pgTaxonDetails');
+        if (details && on) details.open = true;
+        if (button) {
+            button.textContent = on ? 'Done' : 'Edit';
+            button.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+    }
+
+    function draftFor(id) {
+        state.termEdits = state.termEdits || [];
+        let edit = state.termEdits.find(item => item.taxonId === id);
+        if (!edit) {
+            const taxon = state.taxonomy.find(item => item.id === id) || {};
+            edit = {
+                taxonId: id,
+                originalName: taxon.name,
+                aliases: [...(taxon.aliases || [])],
+                parentIds: [...(taxon.parentIds || [])]
+            };
+            state.termEdits.push(edit);
+        }
+        edit.aliases = edit.aliases || [];
+        edit.parentIds = edit.parentIds || [];
+        return edit;
+    }
+
+    async function saveVocabularyEdits() {
+        await requestJson(apiBase + '/settings', {
+            method: 'POST',
+            body: JSON.stringify({
+                termEdits: state.termEdits || [],
+                spellingConventions: state.spellingConventions || []
+            })
+        });
+        await loadAll();
+        setStatus('Vocabulary edits saved.', 'success');
+    }
+
+    function bindVocabularyEdit() {
+        byId('pgVocabularyEdit')?.addEventListener('click', () => {
+            const on = !byId('personalGenrePage')?.classList.contains('pg-editing');
+            setVocabularyEditing(on);
+            if (on) {
+                ensureResearch()
+                    .then(() => renderTaxonomy())
+                    .catch(error => setStatus(error.message || 'Could not load research.', 'error'));
+            }
+        });
+        byId('pgVocabularyDone')?.addEventListener('click', () => setVocabularyEditing(false));
+        byId('pgVocabularySave')?.addEventListener('click', () => saveVocabularyEdits().catch(error => setStatus(error.message, 'error')));
+        byId('pgSpellingAdd')?.addEventListener('click', () => {
+            const word = byId('pgSpellingWord')?.value.trim();
+            const spelling = byId('pgSpellingValue')?.value.trim();
+            if (!word || !spelling) {
+                setStatus('Enter the shared word and the spelling to write.', 'error');
+                return;
+            }
+            const key = word.toLowerCase().replace(/[^0-9a-z]/g, '');
+            state.spellingConventions = (state.spellingConventions || []).filter(item => item.key !== key);
+            state.spellingConventions.push({ key, spelling });
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+        });
+        byId('pgSpellingList')?.addEventListener('click', event => {
+            const remove = event.target.closest('[data-pg-remove-spelling]');
+            if (!remove) return;
+            const index = Number.parseInt(remove.dataset.pgRemoveSpelling, 10);
+            if (!Number.isInteger(index) || index < 0) return;
+            state.spellingConventions = (state.spellingConventions || []).filter((_, position) => position !== index);
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+        });
+    }
+
+    function handleVocabularyTokenClick(event) {
+        const row = event.target.closest?.('[data-pg-taxon]');
+        if (!row || !byId('personalGenrePage')?.classList.contains('pg-editing')) return false;
+        const edit = draftFor(row.dataset.pgTaxon);
+        const make = event.target.closest('[data-pg-make-original]');
+        if (make) {
+            const alias = make.dataset.pgMakeOriginal;
+            // A promoted alias must not also be a different term's name; the
+            // catalog would refuse the rename anyway, but the user is told here.
+            const owner = state.taxonomy.find(item =>
+                item.id !== row.dataset.pgTaxon &&
+                String(item.name ?? '').toLowerCase() === alias.toLowerCase());
+            if (owner) {
+                setStatus('"' + alias + '" is already the original name of ' + owner.name + '. Merge the terms instead.', 'error');
+                return true;
+            }
+            edit.aliases = edit.aliases.filter(item => item.toLowerCase() !== alias.toLowerCase());
+            if (edit.originalName && edit.originalName.toLowerCase() !== alias.toLowerCase()) {
+                edit.aliases.unshift(edit.originalName);
+            }
+            edit.originalName = alias;
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+            return true;
+        }
+        const remove = event.target.closest('[data-pg-remove-token]');
+        if (remove) {
+            const token = remove.dataset.pgToken;
+            const list = remove.dataset.pgRemoveToken === 'alias' ? 'aliases' : 'parentIds';
+            edit[list] = edit[list].filter(item => item.toLowerCase() !== token.toLowerCase());
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+            return true;
+        }
+        const add = event.target.closest('[data-pg-add-token]');
+        if (add) {
+            const input = row.querySelector('[data-pg-add="' + add.dataset.pgAddToken + '"]');
+            const value = input?.value.trim();
+            if (!value) return false;
+            const list = add.dataset.pgAddToken === 'alias' ? 'aliases' : 'parentIds';
+            if (!edit[list].some(item => item.toLowerCase() === value.toLowerCase())) {
+                edit[list].push(value);
+            }
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+            return true;
+        }
+        return false;
+    }
+
+    function bindVocabularyMerge() {
+        byId('pgMergeSelected')?.addEventListener('click', () => {
+            const selected = [...document.querySelectorAll('[data-pg-select-taxon]:checked')].map(input => input.dataset.pgSelectTaxon);
+            if (selected.length < 2) {
+                setStatus('Select two terms to merge.', 'error');
+                return;
+            }
+            const target = draftFor(selected[0]);
+            const source = draftFor(selected[1]);
+            source.mergedInto = target.taxonId;
+            saveVocabularyEdits().catch(error => setStatus(error.message, 'error'));
+        });
+        byId('pgSplitSelected')?.addEventListener('click', async () => {
+            const selected = document.querySelector('[data-pg-select-taxon]:checked')?.dataset.pgSelectTaxon;
+            const name = window.prompt('Name of the new term');
+            if (!selected || !name) return;
+            const source = state.taxonomy.find(item => item.id === selected);
+            try {
+                await requestJson(apiBase + '/taxonomy/custom', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        id: name.toLowerCase().replace(/[^0-9a-z]+/g, '-').replace(/^-|-$/g, ''),
+                        name,
+                        kind: source?.kind || 'style',
+                        parentIds: source?.parentIds || []
+                    })
+                });
+                await loadAll();
+                setStatus('Split created ' + name + ' as its own term.', 'success');
+            } catch (error) {
+                setStatus(error.message, 'error');
             }
         });
     }

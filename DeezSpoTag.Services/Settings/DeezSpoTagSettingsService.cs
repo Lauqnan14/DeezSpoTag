@@ -315,17 +315,15 @@ public class DeezSpoTagSettingsService : ISettingsService
     /// This is a compatibility path, not ownership: nothing writes these values
     /// back, and once every host registers the store this disappears.
     /// </summary>
-#pragma warning disable CS0618 // The only read of the deprecated properties outside the migration.
     private static GenreNormalizationOptions BuildUnmigratedCarrier(DeezSpoTagSettings settings)
         => new()
         {
-            Enabled = settings.NormalizeGenreTags,
-            AliasMap = settings.NormalizeGenreTags
-                ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules ?? [])
+            Enabled = settings.LegacyGenreNormalization.NormalizeGenreTags,
+            AliasMap = settings.LegacyGenreNormalization.NormalizeGenreTags
+                ? GenreTagAliasNormalizer.BuildAliasMap(settings.LegacyGenreNormalization.GenreTagAliasRules ?? [])
                 : new Dictionary<string, string>(StringComparer.Ordinal),
-            BlockList = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList)
+            BlockList = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.LegacyGenreNormalization.GenreTagBlockList)
         };
-#pragma warning restore CS0618
 
     private void EnsureConfigDirectoryExists()
     {

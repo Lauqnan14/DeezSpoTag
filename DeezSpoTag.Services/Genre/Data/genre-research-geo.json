@@ -1,0 +1,7442 @@
+{
+ "version": "researched-master-2026-11-10-v8",
+ "source": {
+  "file": "global-taxonomy-v170-eu-final-audited.xlsx",
+  "sha256": "386f31cee3a3d7c199809597d68f2d319eb9e381dbd126942cb00cfc9d66d464"
+ },
+ "countries": {
+  "aland-islands": "Åland Islands",
+  "albania": "Albania",
+  "algeria": "Algeria",
+  "andorra": "Andorra",
+  "angola": "Angola",
+  "anguilla": "Anguilla",
+  "antigua-and-barbuda": "Antigua and Barbuda",
+  "argentina": "Argentina",
+  "armenia": "Armenia",
+  "aruba": "Aruba",
+  "austria": "Austria",
+  "azerbaijan": "Azerbaijan",
+  "bahamas": "Bahamas",
+  "barbados": "Barbados",
+  "belarus": "Belarus",
+  "belgium": "Belgium",
+  "belize": "Belize",
+  "benin": "Benin",
+  "bermuda": "Bermuda",
+  "bolivia": "Bolivia",
+  "bosnia-and-herzegovina": "Bosnia and Herzegovina",
+  "botswana": "Botswana",
+  "brazil": "Brazil",
+  "british-virgin-islands": "British Virgin Islands",
+  "bulgaria": "Bulgaria",
+  "burkina-faso": "Burkina Faso",
+  "burundi": "Burundi",
+  "cameroon": "Cameroon",
+  "canada": "Canada",
+  "cape-verde": "Cape Verde",
+  "caribbean-netherlands": "Caribbean Netherlands",
+  "cayman-islands": "Cayman Islands",
+  "central-african-republic": "Central African Republic",
+  "chad": "Chad",
+  "chile": "Chile",
+  "colombia": "Colombia",
+  "comoros": "Comoros",
+  "costa-rica": "Costa Rica",
+  "cote-d-ivoire": "Côte d'Ivoire",
+  "croatia": "Croatia",
+  "cuba": "Cuba",
+  "curacao": "Curaçao",
+  "cyprus": "Cyprus",
+  "czechia": "Czechia",
+  "denmark": "Denmark",
+  "djibouti": "Djibouti",
+  "dominica": "Dominica",
+  "dominican-republic": "Dominican Republic",
+  "drc": "DR Congo",
+  "ecuador": "Ecuador",
+  "egypt": "Egypt",
+  "el-salvador": "El Salvador",
+  "england": "England",
+  "equatorial-guinea": "Equatorial Guinea",
+  "eritrea": "Eritrea",
+  "estonia": "Estonia",
+  "eswatini": "Eswatini",
+  "ethiopia": "Ethiopia",
+  "falkland-islands": "Falkland Islands",
+  "faroe-islands": "Faroe Islands",
+  "finland": "Finland",
+  "france": "France",
+  "french-guiana": "French Guiana",
+  "gabon": "Gabon",
+  "gambia": "Gambia",
+  "georgia": "Georgia",
+  "germany": "Germany",
+  "ghana": "Ghana",
+  "gibraltar": "Gibraltar",
+  "greece": "Greece",
+  "greenland": "Greenland",
+  "grenada": "Grenada",
+  "guadeloupe": "Guadeloupe",
+  "guatemala": "Guatemala",
+  "guernsey": "Guernsey",
+  "guinea": "Guinea",
+  "guinea-bissau": "Guinea Bissau",
+  "guyana": "Guyana",
+  "haiti": "Haiti",
+  "holy-see": "Holy See",
+  "honduras": "Honduras",
+  "hungary": "Hungary",
+  "iceland": "Iceland",
+  "ireland": "Ireland",
+  "isle-of-man": "Isle of Man",
+  "italy": "Italy",
+  "jamaica": "Jamaica",
+  "jersey": "Jersey",
+  "kazakhstan": "Kazakhstan",
+  "kenya": "Kenya",
+  "kosovo": "Kosovo",
+  "latvia": "Latvia",
+  "lesotho": "Lesotho",
+  "liberia": "Liberia",
+  "libya": "Libya",
+  "liechtenstein": "Liechtenstein",
+  "lithuania": "Lithuania",
+  "luxembourg": "Luxembourg",
+  "madagascar": "Madagascar",
+  "malawi": "Malawi",
+  "mali": "Mali",
+  "malta": "Malta",
+  "martinique": "Martinique",
+  "mauritania": "Mauritania",
+  "mauritius": "Mauritius",
+  "mayotte": "Mayotte",
+  "mexico": "Mexico",
+  "moldova": "Moldova",
+  "monaco": "Monaco",
+  "montenegro": "Montenegro",
+  "montserrat": "Montserrat",
+  "morocco": "Morocco",
+  "mozambique": "Mozambique",
+  "namibia": "Namibia",
+  "netherlands": "Netherlands",
+  "nicaragua": "Nicaragua",
+  "niger": "Niger",
+  "nigeria": "Nigeria",
+  "north-macedonia": "North Macedonia",
+  "norway": "Norway",
+  "panama": "Panama",
+  "paraguay": "Paraguay",
+  "peru": "Peru",
+  "poland": "Poland",
+  "portugal": "Portugal",
+  "puerto-rico": "Puerto Rico",
+  "republic-of-the-congo": "Republic of the Congo",
+  "reunion": "Réunion",
+  "romania": "Romania",
+  "russia": "Russia",
+  "rwanda": "Rwanda",
+  "saint-barthelemy": "Saint Barthelemy",
+  "saint-helena": "Saint Helena",
+  "saint-kitts-and-nevis": "Saint Kitts and Nevis",
+  "saint-lucia": "Saint Lucia",
+  "saint-martin": "Saint Martin",
+  "saint-pierre-and-miquelon": "Saint Pierre and Miquelon",
+  "saint-vincent-and-the-grenadines": "Saint Vincent and the Grenadines",
+  "san-marino": "San Marino",
+  "sao-tome-and-principe": "São Tomé and Príncipe",
+  "scotland": "Scotland",
+  "senegal": "Senegal",
+  "serbia": "Serbia",
+  "seychelles": "Seychelles",
+  "sierra-leone": "Sierra Leone",
+  "sint-maarten": "Sint Maarten",
+  "slovakia": "Slovakia",
+  "slovenia": "Slovenia",
+  "somalia": "Somalia",
+  "somaliland": "Somaliland",
+  "south-africa": "South Africa",
+  "south-sudan": "South Sudan",
+  "spain": "Spain",
+  "sudan": "Sudan",
+  "suriname": "Suriname",
+  "svalbard-and-jan-mayen": "Svalbard and Jan Mayen",
+  "sweden": "Sweden",
+  "switzerland": "Switzerland",
+  "tanzania": "Tanzania",
+  "togo": "Togo",
+  "trinidad-and-tobago": "Trinidad and Tobago",
+  "tunisia": "Tunisia",
+  "turkey": "Turkey",
+  "turks-and-caicos-islands": "Turks and Caicos Islands",
+  "uganda": "Uganda",
+  "ukraine": "Ukraine",
+  "united-kingdom": "United Kingdom",
+  "united-states": "United States",
+  "uruguay": "Uruguay",
+  "us-virgin-islands": "U.S. Virgin Islands",
+  "venezuela": "Venezuela",
+  "wales": "Wales",
+  "western-sahara": "Western Sahara",
+  "zambia": "Zambia",
+  "zimbabwe": "Zimbabwe"
+ },
+ "places": {
+  "13th-c": {
+   "name": "13th c.",
+   "countries": [
+    "france"
+   ]
+  },
+  "14th-c": {
+   "name": "14th c.",
+   "countries": [
+    "france"
+   ]
+  },
+  "18th": {
+   "name": "18th",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "1990s": {
+   "name": "1990s",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "20th-century-accounts-from-the-air": {
+   "name": "20th-century accounts from the Aïr",
+   "countries": [
+    "niger"
+   ]
+  },
+  "abia-state": {
+   "name": "Abia State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "abidjan": {
+   "name": "Abidjan",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "abidjan-marcory": {
+   "name": "Abidjan Marcory",
+   "countries": []
+  },
+  "abkhazia": {
+   "name": "Abkhazia",
+   "countries": [
+    "georgia"
+   ]
+  },
+  "abomey": {
+   "name": "Abomey",
+   "countries": [
+    "benin"
+   ]
+  },
+  "abomey-plateau": {
+   "name": "Abomey plateau",
+   "countries": [
+    "benin"
+   ]
+  },
+  "abuja": {
+   "name": "Abuja",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "acadia": {
+   "name": "Acadia",
+   "countries": [
+    "canada"
+   ]
+  },
+  "acadiana": {
+   "name": "Acadiana",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "accra": {
+   "name": "Accra",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "accra-asylum-down": {
+   "name": "Accra Asylum Down",
+   "countries": []
+  },
+  "accra-plains": {
+   "name": "Accra plains",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "acholi": {
+   "name": "Acholi",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "acholi-sub-region": {
+   "name": "Acholi sub-region",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "addis-ababa": {
+   "name": "Addis Ababa",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "adjacent-miranda": {
+   "name": "adjacent Miranda",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "aegean-islands": {
+   "name": "Aegean Islands",
+   "countries": [
+    "greece"
+   ]
+  },
+  "afar-region": {
+   "name": "Afar Region",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "afar-triangle": {
+   "name": "Afar Triangle",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "african-islands-of-the-western-indian-ocean": {
+   "name": "African islands of the western Indian Ocean",
+   "countries": []
+  },
+  "afrikaans": {
+   "name": "Afrikaans",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "afrikaans-community": {
+   "name": "Afrikaans community",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "afrisson": {
+   "name": "Afrisson",
+   "countries": [
+    "guadeloupe"
+   ]
+  },
+  "afro-peruvian-communities": {
+   "name": "Afro-Peruvian communities",
+   "countries": [
+    "peru"
+   ]
+  },
+  "afrocritik": {
+   "name": "Afrocritik",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "afroguinee-magazine": {
+   "name": "Afroguinée Magazine",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "afropop": {
+   "name": "Afropop",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "afropop-2023": {
+   "name": "Afropop 2023",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "agadir": {
+   "name": "Agadir",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "akan-areas": {
+   "name": "Akan areas",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "akan-areas-of-southern": {
+   "name": "Akan areas of southern",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "akwaaba": {
+   "name": "Akwaaba",
+   "countries": []
+  },
+  "alabama": {
+   "name": "Alabama",
+   "countries": [
+    "georgia"
+   ]
+  },
+  "alaska": {
+   "name": "Alaska",
+   "countries": [
+    "greenland"
+   ]
+  },
+  "albanian-speaking-balkans": {
+   "name": "Albanian-speaking Balkans",
+   "countries": [
+    "albania"
+   ]
+  },
+  "alberta": {
+   "name": "Alberta",
+   "countries": [
+    "canada"
+   ]
+  },
+  "alentejo": {
+   "name": "Alentejo",
+   "countries": [
+    "portugal"
+   ]
+  },
+  "alexandra": {
+   "name": "Alexandra",
+   "countries": []
+  },
+  "alexandria": {
+   "name": "Alexandria",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "algiers": {
+   "name": "Algiers",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "alice": {
+   "name": "Alice",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "alpine": {
+   "name": "Alpine",
+   "countries": [
+    "switzerland"
+   ]
+  },
+  "alpine-europe": {
+   "name": "Alpine Europe",
+   "countries": [
+    "switzerland"
+   ]
+  },
+  "alpine-german-speaking-regions": {
+   "name": "Alpine German-speaking regions",
+   "countries": []
+  },
+  "alpine-pyrenean": {
+   "name": "Alpine Pyrenean",
+   "countries": [
+    "france"
+   ]
+  },
+  "alpine-regions": {
+   "name": "Alpine regions",
+   "countries": [
+    "austria",
+    "italy"
+   ]
+  },
+  "alsace": {
+   "name": "Alsace",
+   "countries": [
+    "france"
+   ]
+  },
+  "amapa": {
+   "name": "Amapá",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "amazon": {
+   "name": "Amazon",
+   "countries": [
+    "peru"
+   ]
+  },
+  "amazon-region": {
+   "name": "Amazon region",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "amazonas": {
+   "name": "Amazonas",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "amazonian-regions": {
+   "name": "Amazonian regions",
+   "countries": [
+    "peru"
+   ]
+  },
+  "ambrosian-rite": {
+   "name": "Ambrosian Rite",
+   "countries": [
+    "italy"
+   ]
+  },
+  "amhara-region": {
+   "name": "Amhara Region",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "anadarko-area": {
+   "name": "Anadarko area",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "anambra-state": {
+   "name": "Anambra State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "ancash": {
+   "name": "Áncash",
+   "countries": [
+    "peru"
+   ]
+  },
+  "ancash-highlands": {
+   "name": "Áncash highlands",
+   "countries": [
+    "peru"
+   ]
+  },
+  "ancient": {
+   "name": "Ancient",
+   "countries": [
+    "egypt",
+    "greece"
+   ]
+  },
+  "ancient-rome": {
+   "name": "Ancient Rome",
+   "countries": [
+    "italy"
+   ]
+  },
+  "andalusia": {
+   "name": "Andalusia",
+   "countries": [
+    "spain"
+   ]
+  },
+  "andean-altiplano": {
+   "name": "Andean Altiplano",
+   "countries": [
+    "peru"
+   ]
+  },
+  "andean-highlands": {
+   "name": "Andean highlands",
+   "countries": [
+    "ecuador",
+    "peru"
+   ]
+  },
+  "andean-indigenous-communities": {
+   "name": "Andean Indigenous communities",
+   "countries": [
+    "peru"
+   ]
+  },
+  "andean-parts": {
+   "name": "Andean parts",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "andean-region": {
+   "name": "Andean region",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "andes": {
+   "name": "Andes",
+   "countries": [
+    "bolivia",
+    "chile",
+    "peru"
+   ]
+  },
+  "androy": {
+   "name": "Androy",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "anglican-communion": {
+   "name": "Anglican Communion",
+   "countries": [
+    "england"
+   ]
+  },
+  "angolan-roots": {
+   "name": "Angolan roots",
+   "countries": []
+  },
+  "anlo": {
+   "name": "Anlo",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "anlo-ewe-area": {
+   "name": "Anlo-Ewe area",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "anosy-region": {
+   "name": "Anosy region",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "antananarivo": {
+   "name": "Antananarivo",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "antananarivo-region": {
+   "name": "Antananarivo region",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "anti-atlas": {
+   "name": "Anti-Atlas",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "antigua": {
+   "name": "Antigua",
+   "countries": [
+    "guatemala"
+   ]
+  },
+  "anzoategui": {
+   "name": "Anzoátegui",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "appalachia": {
+   "name": "Appalachia",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "apulia": {
+   "name": "Apulia",
+   "countries": [
+    "italy"
+   ]
+  },
+  "apurimac": {
+   "name": "Apurímac",
+   "countries": [
+    "peru"
+   ]
+  },
+  "arabian-peninsula": {
+   "name": "Arabian Peninsula",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "aragon": {
+   "name": "Aragon",
+   "countries": [
+    "spain"
+   ]
+  },
+  "aragua": {
+   "name": "Aragua",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "arbereshe-communities-southern": {
+   "name": "Arbëreshë communities southern",
+   "countries": [
+    "italy"
+   ]
+  },
+  "archipelago": {
+   "name": "archipelago",
+   "countries": [
+    "comoros"
+   ]
+  },
+  "arctic": {
+   "name": "Arctic",
+   "countries": []
+  },
+  "arctic-quebec": {
+   "name": "Arctic Québec",
+   "countries": [
+    "canada"
+   ]
+  },
+  "argentine-musical-heritage": {
+   "name": "Argentine musical heritage",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "argentine-northwest": {
+   "name": "Argentine Northwest",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "arizona": {
+   "name": "Arizona",
+   "countries": [
+    "mexico",
+    "united-states"
+   ]
+  },
+  "armenian-communities-incl-philadelphia": {
+   "name": "Armenian communities incl. Philadelphia",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "aromanian-communities-balkans": {
+   "name": "Aromanian communities Balkans",
+   "countries": []
+  },
+  "artmattersinfo": {
+   "name": "ArtMatters.info",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "asante": {
+   "name": "Asante",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "asbury-park": {
+   "name": "Asbury Park",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ashanti": {
+   "name": "Ashanti",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "ashkenazi": {
+   "name": "Ashkenazi",
+   "countries": []
+  },
+  "ashkenazi-europe": {
+   "name": "Ashkenazi Europe",
+   "countries": []
+  },
+  "ashkenazi-synagogues-central": {
+   "name": "Ashkenazi synagogues Central",
+   "countries": []
+  },
+  "asmara": {
+   "name": "Asmara",
+   "countries": [
+    "eritrea"
+   ]
+  },
+  "asturias": {
+   "name": "Asturias",
+   "countries": [
+    "spain"
+   ]
+  },
+  "aswan": {
+   "name": "Aswan",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "atlanta": {
+   "name": "Atlanta",
+   "countries": [
+    "georgia",
+    "united-states"
+   ]
+  },
+  "atlantic-plains": {
+   "name": "Atlantic plains",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "atlas": {
+   "name": "Atlas",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "atsimo-atsinanana": {
+   "name": "Atsimo-Atsinanana",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "audience": {
+   "name": "audience",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "aures": {
+   "name": "Aurès",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "aures-mountains": {
+   "name": "Aurès mountains",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "austin": {
+   "name": "Austin",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "auvergne": {
+   "name": "Auvergne",
+   "countries": [
+    "france"
+   ]
+  },
+  "avignon": {
+   "name": "Avignon",
+   "countries": [
+    "france"
+   ]
+  },
+  "ayacucho": {
+   "name": "Ayacucho",
+   "countries": [
+    "peru"
+   ]
+  },
+  "aymara-communities": {
+   "name": "Aymara communities",
+   "countries": [
+    "peru"
+   ]
+  },
+  "azores-roots": {
+   "name": "Azores roots",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "azuero": {
+   "name": "Azuero",
+   "countries": [
+    "panama"
+   ]
+  },
+  "azuero-peninsula": {
+   "name": "Azuero peninsula",
+   "countries": [
+    "panama"
+   ]
+  },
+  "bahia": {
+   "name": "Bahia",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "baixada-cuiabana": {
+   "name": "Baixada Cuiabana",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "baixada-fluminense": {
+   "name": "Baixada Fluminense",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "baixada-santista": {
+   "name": "Baixada Santista",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "baja-california": {
+   "name": "Baja California",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "bajio": {
+   "name": "Bajío",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "bakersfield": {
+   "name": "Bakersfield",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "balanta-people": {
+   "name": "Balanta people",
+   "countries": [
+    "guinea-bissau"
+   ]
+  },
+  "balearic-islands": {
+   "name": "Balearic Islands",
+   "countries": [
+    "spain"
+   ]
+  },
+  "balkan": {
+   "name": "Balkan",
+   "countries": [
+    "moldova"
+   ]
+  },
+  "balkan-peninsula": {
+   "name": "Balkan Peninsula",
+   "countries": [
+    "romania",
+    "serbia"
+   ]
+  },
+  "balkans": {
+   "name": "Balkans",
+   "countries": [
+    "turkey"
+   ]
+  },
+  "ballroom-dance": {
+   "name": "ballroom dance",
+   "countries": []
+  },
+  "baltic-finnic": {
+   "name": "Baltic-Finnic",
+   "countries": [
+    "finland"
+   ]
+  },
+  "baltic-states": {
+   "name": "Baltic states",
+   "countries": []
+  },
+  "baltimore": {
+   "name": "Baltimore",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "bamako": {
+   "name": "Bamako",
+   "countries": [
+    "mali"
+   ]
+  },
+  "bamako-sounds": {
+   "name": "Bamako Sounds",
+   "countries": [
+    "mali"
+   ]
+  },
+  "bamasaba": {
+   "name": "Bamasaba",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "bamileke": {
+   "name": "Bamileke",
+   "countries": []
+  },
+  "banda-linda": {
+   "name": "Banda-Linda",
+   "countries": [
+    "central-african-republic"
+   ]
+  },
+  "bangangte": {
+   "name": "Bangangté",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "bangui": {
+   "name": "Bangui",
+   "countries": [
+    "central-african-republic"
+   ]
+  },
+  "baninko": {
+   "name": "Baninko",
+   "countries": [
+    "mali"
+   ]
+  },
+  "baoule-area": {
+   "name": "Baoulé area",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "barlovento": {
+   "name": "Barlovento",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "basotho-mining-communities": {
+   "name": "Basotho mining communities",
+   "countries": [
+    "lesotho"
+   ]
+  },
+  "basque-country": {
+   "name": "Basque Country",
+   "countries": [
+    "spain"
+   ]
+  },
+  "bassa-country": {
+   "name": "Bassa country",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "baton-rouge": {
+   "name": "Baton Rouge",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "bavaria": {
+   "name": "Bavaria",
+   "countries": [
+    "austria"
+   ]
+  },
+  "bay-area": {
+   "name": "Bay Area",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "bayadh": {
+   "name": "Bayadh",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "beale-street": {
+   "name": "Beale Street",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "bechar": {
+   "name": "Béchar",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "belem": {
+   "name": "Belém",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "belo-horizonte": {
+   "name": "Belo Horizonte",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "benevento": {
+   "name": "Benevento",
+   "countries": [
+    "italy"
+   ]
+  },
+  "benghazi": {
+   "name": "Benghazi",
+   "countries": [
+    "libya"
+   ]
+  },
+  "benguela-province": {
+   "name": "Benguela province",
+   "countries": [
+    "angola"
+   ]
+  },
+  "benue-state": {
+   "name": "Benue State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "berbera": {
+   "name": "Berbera",
+   "countries": []
+  },
+  "berlin": {
+   "name": "Berlin",
+   "countries": []
+  },
+  "bete-country": {
+   "name": "Bété country",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "beti": {
+   "name": "Beti",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "beyla": {
+   "name": "Beyla",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "beyond": {
+   "name": "beyond",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "birmingham": {
+   "name": "Birmingham",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "biskra": {
+   "name": "Biskra",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "bluefields": {
+   "name": "Bluefields",
+   "countries": [
+    "nicaragua"
+   ]
+  },
+  "bobo-dioulasso": {
+   "name": "Bobo-Dioulasso",
+   "countries": [
+    "burkina-faso"
+   ]
+  },
+  "bogota": {
+   "name": "Bogotá",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "bohemia": {
+   "name": "Bohemia",
+   "countries": []
+  },
+  "bohicon": {
+   "name": "Bohicon",
+   "countries": [
+    "benin"
+   ]
+  },
+  "bolivar": {
+   "name": "Bolívar",
+   "countries": [
+    "colombia",
+    "venezuela"
+   ]
+  },
+  "bolivar-state": {
+   "name": "Bolívar state",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "bolobedu": {
+   "name": "Bolobedu",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "bonaire": {
+   "name": "Bonaire",
+   "countries": [
+    "aruba",
+    "caribbean-netherlands"
+   ]
+  },
+  "border": {
+   "name": "border",
+   "countries": [
+    "mexico",
+    "russia",
+    "united-states"
+   ]
+  },
+  "borders": {
+   "name": "borders",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "boston": {
+   "name": "Boston",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "boulder": {
+   "name": "Boulder",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "boundou": {
+   "name": "Boundou",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "boyaca": {
+   "name": "Boyacá",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "brasilia": {
+   "name": "Brasília",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "brattleboro": {
+   "name": "Brattleboro",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "brazzaville": {
+   "name": "Brazzaville",
+   "countries": [
+    "republic-of-the-congo"
+   ]
+  },
+  "brazzaville-the-twin-capitals": {
+   "name": "Brazzaville the twin capitals",
+   "countries": [
+    "drc"
+   ]
+  },
+  "bristol": {
+   "name": "Bristol",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "british-columbia-coast": {
+   "name": "British Columbia coast",
+   "countries": [
+    "canada"
+   ]
+  },
+  "british-rule": {
+   "name": "British rule",
+   "countries": [
+    "malawi"
+   ]
+  },
+  "brittany": {
+   "name": "Brittany",
+   "countries": [
+    "france",
+    "united-kingdom"
+   ]
+  },
+  "bronx": {
+   "name": "Bronx",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "brooklyn": {
+   "name": "Brooklyn",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "broward-county": {
+   "name": "Broward County",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "buenos-aires": {
+   "name": "Buenos Aires",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "buenos-aires-barrio": {
+   "name": "Buenos Aires barrio",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "buganda": {
+   "name": "Buganda",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "bugisu": {
+   "name": "Bugisu",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "bujumbura": {
+   "name": "Bujumbura",
+   "countries": [
+    "burundi"
+   ]
+  },
+  "bukom": {
+   "name": "Bukom",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "bulawayo": {
+   "name": "Bulawayo",
+   "countries": [
+    "zimbabwe"
+   ]
+  },
+  "bulu-area": {
+   "name": "Bulu area",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "busoga": {
+   "name": "Busoga",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "byzantine": {
+   "name": "Byzantine",
+   "countries": [
+    "greece"
+   ]
+  },
+  "caipira": {
+   "name": "caipira",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "caipira-interior": {
+   "name": "caipira interior",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "cairo": {
+   "name": "Cairo",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "cajamarca": {
+   "name": "Cajamarca",
+   "countries": [
+    "peru"
+   ]
+  },
+  "calabria": {
+   "name": "Calabria",
+   "countries": [
+    "italy"
+   ]
+  },
+  "cali": {
+   "name": "Cali",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "california": {
+   "name": "California",
+   "countries": [
+    "mexico",
+    "united-kingdom",
+    "united-states"
+   ]
+  },
+  "california-estate": {
+   "name": "California Estate",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "callao": {
+   "name": "Callao",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "calypsography": {
+   "name": "Calypsography",
+   "countries": []
+  },
+  "campania": {
+   "name": "Campania",
+   "countries": [
+    "italy"
+   ]
+  },
+  "campeche": {
+   "name": "Campeche",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "campo-grande": {
+   "name": "Campo Grande",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "canary-islands": {
+   "name": "Canary Islands",
+   "countries": [
+    "spain"
+   ]
+  },
+  "candeias": {
+   "name": "Candeias",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "canterbury": {
+   "name": "Canterbury",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "cape-breton-island": {
+   "name": "Cape Breton Island",
+   "countries": [
+    "canada"
+   ]
+  },
+  "cape-coast": {
+   "name": "Cape Coast",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "cape-flats": {
+   "name": "Cape Flats",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "cape-town": {
+   "name": "Cape Town",
+   "countries": [
+    "senegal",
+    "south-africa"
+   ]
+  },
+  "car": {
+   "name": "CAR",
+   "countries": [
+    "drc"
+   ]
+  },
+  "carabobo": {
+   "name": "Carabobo",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "caracas": {
+   "name": "Caracas",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "carchi": {
+   "name": "Carchi",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "caribbean": {
+   "name": "Caribbean",
+   "countries": [
+    "guadeloupe",
+    "mexico",
+    "united-states"
+   ]
+  },
+  "caribbean-beat": {
+   "name": "Caribbean Beat",
+   "countries": []
+  },
+  "caribbean-coast": {
+   "name": "Caribbean coast",
+   "countries": [
+    "colombia",
+    "honduras"
+   ]
+  },
+  "caribbean-coast-influence": {
+   "name": "Caribbean coast influence",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "caribbean-region": {
+   "name": "Caribbean region",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "caribbean-savannas": {
+   "name": "Caribbean savannas",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "caribbean-un-m49-419": {
+   "name": "Caribbean UN M49 419",
+   "countries": []
+  },
+  "carnivals-across-the-eastern-caribbean": {
+   "name": "carnivals across the Eastern Caribbean",
+   "countries": []
+  },
+  "carolinas": {
+   "name": "Carolinas",
+   "countries": [
+    "georgia",
+    "united-states"
+   ]
+  },
+  "carriacou": {
+   "name": "Carriacou",
+   "countries": [
+    "dominica",
+    "grenada"
+   ]
+  },
+  "cartagena": {
+   "name": "Cartagena",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "caruaru": {
+   "name": "Caruaru",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "casablanca": {
+   "name": "Casablanca",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "casamance": {
+   "name": "Casamance",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "casbah-of-algiers": {
+   "name": "Casbah of Algiers",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "catalonia": {
+   "name": "Catalonia",
+   "countries": [
+    "spain"
+   ]
+  },
+  "catamarca": {
+   "name": "Catamarca",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "cbgb": {
+   "name": "CBGB",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ceara": {
+   "name": "Ceará",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "ceiba": {
+   "name": "Ceiba",
+   "countries": [
+    "honduras"
+   ]
+  },
+  "celtic-nations": {
+   "name": "Celtic nations",
+   "countries": []
+  },
+  "centered-on": {
+   "name": "centered on",
+   "countries": [
+    "peru"
+   ]
+  },
+  "central-africa": {
+   "name": "Central Africa",
+   "countries": []
+  },
+  "central-african-rainforest": {
+   "name": "Central African rainforest",
+   "countries": [
+    "drc"
+   ]
+  },
+  "central-african-rainforest-congo": {
+   "name": "Central African rainforest Congo",
+   "countries": [
+    "central-african-republic"
+   ]
+  },
+  "central-america": {
+   "name": "Central America",
+   "countries": [
+    "cuba",
+    "mexico"
+   ]
+  },
+  "central-andes": {
+   "name": "central Andes",
+   "countries": [
+    "peru"
+   ]
+  },
+  "central-andes-historical-inca-empire": {
+   "name": "Central Andes historical Inca Empire",
+   "countries": [
+    "peru"
+   ]
+  },
+  "central-coast": {
+   "name": "central coast",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "central-europe": {
+   "name": "Central Europe",
+   "countries": [
+    "germany",
+    "poland"
+   ]
+  },
+  "central-highlands": {
+   "name": "Central Highlands",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "central-mountain-regions": {
+   "name": "central mountain regions",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "central-provinces": {
+   "name": "central provinces",
+   "countries": [
+    "panama"
+   ]
+  },
+  "centre": {
+   "name": "Centre",
+   "countries": [
+    "cameroon",
+    "cuba"
+   ]
+  },
+  "centre-ojinaga": {
+   "name": "centre Ojinaga",
+   "countries": []
+  },
+  "centre-west": {
+   "name": "Centre-West",
+   "countries": [
+    "brazil",
+    "cote-d-ivoire"
+   ]
+  },
+  "centred-on-jerez": {
+   "name": "centred on Jerez",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "cerro-de-pasco": {
+   "name": "Cerro de Pasco",
+   "countries": [
+    "peru"
+   ]
+  },
+  "chagos": {
+   "name": "Chagos",
+   "countries": [
+    "mauritius"
+   ]
+  },
+  "chagos-archipelago": {
+   "name": "Chagos Archipelago",
+   "countries": []
+  },
+  "chagossian-community": {
+   "name": "Chagossian community",
+   "countries": [
+    "mauritius"
+   ]
+  },
+  "chanhassen": {
+   "name": "Chanhassen",
+   "countries": []
+  },
+  "chewa": {
+   "name": "Chewa",
+   "countries": [
+    "malawi"
+   ]
+  },
+  "chicago": {
+   "name": "Chicago",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "chicago-area": {
+   "name": "Chicago area",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "chicago-south-side": {
+   "name": "Chicago South Side",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "chiefly-houston": {
+   "name": "chiefly Houston",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "chihuahua": {
+   "name": "Chihuahua",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "chilean": {
+   "name": "Chilean",
+   "countries": []
+  },
+  "chiloe-archipelago": {
+   "name": "Chiloé archipelago",
+   "countries": [
+    "chile"
+   ]
+  },
+  "chopi": {
+   "name": "Chopi",
+   "countries": [
+    "mozambique"
+   ]
+  },
+  "chota-valley": {
+   "name": "Chota valley",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "chucuito": {
+   "name": "Chucuito",
+   "countries": [
+    "peru"
+   ]
+  },
+  "chuquisaca": {
+   "name": "Chuquisaca",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "chuvashia": {
+   "name": "Chuvashia",
+   "countries": [
+    "russia"
+   ]
+  },
+  "cibao": {
+   "name": "Cibao",
+   "countries": [
+    "dominican-republic"
+   ]
+  },
+  "cidade-tiradentes": {
+   "name": "Cidade Tiradentes",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "city": {
+   "name": "City",
+   "countries": [
+    "benin",
+    "guatemala",
+    "mexico",
+    "panama"
+   ]
+  },
+  "city-clubs": {
+   "name": "City clubs",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "civil": {
+   "name": "civil",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "cleveland": {
+   "name": "Cleveland",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "coahuila": {
+   "name": "Coahuila",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "coast": {
+   "name": "coast",
+   "countries": [
+    "kenya",
+    "peru",
+    "venezuela"
+   ]
+  },
+  "coast-of-eastern": {
+   "name": "coast of eastern",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "coast-of-sao-paulo": {
+   "name": "coast of São Paulo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "coast-under-german": {
+   "name": "coast under German",
+   "countries": [
+    "malawi"
+   ]
+  },
+  "coastal-east-africa": {
+   "name": "coastal East Africa",
+   "countries": []
+  },
+  "coastal-west-africa": {
+   "name": "Coastal West Africa",
+   "countries": [
+    "sierra-leone"
+   ]
+  },
+  "cochabamba": {
+   "name": "Cochabamba",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "codesria": {
+   "name": "CODESRIA",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "coimbra": {
+   "name": "Coimbra",
+   "countries": [
+    "portugal"
+   ]
+  },
+  "cojutepeque": {
+   "name": "Cojutepeque",
+   "countries": [
+    "el-salvador"
+   ]
+  },
+  "colima": {
+   "name": "Colima",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "collao": {
+   "name": "Collao",
+   "countries": [
+    "peru"
+   ]
+  },
+  "college-towns": {
+   "name": "college towns",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "colombian": {
+   "name": "Colombian",
+   "countries": []
+  },
+  "colombian-pacific": {
+   "name": "Colombian Pacific",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "coloured-communities": {
+   "name": "coloured communities",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "conakry": {
+   "name": "Conakry",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "congo": {
+   "name": "Congo",
+   "countries": [
+    "drc"
+   ]
+  },
+  "connecticut": {
+   "name": "Connecticut",
+   "countries": [
+    "jersey"
+   ]
+  },
+  "constantine": {
+   "name": "Constantine",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "consumed": {
+   "name": "consumed",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "continental-europe": {
+   "name": "Continental Europe",
+   "countries": [
+    "england",
+    "germany",
+    "sweden"
+   ]
+  },
+  "continental-significance": {
+   "name": "continental significance",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "conversation": {
+   "name": "Conversation",
+   "countries": [
+    "algeria",
+    "zambia"
+   ]
+  },
+  "copperbelt": {
+   "name": "Copperbelt",
+   "countries": [
+    "zambia"
+   ]
+  },
+  "cordoba": {
+   "name": "Córdoba",
+   "countries": [
+    "argentina",
+    "colombia"
+   ]
+  },
+  "cordon": {
+   "name": "Cordón",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "cornell": {
+   "name": "Cornell",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "cornwall": {
+   "name": "Cornwall",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "coro": {
+   "name": "Coro",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "corpus-christi": {
+   "name": "Corpus Christi",
+   "countries": []
+  },
+  "corrientes": {
+   "name": "Corrientes",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "corsica": {
+   "name": "Corsica",
+   "countries": [
+    "france"
+   ]
+  },
+  "costa-chica": {
+   "name": "Costa Chica",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "costa-chica-of-guerrero": {
+   "name": "Costa Chica of Guerrero",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "cotonou": {
+   "name": "Cotonou",
+   "countries": [
+    "benin"
+   ]
+  },
+  "cotonou-recording-migration": {
+   "name": "Cotonou recording migration",
+   "countries": []
+  },
+  "country": {
+   "name": "country",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "county-donegal": {
+   "name": "County Donegal",
+   "countries": [
+    "ireland"
+   ]
+  },
+  "coventry": {
+   "name": "Coventry",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "cree-reserves": {
+   "name": "Cree reserves",
+   "countries": [
+    "canada"
+   ]
+  },
+  "crete": {
+   "name": "Crete",
+   "countries": [
+    "greece"
+   ]
+  },
+  "crimea": {
+   "name": "Crimea",
+   "countries": [
+    "ukraine"
+   ]
+  },
+  "crowley": {
+   "name": "Crowley",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "cuban-branches": {
+   "name": "Cuban branches",
+   "countries": []
+  },
+  "cuiaba": {
+   "name": "Cuiabá",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "culiacan": {
+   "name": "Culiacán",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "cundiboyacense-highlands": {
+   "name": "Cundiboyacense highlands",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "curitiba": {
+   "name": "Curitiba",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "cuscatlan": {
+   "name": "Cuscatlán",
+   "countries": [
+    "el-salvador"
+   ]
+  },
+  "cusco": {
+   "name": "Cusco",
+   "countries": [
+    "peru"
+   ]
+  },
+  "cuyo": {
+   "name": "Cuyo",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "dabou-area": {
+   "name": "Dabou area",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "dac": {
+   "name": "DAC",
+   "countries": [
+    "mayotte"
+   ]
+  },
+  "dagaaba-area": {
+   "name": "Dagaaba area",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dagbamba": {
+   "name": "Dagbamba",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dagbang": {
+   "name": "Dagbaŋ",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dagbon": {
+   "name": "Dagbon",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dagomba": {
+   "name": "Dagomba",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dagomba-area": {
+   "name": "Dagomba area",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "dakar": {
+   "name": "Dakar",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "dakar-route-de-ngor": {
+   "name": "Dakar Route de Ngor",
+   "countries": []
+  },
+  "dakpa-areas": {
+   "name": "Dakpa areas",
+   "countries": [
+    "central-african-republic"
+   ]
+  },
+  "dallas": {
+   "name": "Dallas",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "dalmatia": {
+   "name": "Dalmatia",
+   "countries": [
+    "croatia"
+   ]
+  },
+  "dangriga": {
+   "name": "Dangriga",
+   "countries": [
+    "belize"
+   ]
+  },
+  "dar-es-salaam": {
+   "name": "Dar es Salaam",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "dar-es-salaam-area": {
+   "name": "Dar es Salaam area",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "dar-es-salaam-tandale": {
+   "name": "Dar es Salaam Tandale",
+   "countries": []
+  },
+  "dc": {
+   "name": "D.C.",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "dennery": {
+   "name": "Dennery",
+   "countries": [
+    "saint-lucia"
+   ]
+  },
+  "denver": {
+   "name": "Denver",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "detroit": {
+   "name": "Detroit",
+   "countries": [
+    "jersey",
+    "united-states"
+   ]
+  },
+  "developed": {
+   "name": "developed",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "diffused-to": {
+   "name": "diffused to",
+   "countries": [
+    "chile"
+   ]
+  },
+  "dinaric": {
+   "name": "Dinaric",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "dinaric-alps": {
+   "name": "Dinaric Alps",
+   "countries": [
+    "bosnia-and-herzegovina"
+   ]
+  },
+  "discos-fuentes": {
+   "name": "Discos Fuentes",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "disko-bay": {
+   "name": "Disko Bay",
+   "countries": [
+    "greenland"
+   ]
+  },
+  "documented-peruvian-repertoires": {
+   "name": "documented Peruvian repertoires",
+   "countries": [
+    "peru"
+   ]
+  },
+  "dodoma-region": {
+   "name": "Dodoma region",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "donostia": {
+   "name": "Donostia",
+   "countries": [
+    "spain"
+   ]
+  },
+  "douala": {
+   "name": "Douala",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "durango": {
+   "name": "Durango",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "durango-roots": {
+   "name": "Durango roots",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "durban": {
+   "name": "Durban",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "dutch-part": {
+   "name": "Dutch part",
+   "countries": [
+    "sint-maarten"
+   ]
+  },
+  "early-centre-lovedale-mission": {
+   "name": "early centre Lovedale mission",
+   "countries": []
+  },
+  "early-centres-dakar": {
+   "name": "early centres Dakar",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "early-medieval": {
+   "name": "early medieval",
+   "countries": [
+    "france"
+   ]
+  },
+  "early-scenes-in-johannesburg": {
+   "name": "early scenes in Johannesburg",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "east-africa": {
+   "name": "East Africa",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "east-african": {
+   "name": "East African",
+   "countries": [
+    "kenya",
+    "malawi"
+   ]
+  },
+  "east-coast": {
+   "name": "East Coast",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "east-london": {
+   "name": "East London",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "east-los-angeles": {
+   "name": "East Los Angeles",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "east-orange": {
+   "name": "East Orange",
+   "countries": [
+    "jersey"
+   ]
+  },
+  "eastern-cape": {
+   "name": "Eastern Cape",
+   "countries": []
+  },
+  "eastern-coast": {
+   "name": "eastern coast",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "eastern-europe": {
+   "name": "Eastern Europe",
+   "countries": [
+    "russia"
+   ]
+  },
+  "eastern-high-atlas": {
+   "name": "eastern High Atlas",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "eastern-orthodox-slavic": {
+   "name": "Eastern Orthodox Slavic",
+   "countries": [
+    "russia"
+   ]
+  },
+  "eastern-orthodox-world": {
+   "name": "Eastern Orthodox world",
+   "countries": [
+    "greece"
+   ]
+  },
+  "eastlands": {
+   "name": "Eastlands",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "ebute-metta": {
+   "name": "Ebute-Metta",
+   "countries": []
+  },
+  "ecm": {
+   "name": "ECM",
+   "countries": [
+    "germany"
+   ]
+  },
+  "edo": {
+   "name": "Edo",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "edo-state": {
+   "name": "Edo State",
+   "countries": [
+    "benin",
+    "nigeria"
+   ]
+  },
+  "egbado": {
+   "name": "Egbado",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "eje-cafetero": {
+   "name": "Eje Cafetero",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "ekang-area": {
+   "name": "Ekang area",
+   "countries": [
+    "gabon"
+   ]
+  },
+  "elenco": {
+   "name": "Elenco",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "elmina": {
+   "name": "Elmina",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "encyclopediacom": {
+   "name": "Encyclopedia.com",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "english-midlands": {
+   "name": "English Midlands",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "entre-rios": {
+   "name": "Entre Ríos",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "enugu": {
+   "name": "Enugu",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "enugu-state": {
+   "name": "Enugu State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "epirus": {
+   "name": "Epirus",
+   "countries": [
+    "greece"
+   ]
+  },
+  "esan-area": {
+   "name": "Esan area",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "esan-areas": {
+   "name": "Esan areas",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "eseka-area": {
+   "name": "Eséka area",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "esp-baton-rouge": {
+   "name": "esp. Baton Rouge",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "esp-colorado": {
+   "name": "esp. Colorado",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "esp-hollywood": {
+   "name": "esp. Hollywood",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "esp-jalisco": {
+   "name": "esp. Jalisco",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "esp-new-orleans": {
+   "name": "esp. New Orleans",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "esp-new-york": {
+   "name": "esp. New York",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "espirito-santo": {
+   "name": "Espírito Santo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "estado": {
+   "name": "Estado",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "ethiopian-highlands": {
+   "name": "Ethiopian highlands",
+   "countries": []
+  },
+  "ethiopian-orthodox-tewahedo-church": {
+   "name": "Ethiopian Orthodox Tewahedo Church",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "europe-label-axis": {
+   "name": "Europe label axis",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "european-alps": {
+   "name": "European Alps",
+   "countries": [
+    "austria"
+   ]
+  },
+  "ewe-areas": {
+   "name": "Ewe areas",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "ewondo": {
+   "name": "Ewondo",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "exact-national-scope-unresolved": {
+   "name": "exact national scope unresolved",
+   "countries": []
+  },
+  "exile": {
+   "name": "exile",
+   "countries": [
+    "chile"
+   ]
+  },
+  "exile-communities-in-southern": {
+   "name": "exile communities in southern",
+   "countries": [
+    "niger"
+   ]
+  },
+  "extending-to": {
+   "name": "extending to",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "fader": {
+   "name": "FADER",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "falcon": {
+   "name": "Falcón",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "fang": {
+   "name": "Fang",
+   "countries": [
+    "gabon"
+   ]
+  },
+  "fante-coast": {
+   "name": "Fante coast",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "fante-towns": {
+   "name": "Fante towns",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "fields": {
+   "name": "fields",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "fiji": {
+   "name": "Fiji",
+   "countries": []
+  },
+  "finnic-region": {
+   "name": "Finnic region",
+   "countries": [
+    "estonia"
+   ]
+  },
+  "fip": {
+   "name": "FIP",
+   "countries": [
+    "portugal"
+   ]
+  },
+  "fisk": {
+   "name": "Fisk",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "flanders": {
+   "name": "Flanders",
+   "countries": [
+    "belgium",
+    "netherlands"
+   ]
+  },
+  "flat-town-music": {
+   "name": "Flat Town Music",
+   "countries": []
+  },
+  "florida": {
+   "name": "Florida",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "forest": {
+   "name": "forest",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "forest-region": {
+   "name": "forest region",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "former-yugoslavia": {
+   "name": "Former Yugoslavia",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "fort": {
+   "name": "Fort",
+   "countries": [
+    "martinique"
+   ]
+  },
+  "fort-worth": {
+   "name": "Fort Worth",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "fortaleza-peripheries": {
+   "name": "Fortaleza peripheries",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "founded-in-mendoza": {
+   "name": "founded in Mendoza",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "fouta-toro": {
+   "name": "Fouta-Toro",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "francistown": {
+   "name": "Francistown",
+   "countries": [
+    "botswana"
+   ]
+  },
+  "francophone-central": {
+   "name": "Francophone Central",
+   "countries": []
+  },
+  "francophone-europe": {
+   "name": "Francophone Europe",
+   "countries": [
+    "france"
+   ]
+  },
+  "francophone-west-africa": {
+   "name": "Francophone West Africa",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "freetown": {
+   "name": "Freetown",
+   "countries": [
+    "sierra-leone"
+   ]
+  },
+  "french": {
+   "name": "French",
+   "countries": [
+    "canada"
+   ]
+  },
+  "french-antilles": {
+   "name": "French Antilles",
+   "countries": [
+    "guadeloupe"
+   ]
+  },
+  "french-caribbean": {
+   "name": "French Caribbean",
+   "countries": [
+    "guadeloupe"
+   ]
+  },
+  "french-part": {
+   "name": "French part",
+   "countries": [
+    "saint-martin"
+   ]
+  },
+  "fresno": {
+   "name": "Fresno",
+   "countries": [
+    "jersey"
+   ]
+  },
+  "ga-people": {
+   "name": "Ga people",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "gaborone": {
+   "name": "Gaborone",
+   "countries": [
+    "botswana"
+   ]
+  },
+  "gaelic": {
+   "name": "Gaelic",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "gaelic-areas": {
+   "name": "Gaelic areas",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "gagauzia": {
+   "name": "Gagauzia",
+   "countries": [
+    "moldova"
+   ]
+  },
+  "galicia": {
+   "name": "Galicia",
+   "countries": [
+    "spain"
+   ]
+  },
+  "gallo-manor": {
+   "name": "Gallo Manor",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "gambella": {
+   "name": "Gambella",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "game-changers-758": {
+   "name": "Game Changers 758",
+   "countries": [
+    "saint-lucia"
+   ]
+  },
+  "gao-region": {
+   "name": "Gao region",
+   "countries": [
+    "mali"
+   ]
+  },
+  "garifuna-caribbean-coast-communities": {
+   "name": "Garifuna Caribbean-coast communities",
+   "countries": [
+    "nicaragua"
+   ]
+  },
+  "garifuna-coast": {
+   "name": "Garifuna coast",
+   "countries": [
+    "nicaragua"
+   ]
+  },
+  "garifuna-coastal-communities": {
+   "name": "Garifuna coastal communities",
+   "countries": [
+    "guatemala"
+   ]
+  },
+  "garifuna-communities": {
+   "name": "Garifuna communities",
+   "countries": [
+    "belize",
+    "guatemala"
+   ]
+  },
+  "gascony": {
+   "name": "Gascony",
+   "countries": [
+    "france"
+   ]
+  },
+  "gaul": {
+   "name": "Gaul",
+   "countries": [
+    "france"
+   ]
+  },
+  "gauteng": {
+   "name": "Gauteng",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "gauteng-johannesburg": {
+   "name": "Gauteng Johannesburg",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "gauteng-townships": {
+   "name": "Gauteng townships",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "gdr": {
+   "name": "GDR",
+   "countries": [
+    "germany"
+   ]
+  },
+  "genoa": {
+   "name": "Genoa",
+   "countries": [
+    "italy"
+   ]
+  },
+  "german-marketing-axis": {
+   "name": "German marketing axis",
+   "countries": [
+    "italy"
+   ]
+  },
+  "german-speaking-europe": {
+   "name": "German-speaking Europe",
+   "countries": []
+  },
+  "german-speaking-medieval-europe": {
+   "name": "German-speaking medieval Europe",
+   "countries": []
+  },
+  "gikuyu": {
+   "name": "Gikuyu",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "goa-traveller-scene": {
+   "name": "Goa traveller scene",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "goiania": {
+   "name": "Goiânia",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "goias": {
+   "name": "Goiás",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "gomora": {
+   "name": "Gomora",
+   "countries": []
+  },
+  "gothenburg": {
+   "name": "Gothenburg",
+   "countries": [
+    "sweden"
+   ]
+  },
+  "grammycom": {
+   "name": "GRAMMY.com",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "grand-bassam-rhythms": {
+   "name": "Grand-Bassam rhythms",
+   "countries": []
+  },
+  "grande-comore": {
+   "name": "Grande Comore",
+   "countries": [
+    "comoros"
+   ]
+  },
+  "great-lakes": {
+   "name": "Great Lakes",
+   "countries": [
+    "canada"
+   ]
+  },
+  "great-plains": {
+   "name": "Great Plains",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "greater-accra": {
+   "name": "Greater Accra",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "greater-antilles-taino-lands": {
+   "name": "Greater Antilles Taíno lands",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "greater-buenos-aires": {
+   "name": "Greater Buenos Aires",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "greater-buenos-aires-shanty-towns": {
+   "name": "Greater Buenos Aires shanty towns",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "greater-sao-paulo": {
+   "name": "Greater São Paulo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "greek-islands": {
+   "name": "Greek islands",
+   "countries": [
+    "greece"
+   ]
+  },
+  "greenwich-village-centre": {
+   "name": "Greenwich Village centre",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "guantanamo": {
+   "name": "Guantánamo",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "guarico-highlands": {
+   "name": "Guárico highlands",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "guatemalan-traditions": {
+   "name": "Guatemalan traditions",
+   "countries": []
+  },
+  "guayana": {
+   "name": "Guayana",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "guerrero": {
+   "name": "Guerrero",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "guianas": {
+   "name": "Guianas",
+   "countries": [
+    "suriname"
+   ]
+  },
+  "gulu": {
+   "name": "Gulu",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "gurage-zone": {
+   "name": "Gurage Zone",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "hamburg": {
+   "name": "Hamburg",
+   "countries": [
+    "germany"
+   ]
+  },
+  "harare": {
+   "name": "Harare",
+   "countries": [
+    "zimbabwe"
+   ]
+  },
+  "hargeisa": {
+   "name": "Hargeisa",
+   "countries": []
+  },
+  "harlem-to-greenwich-village": {
+   "name": "Harlem to Greenwich Village",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "hastings-street": {
+   "name": "Hastings Street",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "haudenosaunee-territories": {
+   "name": "Haudenosaunee territories",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "havana": {
+   "name": "Havana",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "hawaii": {
+   "name": "Hawai‘i",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "herrera": {
+   "name": "Herrera",
+   "countries": [
+    "panama"
+   ]
+  },
+  "hidalgo": {
+   "name": "Hidalgo",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "highlands": {
+   "name": "Highlands",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "highlands-of-piura": {
+   "name": "highlands of Piura",
+   "countries": [
+    "peru"
+   ]
+  },
+  "hispaniola": {
+   "name": "Hispaniola",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "historical-al-andalus": {
+   "name": "Historical al-Andalus",
+   "countries": [
+    "spain"
+   ]
+  },
+  "historical-urban-musical-practice": {
+   "name": "historical urban musical practice",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "hollywood": {
+   "name": "Hollywood",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "horn-of-africa": {
+   "name": "Horn of Africa",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "house-of-god": {
+   "name": "House of God",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "houston": {
+   "name": "Houston",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "houston-press": {
+   "name": "Houston Press",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "huancavelica": {
+   "name": "Huancavelica",
+   "countries": [
+    "peru"
+   ]
+  },
+  "huanuco": {
+   "name": "Huánuco",
+   "countries": [
+    "peru"
+   ]
+  },
+  "huasteca": {
+   "name": "Huasteca",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "huntington-beach": {
+   "name": "Huntington Beach",
+   "countries": []
+  },
+  "hutsul-carpathians": {
+   "name": "Hutsul Carpathians",
+   "countries": [
+    "ukraine"
+   ]
+  },
+  "ibadan": {
+   "name": "Ibadan",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "iberian": {
+   "name": "Iberian",
+   "countries": []
+  },
+  "iberian-memory": {
+   "name": "Iberian memory",
+   "countries": [
+    "turkey"
+   ]
+  },
+  "iberian-peninsula": {
+   "name": "Iberian Peninsula",
+   "countries": [
+    "spain"
+   ]
+  },
+  "ibiza": {
+   "name": "Ibiza",
+   "countries": [
+    "spain"
+   ]
+  },
+  "ica": {
+   "name": "Ica",
+   "countries": [
+    "peru"
+   ]
+  },
+  "igbo-areas": {
+   "name": "Igbo areas",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "igboland": {
+   "name": "Igboland",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "ijebu-area": {
+   "name": "Ijebu area",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "ijebu-igbo": {
+   "name": "Ijebu-Igbo",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "ijebu-ode": {
+   "name": "Ijebu-Ode",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "illinois": {
+   "name": "Illinois",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ilorin": {
+   "name": "Ilorin",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "imbabura": {
+   "name": "Imbabura",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "indiana": {
+   "name": "Indiana",
+   "countries": []
+  },
+  "indigenous-communities": {
+   "name": "Indigenous communities",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "inhambane-province": {
+   "name": "Inhambane province",
+   "countries": [
+    "mozambique"
+   ]
+  },
+  "interior-alaska": {
+   "name": "Interior Alaska",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "interior-of-sao-paulo": {
+   "name": "interior of São Paulo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "international": {
+   "name": "international",
+   "countries": [
+    "argentina",
+    "jamaica"
+   ]
+  },
+  "international-circulation": {
+   "name": "international circulation",
+   "countries": [
+    "argentina",
+    "brazil",
+    "chile",
+    "jamaica"
+   ]
+  },
+  "international-modern-practice": {
+   "name": "international modern practice",
+   "countries": []
+  },
+  "international-social": {
+   "name": "international social",
+   "countries": []
+  },
+  "ionian-islands": {
+   "name": "Ionian Islands",
+   "countries": [
+    "greece"
+   ]
+  },
+  "ips": {
+   "name": "IPS",
+   "countries": [
+    "benin"
+   ]
+  },
+  "iquitos": {
+   "name": "Iquitos",
+   "countries": [
+    "peru"
+   ]
+  },
+  "islands": {
+   "name": "islands",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "isthmus-of-tehuantepec": {
+   "name": "Isthmus of Tehuantepec",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "istria": {
+   "name": "Istria",
+   "countries": [
+    "croatia"
+   ]
+  },
+  "ituri": {
+   "name": "Ituri",
+   "countries": [
+    "drc"
+   ]
+  },
+  "ituri-forest": {
+   "name": "Ituri forest",
+   "countries": [
+    "drc"
+   ]
+  },
+  "jacksonville": {
+   "name": "Jacksonville",
+   "countries": []
+  },
+  "jaihuayco": {
+   "name": "Jaihuayco",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "jalisco": {
+   "name": "Jalisco",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "james-bay-coast-of-ontario": {
+   "name": "James Bay coast of Ontario",
+   "countries": [
+    "canada"
+   ]
+  },
+  "jerid": {
+   "name": "Jerid",
+   "countries": [
+    "tunisia"
+   ]
+  },
+  "johannesburg": {
+   "name": "Johannesburg",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "johannesburg-clubs": {
+   "name": "Johannesburg clubs",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "johannesburg-townships": {
+   "name": "Johannesburg townships",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "journal-de-saint-barth": {
+   "name": "Journal de Saint-Barth",
+   "countries": [
+    "saint-barthelemy"
+   ]
+  },
+  "jujuy": {
+   "name": "Jujuy",
+   "countries": [
+    "argentina",
+    "bolivia"
+   ]
+  },
+  "junin": {
+   "name": "Junín",
+   "countries": [
+    "peru"
+   ]
+  },
+  "kabaka-royal-palace": {
+   "name": "Kabaka royal palace",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "kabye": {
+   "name": "Kabye",
+   "countries": [
+    "togo"
+   ]
+  },
+  "kabylie": {
+   "name": "Kabylie",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "kalahari": {
+   "name": "Kalahari",
+   "countries": [
+    "namibia"
+   ]
+  },
+  "kalawa-jazmee": {
+   "name": "Kalawa Jazmee",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "kallawaya-region": {
+   "name": "Kallawaya region",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "kampala": {
+   "name": "Kampala",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "kano": {
+   "name": "Kano",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "kansas-city": {
+   "name": "Kansas City",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "kara-region": {
+   "name": "Kara region",
+   "countries": [
+    "togo"
+   ]
+  },
+  "karelia": {
+   "name": "Karelia",
+   "countries": [
+    "finland"
+   ]
+  },
+  "kasai-region": {
+   "name": "Kasaï region",
+   "countries": [
+    "drc"
+   ]
+  },
+  "kashubia": {
+   "name": "Kashubia",
+   "countries": [
+    "poland"
+   ]
+  },
+  "kassala": {
+   "name": "Kassala",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "keith-dominion-churches": {
+   "name": "Keith Dominion churches",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "kentucky": {
+   "name": "Kentucky",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "kenyan-coast": {
+   "name": "Kenyan coast",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "khartoum": {
+   "name": "Khartoum",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "kigali": {
+   "name": "Kigali",
+   "countries": [
+    "rwanda"
+   ]
+  },
+  "kikuyu": {
+   "name": "Kikuyu",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "kingston": {
+   "name": "Kingston",
+   "countries": [
+    "jamaica"
+   ]
+  },
+  "kinshasa": {
+   "name": "Kinshasa",
+   "countries": [
+    "drc",
+    "republic-of-the-congo"
+   ]
+  },
+  "kitgum": {
+   "name": "Kitgum",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "kitwe": {
+   "name": "Kitwe",
+   "countries": [
+    "zambia"
+   ]
+  },
+  "klikor": {
+   "name": "Klikor",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "kpando": {
+   "name": "Kpando",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "krajina": {
+   "name": "Krajina",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "krakow-region": {
+   "name": "Kraków region",
+   "countries": [
+    "poland"
+   ]
+  },
+  "kru-coast": {
+   "name": "Kru coast",
+   "countries": [
+    "liberia"
+   ]
+  },
+  "kujawy": {
+   "name": "Kujawy",
+   "countries": [
+    "poland"
+   ]
+  },
+  "kumasi": {
+   "name": "Kumasi",
+   "countries": [
+    "ghana",
+    "nigeria"
+   ]
+  },
+  "kurpie": {
+   "name": "Kurpie",
+   "countries": [
+    "poland"
+   ]
+  },
+  "kwara-state": {
+   "name": "Kwara State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "kwazulu-natal": {
+   "name": "KwaZulu-Natal",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "laberia": {
+   "name": "Labëria",
+   "countries": [
+    "albania"
+   ]
+  },
+  "labrador": {
+   "name": "Labrador",
+   "countries": [
+    "canada"
+   ]
+  },
+  "lagos": {
+   "name": "Lagos",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "lagos-apapa": {
+   "name": "Lagos Apapa",
+   "countries": []
+  },
+  "lagos-audience": {
+   "name": "Lagos audience",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "laguna": {
+   "name": "Laguna",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "lake-titicaca": {
+   "name": "Lake Titicaca",
+   "countries": [
+    "peru"
+   ]
+  },
+  "lambayeque": {
+   "name": "Lambayeque",
+   "countries": [
+    "peru"
+   ]
+  },
+  "lamu": {
+   "name": "Lamu",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "lara": {
+   "name": "Lara",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "later": {
+   "name": "later",
+   "countries": [
+    "honduras",
+    "nigeria"
+   ]
+  },
+  "later-chicago": {
+   "name": "later Chicago",
+   "countries": []
+  },
+  "later-kilimani": {
+   "name": "later Kilimani",
+   "countries": []
+  },
+  "later-lome": {
+   "name": "later Lomé",
+   "countries": []
+  },
+  "later-northern": {
+   "name": "later northern",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "later-paris-suburbs": {
+   "name": "later Paris suburbs",
+   "countries": [
+    "france"
+   ]
+  },
+  "later-washington-dc": {
+   "name": "later Washington DC",
+   "countries": []
+  },
+  "latin": {
+   "name": "Latin",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "latin-america": {
+   "name": "Latin America",
+   "countries": [
+    "argentina",
+    "colombia",
+    "puerto-rico",
+    "spain",
+    "united-states"
+   ]
+  },
+  "latin-america-documented-argentine": {
+   "name": "Latin America documented Argentine",
+   "countries": []
+  },
+  "latin-america-documented-centres": {
+   "name": "Latin America documented centres",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "latin-america-incl": {
+   "name": "Latin America incl.",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "latin-american": {
+   "name": "Latin American",
+   "countries": []
+  },
+  "latin-american-circulation": {
+   "name": "Latin American circulation",
+   "countries": []
+  },
+  "latin-church": {
+   "name": "Latin Church",
+   "countries": []
+  },
+  "latin-jazz": {
+   "name": "Latin jazz",
+   "countries": []
+  },
+  "latino-scenes": {
+   "name": "Latino scenes",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "leicestershire-music-hub": {
+   "name": "Leicestershire Music Hub",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "leopoldville": {
+   "name": "Léopoldville",
+   "countries": [
+    "drc"
+   ]
+  },
+  "libertad": {
+   "name": "Libertad",
+   "countries": [
+    "peru"
+   ]
+  },
+  "library-of-congress": {
+   "name": "Library of Congress",
+   "countries": [
+    "canada"
+   ]
+  },
+  "libreville": {
+   "name": "Libreville",
+   "countries": [
+    "gabon"
+   ]
+  },
+  "liguria": {
+   "name": "Liguria",
+   "countries": [
+    "italy"
+   ]
+  },
+  "lima": {
+   "name": "Lima",
+   "countries": [
+    "peru"
+   ]
+  },
+  "lima-highlands": {
+   "name": "Lima highlands",
+   "countries": [
+    "peru"
+   ]
+  },
+  "limon": {
+   "name": "Limón",
+   "countries": [
+    "costa-rica"
+   ]
+  },
+  "limpopo": {
+   "name": "Limpopo",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "lira": {
+   "name": "Lira",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "lisbon": {
+   "name": "Lisbon",
+   "countries": []
+  },
+  "lisbon-suburbs": {
+   "name": "Lisbon suburbs",
+   "countries": [
+    "portugal"
+   ]
+  },
+  "lisbon-suburbs-amadora": {
+   "name": "Lisbon suburbs Amadora",
+   "countries": []
+  },
+  "litoral": {
+   "name": "Litoral",
+   "countries": [
+    "paraguay"
+   ]
+  },
+  "littoral": {
+   "name": "Littoral",
+   "countries": [
+    "argentina",
+    "cameroon"
+   ]
+  },
+  "liverpool": {
+   "name": "Liverpool",
+   "countries": [
+    "england",
+    "united-kingdom"
+   ]
+  },
+  "livonian-coast": {
+   "name": "Livonian Coast",
+   "countries": [
+    "latvia"
+   ]
+  },
+  "llanos": {
+   "name": "Llanos",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "lobaye": {
+   "name": "Lobaye",
+   "countries": [
+    "central-african-republic"
+   ]
+  },
+  "loc": {
+   "name": "LoC",
+   "countries": [
+    "mexico",
+    "united-states"
+   ]
+  },
+  "london": {
+   "name": "London",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "long-beach": {
+   "name": "Long Beach",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "los-angeles": {
+   "name": "Los Angeles",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "los-santos": {
+   "name": "Los Santos",
+   "countries": [
+    "panama"
+   ]
+  },
+  "louisiana": {
+   "name": "Louisiana",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "louisville": {
+   "name": "Louisville",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "lourenco-marques": {
+   "name": "Lourenço Marques",
+   "countries": [
+    "mozambique"
+   ]
+  },
+  "lower-colorado-river": {
+   "name": "lower Colorado River",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "lower-east-side": {
+   "name": "Lower East Side",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "luanda": {
+   "name": "Luanda",
+   "countries": [
+    "angola"
+   ]
+  },
+  "luanda-musseques": {
+   "name": "Luanda musseques",
+   "countries": []
+  },
+  "lubbock": {
+   "name": "Lubbock",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "luhya-community": {
+   "name": "Luhya community",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "luo-community": {
+   "name": "Luo community",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "luo-nyanza": {
+   "name": "Luo Nyanza",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "lusaka": {
+   "name": "Lusaka",
+   "countries": [
+    "zambia"
+   ]
+  },
+  "lusophone-countries": {
+   "name": "Lusophone countries",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "machakos": {
+   "name": "Machakos",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "macon": {
+   "name": "Macon",
+   "countries": [
+    "georgia"
+   ]
+  },
+  "madchester": {
+   "name": "Madchester",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "madrid": {
+   "name": "Madrid",
+   "countries": [
+    "spain"
+   ]
+  },
+  "mafikeng": {
+   "name": "Mafikeng",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "magdalena-river-region": {
+   "name": "Magdalena river region",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "maghreb": {
+   "name": "Maghreb",
+   "countries": []
+  },
+  "mahikeng": {
+   "name": "Mahikeng",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "mainland-tin-pan-alley": {
+   "name": "mainland Tin Pan Alley",
+   "countries": []
+  },
+  "mainly-the-eastern-cape": {
+   "name": "mainly the Eastern Cape",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "maio-islands": {
+   "name": "Maio islands",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "makhanda": {
+   "name": "Makhanda",
+   "countries": []
+  },
+  "mamelodi": {
+   "name": "Mamelodi",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "mamelodi-west": {
+   "name": "Mamelodi West",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "manakara-farafangana": {
+   "name": "Manakara Farafangana",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "manchester": {
+   "name": "Manchester",
+   "countries": [
+    "england",
+    "united-kingdom"
+   ]
+  },
+  "mande-area-niagassola": {
+   "name": "Mande area Niagassola",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "manhattan": {
+   "name": "Manhattan",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "mantaro-valley": {
+   "name": "Mantaro Valley",
+   "countries": [
+    "peru"
+   ]
+  },
+  "manzanillo-festival-1972": {
+   "name": "Manzanillo festival 1972",
+   "countries": []
+  },
+  "mapuche-communities": {
+   "name": "Mapuche communities",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "maputo": {
+   "name": "Maputo",
+   "countries": [
+    "mozambique"
+   ]
+  },
+  "maranhao": {
+   "name": "Maranhão",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "margarita": {
+   "name": "Margarita",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "mari": {
+   "name": "Mari",
+   "countries": [
+    "russia"
+   ]
+  },
+  "maroni": {
+   "name": "Maroni",
+   "countries": [
+    "suriname"
+   ]
+  },
+  "maroon-communities": {
+   "name": "Maroon communities",
+   "countries": [
+    "jamaica"
+   ]
+  },
+  "marowijne": {
+   "name": "Marowijne",
+   "countries": [
+    "suriname"
+   ]
+  },
+  "marrakesh": {
+   "name": "Marrakesh",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "maryland": {
+   "name": "Maryland",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "mascara": {
+   "name": "Mascara",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "mascarene-islands": {
+   "name": "Mascarene Islands",
+   "countries": [
+    "mauritius",
+    "seychelles"
+   ]
+  },
+  "mascarene-islands-rodrigues": {
+   "name": "Mascarene Islands Rodrigues",
+   "countries": [
+    "mauritius"
+   ]
+  },
+  "massachusetts-origin": {
+   "name": "Massachusetts origin",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "matanzas": {
+   "name": "Matanzas",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "mato-grosso": {
+   "name": "Mato Grosso",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "mato-grosso-do-sul": {
+   "name": "Mato Grosso do Sul",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "maxs-kansas-city": {
+   "name": "Max’s Kansas City",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "maxwell-street": {
+   "name": "Maxwell Street",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "maya-communities-documented-mexican": {
+   "name": "Maya communities documented Mexican",
+   "countries": []
+  },
+  "mbale": {
+   "name": "Mbale",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "mbare": {
+   "name": "Mbare",
+   "countries": [
+    "zimbabwe"
+   ]
+  },
+  "medellin": {
+   "name": "Medellín",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "meknes": {
+   "name": "Meknès",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "melodigging": {
+   "name": "Melodigging",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "melodigging-only": {
+   "name": "Melodigging only",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "memphis": {
+   "name": "Memphis",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "menabe-region": {
+   "name": "Menabe region",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "mengo": {
+   "name": "Mengo",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "merida": {
+   "name": "Mérida",
+   "countries": [
+    "mexico",
+    "venezuela"
+   ]
+  },
+  "mexican-american": {
+   "name": "Mexican-American",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "mexican-communities": {
+   "name": "Mexican communities",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "miami": {
+   "name": "Miami",
+   "countries": [
+    "dominican-republic",
+    "united-states"
+   ]
+  },
+  "michigan": {
+   "name": "Michigan",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "michoacan": {
+   "name": "Michoacán",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "middle-atlas": {
+   "name": "Middle Atlas",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "middle-east": {
+   "name": "Middle East",
+   "countries": []
+  },
+  "midwest": {
+   "name": "Midwest",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "milan": {
+   "name": "Milan",
+   "countries": [
+    "italy"
+   ]
+  },
+  "military-bands": {
+   "name": "military bands",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "minas-gerais": {
+   "name": "Minas Gerais",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "mindelo": {
+   "name": "Mindelo",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "minneapolis": {
+   "name": "Minneapolis",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "minnesota": {
+   "name": "Minnesota",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "miranda": {
+   "name": "Miranda",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "misrata": {
+   "name": "Misrata",
+   "countries": [
+    "libya"
+   ]
+  },
+  "mississippi-delta": {
+   "name": "Mississippi Delta",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "missouri": {
+   "name": "Missouri",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "moldavia": {
+   "name": "Moldavia",
+   "countries": [
+    "romania"
+   ]
+  },
+  "mombasa": {
+   "name": "Mombasa",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "monagas": {
+   "name": "Monagas",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "mondo-music": {
+   "name": "Mondo Music",
+   "countries": [
+    "zambia"
+   ]
+  },
+  "mono": {
+   "name": "Mono",
+   "countries": [
+    "benin"
+   ]
+  },
+  "mono-region-variant": {
+   "name": "Mono region variant",
+   "countries": []
+  },
+  "monrovia": {
+   "name": "Monrovia",
+   "countries": [
+    "liberia"
+   ]
+  },
+  "montana": {
+   "name": "Montana",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "monterrey": {
+   "name": "Monterrey",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "montevideo": {
+   "name": "Montevideo",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "moravia": {
+   "name": "Moravia",
+   "countries": [
+    "czechia"
+   ]
+  },
+  "mordovia": {
+   "name": "Mordovia",
+   "countries": [
+    "russia"
+   ]
+  },
+  "moyen-mono": {
+   "name": "Moyen-Mono",
+   "countries": [
+    "benin"
+   ]
+  },
+  "moyobamba": {
+   "name": "Moyobamba",
+   "countries": [
+    "peru"
+   ]
+  },
+  "mtogole": {
+   "name": "Mtogole",
+   "countries": []
+  },
+  "munich": {
+   "name": "Munich",
+   "countries": [
+    "germany"
+   ]
+  },
+  "muscle-shoals": {
+   "name": "Muscle Shoals",
+   "countries": []
+  },
+  "music-atlas": {
+   "name": "Music Atlas",
+   "countries": [
+    "jamaica"
+   ]
+  },
+  "music-in-africa": {
+   "name": "Music In Africa",
+   "countries": [
+    "cote-d-ivoire",
+    "mali",
+    "south-africa",
+    "tanzania",
+    "uganda",
+    "zambia",
+    "zimbabwe"
+   ]
+  },
+  "music-metrics-vault": {
+   "name": "Music Metrics Vault",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "nacion": {
+   "name": "Nación",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "nahua-communities": {
+   "name": "Nahua communities",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "nairobi": {
+   "name": "Nairobi",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "naples": {
+   "name": "Naples",
+   "countries": [
+    "italy"
+   ]
+  },
+  "nashville": {
+   "name": "Nashville",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "nassau": {
+   "name": "Nassau",
+   "countries": [
+    "bahamas"
+   ]
+  },
+  "national": {
+   "name": "national",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "national-circulation": {
+   "name": "national circulation",
+   "countries": [
+    "brazil",
+    "uruguay"
+   ]
+  },
+  "national-folklore": {
+   "name": "national folklore",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "national-revival": {
+   "name": "national revival",
+   "countries": []
+  },
+  "national-spread": {
+   "name": "national spread",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "nationwide": {
+   "name": "nationwide",
+   "countries": [
+    "panama"
+   ]
+  },
+  "navajo-nation": {
+   "name": "Navajo Nation",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "nearby-towns": {
+   "name": "nearby towns",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "neighbouring-west-central-areas": {
+   "name": "neighbouring west-central areas",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "new": {
+   "name": "New",
+   "countries": [
+    "england",
+    "jersey",
+    "mexico"
+   ]
+  },
+  "new-bell": {
+   "name": "New-Bell",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "new-brunswick": {
+   "name": "New Brunswick",
+   "countries": [
+    "canada"
+   ]
+  },
+  "new-orleans": {
+   "name": "New Orleans",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "new-york": {
+   "name": "New York",
+   "countries": [
+    "cuba",
+    "england",
+    "jersey",
+    "mexico",
+    "united-states"
+   ]
+  },
+  "new-york-city": {
+   "name": "New York City",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "new-york-city-bronx": {
+   "name": "New York City Bronx",
+   "countries": []
+  },
+  "new-york-origin": {
+   "name": "New York origin",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "new-york-recording-camps": {
+   "name": "New York recording camps",
+   "countries": []
+  },
+  "newark": {
+   "name": "Newark",
+   "countries": [
+    "jersey",
+    "united-states"
+   ]
+  },
+  "newfoundland": {
+   "name": "Newfoundland",
+   "countries": [
+    "canada"
+   ]
+  },
+  "ngazidja": {
+   "name": "Ngazidja",
+   "countries": [
+    "comoros"
+   ]
+  },
+  "nile-valley-egyptian-nubia": {
+   "name": "Nile valley Egyptian Nubia",
+   "countries": []
+  },
+  "nnewi-south": {
+   "name": "Nnewi South",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "nordic": {
+   "name": "Nordic",
+   "countries": [
+    "finland",
+    "sweden"
+   ]
+  },
+  "nordic-countries": {
+   "name": "Nordic countries",
+   "countries": []
+  },
+  "north-africa": {
+   "name": "North Africa",
+   "countries": [
+    "egypt",
+    "morocco"
+   ]
+  },
+  "north-america": {
+   "name": "North America",
+   "countries": []
+  },
+  "north-caicos": {
+   "name": "North Caicos",
+   "countries": [
+    "turks-and-caicos-islands"
+   ]
+  },
+  "north-centre": {
+   "name": "north-centre",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "north-mississippi-hill-country": {
+   "name": "north Mississippi hill country",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "north-west-africa": {
+   "name": "north-west Africa",
+   "countries": []
+  },
+  "north-western-somali-territories": {
+   "name": "north-western Somali territories",
+   "countries": []
+  },
+  "northeast-sertao": {
+   "name": "Northeast sertão",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "northern-america": {
+   "name": "Northern America",
+   "countries": []
+  },
+  "northern-coast": {
+   "name": "northern coast",
+   "countries": [
+    "peru"
+   ]
+  },
+  "northern-cojedes": {
+   "name": "northern Cojedes",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "northern-europe": {
+   "name": "Northern Europe",
+   "countries": [
+    "austria"
+   ]
+  },
+  "northern-la-paz": {
+   "name": "northern La Paz",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "northern-new": {
+   "name": "northern New",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "northern-plains": {
+   "name": "Northern Plains",
+   "countries": [
+    "canada"
+   ]
+  },
+  "northern-potosi": {
+   "name": "Northern Potosí",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "northern-somali-towns-saylac": {
+   "name": "Northern Somali towns Saylac",
+   "countries": []
+  },
+  "northern-states": {
+   "name": "northern states",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "northern-vancouver-island": {
+   "name": "northern Vancouver Island",
+   "countries": [
+    "canada"
+   ]
+  },
+  "northumberland": {
+   "name": "Northumberland",
+   "countries": [
+    "england"
+   ]
+  },
+  "northwest-territories": {
+   "name": "Northwest Territories",
+   "countries": [
+    "canada"
+   ]
+  },
+  "northwestern-traditions": {
+   "name": "northwestern traditions",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "not-africa": {
+   "name": "not Africa",
+   "countries": []
+  },
+  "not-north-america": {
+   "name": "not North America",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "notre-dame": {
+   "name": "Notre-Dame",
+   "countries": [
+    "france"
+   ]
+  },
+  "nouakchott": {
+   "name": "Nouakchott",
+   "countries": [
+    "mauritania"
+   ]
+  },
+  "nova-scotia": {
+   "name": "Nova Scotia",
+   "countries": [
+    "canada"
+   ]
+  },
+  "nsukka": {
+   "name": "Nsukka",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "nueva-esparta": {
+   "name": "Nueva Esparta",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "nuevo-leon": {
+   "name": "Nuevo León",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "numeridanse": {
+   "name": "Numeridanse",
+   "countries": [
+    "benin"
+   ]
+  },
+  "nunatsiavut": {
+   "name": "Nunatsiavut",
+   "countries": [
+    "greenland"
+   ]
+  },
+  "nunavik": {
+   "name": "Nunavik",
+   "countries": [
+    "canada"
+   ]
+  },
+  "nunavut": {
+   "name": "Nunavut",
+   "countries": [
+    "canada"
+   ]
+  },
+  "nwt": {
+   "name": "NWT",
+   "countries": [
+    "canada"
+   ]
+  },
+  "oakland": {
+   "name": "Oakland",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "oaxaca": {
+   "name": "Oaxaca",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "oaxaca-state": {
+   "name": "Oaxaca state",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "oc-weekly": {
+   "name": "OC Weekly",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "occitania": {
+   "name": "Occitania",
+   "countries": [
+    "france"
+   ]
+  },
+  "ogaden": {
+   "name": "Ogaden",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "ogun-state": {
+   "name": "Ogun State",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "ohio": {
+   "name": "Ohio",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "oklahoma": {
+   "name": "Oklahoma",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "olinda": {
+   "name": "Olinda",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "omdurman": {
+   "name": "Omdurman",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "onitsha-pulse": {
+   "name": "Onitsha Pulse",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "online": {
+   "name": "online",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ontario": {
+   "name": "Ontario",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ora": {
+   "name": "Ora",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "oran": {
+   "name": "Oran",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "oran-cassette": {
+   "name": "Oran cassette",
+   "countries": []
+  },
+  "oran-region": {
+   "name": "Oran region",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "oranie-region": {
+   "name": "Oranie region",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "oriente": {
+   "name": "Oriente",
+   "countries": [
+    "bolivia",
+    "cuba"
+   ]
+  },
+  "orkney": {
+   "name": "Orkney",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "orlando": {
+   "name": "Orlando",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "oromia": {
+   "name": "Oromia",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "orthodox-slavic": {
+   "name": "Orthodox Slavic",
+   "countries": [
+    "russia"
+   ]
+  },
+  "otavalo": {
+   "name": "Otavalo",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "other-cities": {
+   "name": "other cities",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "other-reservations": {
+   "name": "other reservations",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "other-states": {
+   "name": "other states",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "ottoman-balkans": {
+   "name": "Ottoman Balkans",
+   "countries": [
+    "greece"
+   ]
+  },
+  "ouagadougou": {
+   "name": "Ouagadougou",
+   "countries": [
+    "burkina-faso"
+   ]
+  },
+  "oueme": {
+   "name": "Ouémé",
+   "countries": [
+    "benin"
+   ]
+  },
+  "outer-hebrides": {
+   "name": "Outer Hebrides",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "owan": {
+   "name": "Owan",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "owerri": {
+   "name": "Owerri",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "pacific-northwest": {
+   "name": "Pacific Northwest",
+   "countries": []
+  },
+  "palermo": {
+   "name": "Palermo",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "pampas": {
+   "name": "Pampas",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "pan-african": {
+   "name": "Pan-African",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "pannonian": {
+   "name": "Pannonian",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "papal-liturgy": {
+   "name": "Papal liturgy",
+   "countries": [
+    "italy"
+   ]
+  },
+  "para": {
+   "name": "Pará",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "paramaribo": {
+   "name": "Paramaribo",
+   "countries": [
+    "suriname"
+   ]
+  },
+  "parana": {
+   "name": "Paraná",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "paris": {
+   "name": "Paris",
+   "countries": [
+    "algeria",
+    "drc",
+    "france"
+   ]
+  },
+  "paris-ivorian-club-scene": {
+   "name": "Paris Ivorian club scene",
+   "countries": []
+  },
+  "parts-of-bosnia": {
+   "name": "parts of Bosnia",
+   "countries": []
+  },
+  "pasco": {
+   "name": "Pasco",
+   "countries": [
+    "peru"
+   ]
+  },
+  "paz": {
+   "name": "Paz",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "pei": {
+   "name": "PEI",
+   "countries": [
+    "canada"
+   ]
+  },
+  "peloponnese": {
+   "name": "Peloponnese",
+   "countries": [
+    "greece"
+   ]
+  },
+  "pennsylvania": {
+   "name": "Pennsylvania",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "pernambuco": {
+   "name": "Pernambuco",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "pernambuco-sertao": {
+   "name": "Pernambuco sertão",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "philadelphia": {
+   "name": "Philadelphia",
+   "countries": [
+    "jersey",
+    "united-states"
+   ]
+  },
+  "piedmont-from-virginia-to": {
+   "name": "Piedmont from Virginia to",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "pinar-del-rio": {
+   "name": "Pinar del Río",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "pitchfork": {
+   "name": "Pitchfork",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "piura": {
+   "name": "Piura",
+   "countries": [
+    "peru"
+   ]
+  },
+  "plains": {
+   "name": "Plains",
+   "countries": [
+    "canada"
+   ]
+  },
+  "plateau-department": {
+   "name": "Plateau Department",
+   "countries": [
+    "benin"
+   ]
+  },
+  "podhale": {
+   "name": "Podhale",
+   "countries": [
+    "poland"
+   ]
+  },
+  "polish-highlands": {
+   "name": "Polish highlands",
+   "countries": [
+    "poland"
+   ]
+  },
+  "polka-belt-of-the-northeast": {
+   "name": "“Polka Belt” of the Northeast",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ponce": {
+   "name": "Ponce",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "popmatters": {
+   "name": "PopMatters",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "port": {
+   "name": "Port",
+   "countries": [
+    "spain",
+    "sudan"
+   ]
+  },
+  "port-au-prince": {
+   "name": "Port-au-Prince",
+   "countries": [
+    "haiti"
+   ]
+  },
+  "porto-novo": {
+   "name": "Porto Novo",
+   "countries": [
+    "benin",
+    "cape-verde"
+   ]
+  },
+  "potosi": {
+   "name": "Potosí",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "praia": {
+   "name": "Praia",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "prairies": {
+   "name": "Prairies",
+   "countries": [
+    "canada"
+   ]
+  },
+  "pretoria": {
+   "name": "Pretoria",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "prince-edward-island": {
+   "name": "Prince Edward Island",
+   "countries": [
+    "canada"
+   ]
+  },
+  "prison-farms": {
+   "name": "prison farms",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "puebla": {
+   "name": "Puebla",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "puerto-plata": {
+   "name": "Puerto Plata",
+   "countries": [
+    "dominican-republic"
+   ]
+  },
+  "puno": {
+   "name": "Puno",
+   "countries": [
+    "peru"
+   ]
+  },
+  "quebec": {
+   "name": "Quebec",
+   "countries": [
+    "canada",
+    "united-states"
+   ]
+  },
+  "quechua-speaking-andean-communities": {
+   "name": "Quechua-speaking Andean communities",
+   "countries": [
+    "peru"
+   ]
+  },
+  "quechua-speaking-andean-regions": {
+   "name": "Quechua-speaking Andean regions",
+   "countries": [
+    "peru"
+   ]
+  },
+  "queluz": {
+   "name": "Queluz",
+   "countries": []
+  },
+  "quintana-roo": {
+   "name": "Quintana Roo",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "qullissat": {
+   "name": "Qullissat",
+   "countries": [
+    "greenland"
+   ]
+  },
+  "rbma": {
+   "name": "RBMA",
+   "countries": [
+    "georgia",
+    "united-states"
+   ]
+  },
+  "recife": {
+   "name": "Recife",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "reconcavo": {
+   "name": "Recôncavo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "reconcavo-of-bahia": {
+   "name": "Recôncavo of Bahia",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "recording-industry": {
+   "name": "recording industry",
+   "countries": []
+  },
+  "red-river": {
+   "name": "Red River",
+   "countries": [
+    "canada"
+   ]
+  },
+  "red-sea-hills": {
+   "name": "Red Sea Hills",
+   "countries": [
+    "sudan"
+   ]
+  },
+  "related-central-venezuelan-practice": {
+   "name": "related central Venezuelan practice",
+   "countries": []
+  },
+  "repertory": {
+   "name": "repertory",
+   "countries": [
+    "cyprus"
+   ]
+  },
+  "rezo-ivoire": {
+   "name": "Rezo-Ivoire",
+   "countries": [
+    "cote-d-ivoire"
+   ]
+  },
+  "richmond": {
+   "name": "Richmond",
+   "countries": []
+  },
+  "rif": {
+   "name": "Rif",
+   "countries": [
+    "algeria",
+    "morocco"
+   ]
+  },
+  "rincon": {
+   "name": "Rincon",
+   "countries": [
+    "caribbean-netherlands"
+   ]
+  },
+  "rio": {
+   "name": "Rio",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "rio-de-janeiro": {
+   "name": "Rio de Janeiro",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "rio-de-janeiro-favelas": {
+   "name": "Rio de Janeiro favelas",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "rio-de-janeiro-salons": {
+   "name": "Rio de Janeiro salons",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "rio-de-la-plata": {
+   "name": "Río de la Plata",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "rio-grande-do-sul": {
+   "name": "Rio Grande do Sul",
+   "countries": [
+    "brazil",
+    "uruguay"
+   ]
+  },
+  "rioja": {
+   "name": "Rioja",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "river": {
+   "name": "River",
+   "countries": [
+    "suriname"
+   ]
+  },
+  "riverwalk-jazz": {
+   "name": "Riverwalk Jazz",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "rodrigues-island": {
+   "name": "Rodrigues Island",
+   "countries": [
+    "mauritius"
+   ]
+  },
+  "roman-empire": {
+   "name": "Roman Empire",
+   "countries": [
+    "italy"
+   ]
+  },
+  "romance-language-cultural-regions-of-the-americas": {
+   "name": "Romance-language cultural regions of the Americas",
+   "countries": []
+  },
+  "rome": {
+   "name": "Rome",
+   "countries": [
+    "italy"
+   ]
+  },
+  "rooted-in-savalou": {
+   "name": "rooted in Savalou",
+   "countries": []
+  },
+  "roots-in-mamelodi": {
+   "name": "roots in Mamelodi",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "roots-in-the-nde-department": {
+   "name": "roots in the Ndé department",
+   "countries": []
+  },
+  "rotterdam": {
+   "name": "Rotterdam",
+   "countries": [
+    "netherlands"
+   ]
+  },
+  "rural-central": {
+   "name": "rural central",
+   "countries": [
+    "chile"
+   ]
+  },
+  "rural-midwest": {
+   "name": "rural Midwest",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "rural-south": {
+   "name": "rural South",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "rural-west": {
+   "name": "rural west",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "rural-western": {
+   "name": "Rural western",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "sa-history-online": {
+   "name": "SA History Online",
+   "countries": []
+  },
+  "saba": {
+   "name": "Saba",
+   "countries": []
+  },
+  "sahara": {
+   "name": "Sahara",
+   "countries": [
+    "mali"
+   ]
+  },
+  "saharan-tuareg-areas": {
+   "name": "Saharan Tuareg areas",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "sahel": {
+   "name": "Sahel",
+   "countries": [
+    "mali",
+    "senegal"
+   ]
+  },
+  "sahel-tuareg-communities": {
+   "name": "Sahel Tuareg communities",
+   "countries": [
+    "mali"
+   ]
+  },
+  "saho": {
+   "name": "SAHO",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "sahrawi-refugee-camps": {
+   "name": "Sahrawi refugee camps",
+   "countries": [
+    "western-sahara"
+   ]
+  },
+  "said": {
+   "name": "Ṣa‘īd",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "saida": {
+   "name": "Saïda",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "sale": {
+   "name": "Salé",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "salento": {
+   "name": "Salento",
+   "countries": [
+    "italy"
+   ]
+  },
+  "salisbury": {
+   "name": "Salisbury",
+   "countries": []
+  },
+  "salisbury-use": {
+   "name": "Salisbury Use",
+   "countries": [
+    "england"
+   ]
+  },
+  "salta": {
+   "name": "Salta",
+   "countries": [
+    "argentina",
+    "bolivia"
+   ]
+  },
+  "salvador": {
+   "name": "Salvador",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "san-antonio": {
+   "name": "San Antonio",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "san-basilio-de-palenque": {
+   "name": "San Basilio de Palenque",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "san-francisco": {
+   "name": "San Francisco",
+   "countries": []
+  },
+  "san-francisco-bay-area": {
+   "name": "San Francisco Bay Area",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "san-jose-de-guaribe": {
+   "name": "San José de Guaribe",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "san-juan": {
+   "name": "San Juan",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "san-juan-underground": {
+   "name": "San Juan “underground”",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "san-luis-potosi": {
+   "name": "San Luis Potosí",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "san-sebastian": {
+   "name": "San Sebastián",
+   "countries": [
+    "spain"
+   ]
+  },
+  "sandton": {
+   "name": "Sandton",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "santa-cruz": {
+   "name": "Santa Cruz",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "santa-fe": {
+   "name": "Santa Fe",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "santa-fe-city": {
+   "name": "Santa Fe city",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "santasi": {
+   "name": "Santasi",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "santiago": {
+   "name": "Santiago",
+   "countries": [
+    "cape-verde",
+    "chile",
+    "cuba"
+   ]
+  },
+  "santiago-del-estero": {
+   "name": "Santiago del Estero",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "santiago-island": {
+   "name": "Santiago island",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "santo-antao": {
+   "name": "Santo Antão",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "santo-domingo": {
+   "name": "Santo Domingo",
+   "countries": [
+    "dominican-republic"
+   ]
+  },
+  "sao-nicolau": {
+   "name": "São Nicolau",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "sao-paulo": {
+   "name": "São Paulo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "sao-vicente": {
+   "name": "São Vicente",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "sao-vicente-island": {
+   "name": "São Vicente island",
+   "countries": [
+    "cape-verde"
+   ]
+  },
+  "sapioriz": {
+   "name": "Sapioriz",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "sapmi": {
+   "name": "Sápmi",
+   "countries": [
+    "norway"
+   ]
+  },
+  "sardinia": {
+   "name": "Sardinia",
+   "countries": [
+    "italy"
+   ]
+  },
+  "savalou": {
+   "name": "Savalou",
+   "countries": [
+    "benin"
+   ]
+  },
+  "scandinavia": {
+   "name": "Scandinavia",
+   "countries": []
+  },
+  "schmidt-2019": {
+   "name": "Schmidt 2019",
+   "countries": [
+    "libya"
+   ]
+  },
+  "scottish-gaelic": {
+   "name": "Scottish Gaelic",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "scottish-hebrides": {
+   "name": "Scottish Hebrides",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "scottish-highlands": {
+   "name": "Scottish Highlands",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "sea-islands": {
+   "name": "Sea Islands",
+   "countries": []
+  },
+  "seattle": {
+   "name": "Seattle",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "segou": {
+   "name": "Ségou",
+   "countries": [
+    "mali"
+   ]
+  },
+  "seme-kpodji": {
+   "name": "Sèmè-Kpodji",
+   "countries": [
+    "benin"
+   ]
+  },
+  "senegambia": {
+   "name": "Senegambia",
+   "countries": [
+    "guinea"
+   ]
+  },
+  "serer": {
+   "name": "Serer",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "serer-country": {
+   "name": "Serer country",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "serra-talhada": {
+   "name": "Serra Talhada",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "sertanejo-traditions": {
+   "name": "sertanejo traditions",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "sertao-of-the-northeast": {
+   "name": "sertão of the Northeast",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "setif": {
+   "name": "Sétif",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "setomaa": {
+   "name": "Setomaa",
+   "countries": [
+    "estonia"
+   ]
+  },
+  "several-venezuelan-regional-traditions": {
+   "name": "several Venezuelan regional traditions",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "seville": {
+   "name": "Seville",
+   "countries": [
+    "spain"
+   ]
+  },
+  "shaker-communities": {
+   "name": "Shaker communities",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "shangaan": {
+   "name": "Shangaan",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "shashemene": {
+   "name": "Shashemene",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "sheffield": {
+   "name": "Sheffield",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "shetland": {
+   "name": "Shetland",
+   "countries": [
+    "scotland"
+   ]
+  },
+  "shona": {
+   "name": "Shona",
+   "countries": [
+    "zimbabwe"
+   ]
+  },
+  "shona-speaking-areas": {
+   "name": "Shona-speaking areas",
+   "countries": [
+    "zimbabwe"
+   ]
+  },
+  "sicily": {
+   "name": "Sicily",
+   "countries": [
+    "italy"
+   ]
+  },
+  "sierra": {
+   "name": "Sierra",
+   "countries": [
+    "ecuador"
+   ]
+  },
+  "sinaloa": {
+   "name": "Sinaloa",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "sint-eustatius": {
+   "name": "Sint Eustatius",
+   "countries": []
+  },
+  "slavonia": {
+   "name": "Slavonia",
+   "countries": [
+    "croatia"
+   ]
+  },
+  "smithsonian": {
+   "name": "Smithsonian",
+   "countries": [
+    "burkina-faso"
+   ]
+  },
+  "somali-region": {
+   "name": "Somali Region",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "somali-speaking-regions": {
+   "name": "Somali-speaking regions",
+   "countries": [
+    "somalia"
+   ]
+  },
+  "songhay-country": {
+   "name": "Songhay country",
+   "countries": [
+    "niger"
+   ]
+  },
+  "sonora": {
+   "name": "Sonora",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "sophiatown": {
+   "name": "Sophiatown",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "sotavento": {
+   "name": "Sotavento",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "souss": {
+   "name": "Souss",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "south-african-townships": {
+   "name": "South African townships",
+   "countries": []
+  },
+  "south-america": {
+   "name": "South America",
+   "countries": []
+  },
+  "south-america-indigenous-communities": {
+   "name": "South America Indigenous communities",
+   "countries": []
+  },
+  "south-b": {
+   "name": "South B",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "south-baffin-island": {
+   "name": "south Baffin Island",
+   "countries": [
+    "canada"
+   ]
+  },
+  "south-caribbean-coast": {
+   "name": "South Caribbean Coast",
+   "countries": [
+    "nicaragua"
+   ]
+  },
+  "south-carolina-lowcountry": {
+   "name": "South Carolina Lowcountry",
+   "countries": [
+    "georgia"
+   ]
+  },
+  "south-eastern-africa-zulu": {
+   "name": "South-eastern Africa Zulu",
+   "countries": []
+  },
+  "south-florida": {
+   "name": "South Florida",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "south-london": {
+   "name": "South London",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "south-louisiana": {
+   "name": "south Louisiana",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "south-nyanza": {
+   "name": "South Nyanza",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "south-side": {
+   "name": "South Side",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "south-slavic-balkans": {
+   "name": "South Slavic Balkans",
+   "countries": []
+  },
+  "south-texas": {
+   "name": "south Texas",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "south-tyrol": {
+   "name": "South Tyrol",
+   "countries": [
+    "slovenia",
+    "switzerland"
+   ]
+  },
+  "south-zone-of-sao-paulo": {
+   "name": "South Zone of São Paulo",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "southeast-europe": {
+   "name": "Southeast Europe",
+   "countries": []
+  },
+  "southeast-texas": {
+   "name": "southeast Texas",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "southern-africa": {
+   "name": "Southern Africa",
+   "countries": []
+  },
+  "southern-andes": {
+   "name": "southern Andes",
+   "countries": [
+    "peru"
+   ]
+  },
+  "southern-arizona": {
+   "name": "southern Arizona",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "southern-california": {
+   "name": "Southern California",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "southern-colorado": {
+   "name": "southern Colorado",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "southern-europe": {
+   "name": "Southern Europe",
+   "countries": [
+    "france"
+   ]
+  },
+  "southern-pacific-coast": {
+   "name": "Southern Pacific coast",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "southern-veracruz": {
+   "name": "southern Veracruz",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "southern-yaracuy": {
+   "name": "southern Yaracuy",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "southwest-louisiana": {
+   "name": "southwest Louisiana",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "southwest-nations": {
+   "name": "Southwest nations",
+   "countries": [
+    "canada"
+   ]
+  },
+  "southwestern-oklahoma": {
+   "name": "southwestern Oklahoma",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "soviet-union": {
+   "name": "Soviet Union",
+   "countries": [
+    "russia"
+   ]
+  },
+  "soweto": {
+   "name": "Soweto",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "spanish-harlem": {
+   "name": "Spanish Harlem",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "spread-across-latin-america": {
+   "name": "spread across Latin America",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "spread-across-somali-territories-of-the-horn-of-africa": {
+   "name": "spread across Somali territories of the Horn of Africa",
+   "countries": []
+  },
+  "spreading-inland": {
+   "name": "spreading inland",
+   "countries": [
+    "malawi"
+   ]
+  },
+  "square-dance": {
+   "name": "square dance",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "st-catherine": {
+   "name": "St Catherine",
+   "countries": [
+    "jamaica"
+   ]
+  },
+  "st-louis": {
+   "name": "St. Louis",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "st-philip": {
+   "name": "St. Philip",
+   "countries": [
+    "barbados"
+   ]
+  },
+  "st-thomas-parish": {
+   "name": "St Thomas parish",
+   "countries": [
+    "jamaica"
+   ]
+  },
+  "state": {
+   "name": "State",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "state-of-queretaro": {
+   "name": "state of Querétaro",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "state-of-quintana-roo": {
+   "name": "state of Quintana Roo",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "stillwater": {
+   "name": "Stillwater",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "sub-forms-from-anambra-state": {
+   "name": "sub-forms from Anambra State",
+   "countries": []
+  },
+  "suburban-maryland": {
+   "name": "suburban Maryland",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "sucre": {
+   "name": "Sucre",
+   "countries": [
+    "colombia",
+    "venezuela"
+   ]
+  },
+  "sur": {
+   "name": "Sur",
+   "countries": [
+    "uruguay"
+   ]
+  },
+  "swahili": {
+   "name": "Swahili",
+   "countries": [
+    "kenya",
+    "malawi"
+   ]
+  },
+  "swahili-coast": {
+   "name": "Swahili coast",
+   "countries": [
+    "kenya",
+    "tanzania"
+   ]
+  },
+  "swazi-peoples": {
+   "name": "Swazi peoples",
+   "countries": []
+  },
+  "tachira": {
+   "name": "Táchira",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "tamanrasset": {
+   "name": "Tamanrasset",
+   "countries": [
+    "algeria"
+   ]
+  },
+  "tamaulipas": {
+   "name": "Tamaulipas",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "tampa": {
+   "name": "Tampa",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "tampa-bay": {
+   "name": "Tampa Bay",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "tana": {
+   "name": "Tana",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "tandale": {
+   "name": "Tandale",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "tarija": {
+   "name": "Tarija",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "tarma": {
+   "name": "Tarma",
+   "countries": [
+    "peru"
+   ]
+  },
+  "tela": {
+   "name": "Tela",
+   "countries": [
+    "honduras"
+   ]
+  },
+  "temne-areas": {
+   "name": "Temne areas",
+   "countries": [
+    "sierra-leone"
+   ]
+  },
+  "tennessee": {
+   "name": "Tennessee",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "term-is-also-used": {
+   "name": "term is also used",
+   "countries": [
+    "comoros"
+   ]
+  },
+  "texas": {
+   "name": "Texas",
+   "countries": [
+    "georgia",
+    "mexico",
+    "united-states"
+   ]
+  },
+  "then-a-national-tour": {
+   "name": "then a national tour",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "then-havana": {
+   "name": "then Havana",
+   "countries": [
+    "cuba"
+   ]
+  },
+  "tierra-caliente": {
+   "name": "Tierra Caliente",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "tierra-caliente-of-michoacan": {
+   "name": "Tierra Caliente of Michoacán",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "tijuana": {
+   "name": "Tijuana",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "timbuktu": {
+   "name": "Timbuktu",
+   "countries": [
+    "mali"
+   ]
+  },
+  "tiv": {
+   "name": "Tiv",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "tlalnepantla": {
+   "name": "Tlalnepantla",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "tohono-oodham-nation": {
+   "name": "Tohono O'odham Nation",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "toliara": {
+   "name": "Toliara",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "toronto": {
+   "name": "Toronto",
+   "countries": []
+  },
+  "tosk": {
+   "name": "Tosk",
+   "countries": [
+    "albania"
+   ]
+  },
+  "townships": {
+   "name": "townships",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "tozeur": {
+   "name": "Tozeur",
+   "countries": [
+    "tunisia"
+   ]
+  },
+  "transnational-circulation": {
+   "name": "transnational circulation",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "transnational-circulation-including": {
+   "name": "transnational circulation including",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "transnational-tango-culture": {
+   "name": "Transnational tango culture",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "tras-os-montes": {
+   "name": "Trás-os-Montes",
+   "countries": [
+    "portugal"
+   ]
+  },
+  "trinidad": {
+   "name": "Trinidad",
+   "countries": []
+  },
+  "trinidad-express": {
+   "name": "Trinidad Express",
+   "countries": [
+    "trinidad-and-tobago"
+   ]
+  },
+  "trujillo": {
+   "name": "Trujillo",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "tsha": {
+   "name": "TSHA",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "tshwane": {
+   "name": "Tshwane",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "tsonga": {
+   "name": "Tsonga",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "tuareg-communities-of-the-sahara": {
+   "name": "Tuareg communities of the Sahara",
+   "countries": []
+  },
+  "tucuman": {
+   "name": "Tucumán",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "tulear": {
+   "name": "Tuléar",
+   "countries": [
+    "madagascar"
+   ]
+  },
+  "tumaco": {
+   "name": "Tumaco",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "tumbes": {
+   "name": "Tumbes",
+   "countries": [
+    "peru"
+   ]
+  },
+  "tunis": {
+   "name": "Tunis",
+   "countries": [
+    "tunisia"
+   ]
+  },
+  "tuscany": {
+   "name": "Tuscany",
+   "countries": [
+    "italy"
+   ]
+  },
+  "ukambani": {
+   "name": "Ukambani",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "uky": {
+   "name": "UKY",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "ulster": {
+   "name": "Ulster",
+   "countries": [
+    "ireland"
+   ]
+  },
+  "umoja-estate": {
+   "name": "Umoja estate",
+   "countries": [
+    "kenya"
+   ]
+  },
+  "un-m49": {
+   "name": "UN M49",
+   "countries": []
+  },
+  "un-m49-005": {
+   "name": "UN M49 005",
+   "countries": []
+  },
+  "un-m49-039": {
+   "name": "UN M49 039",
+   "countries": []
+  },
+  "un-m49-150": {
+   "name": "UN M49 150",
+   "countries": []
+  },
+  "un-m49-151": {
+   "name": "UN M49 151",
+   "countries": []
+  },
+  "un-m49-154": {
+   "name": "UN M49 154",
+   "countries": []
+  },
+  "un-m49-155": {
+   "name": "UN M49 155",
+   "countries": []
+  },
+  "unconfirmed": {
+   "name": "unconfirmed",
+   "countries": [
+    "morocco",
+    "south-africa"
+   ]
+  },
+  "unesco": {
+   "name": "UNESCO",
+   "countries": [
+    "drc",
+    "seychelles"
+   ]
+  },
+  "university-press-of-mississippi": {
+   "name": "University Press of Mississippi",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "unm": {
+   "name": "UNM",
+   "countries": []
+  },
+  "unresolved": {
+   "name": "Unresolved",
+   "countries": [
+    "canada"
+   ]
+  },
+  "unubi": {
+   "name": "Unubi",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "upper": {
+   "name": "Upper",
+   "countries": [
+    "egypt"
+   ]
+  },
+  "upper-east-region": {
+   "name": "Upper East Region",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "upper-west": {
+   "name": "Upper West",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "uraba": {
+   "name": "Urabá",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "urban-centres-such-as-fes": {
+   "name": "urban centres such as Fes",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "urban-communities": {
+   "name": "urban communities",
+   "countries": [
+    "trinidad-and-tobago"
+   ]
+  },
+  "urban-lima": {
+   "name": "urban Lima",
+   "countries": [
+    "peru"
+   ]
+  },
+  "uromi": {
+   "name": "Uromi",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "uruguayan": {
+   "name": "Uruguayan",
+   "countries": []
+  },
+  "use-only": {
+   "name": "use only",
+   "countries": [
+    "togo"
+   ]
+  },
+  "ussr": {
+   "name": "USSR",
+   "countries": [
+    "russia"
+   ]
+  },
+  "uw": {
+   "name": "UW",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "valaam-monastery": {
+   "name": "Valaam Monastery",
+   "countries": [
+    "russia"
+   ]
+  },
+  "valencia": {
+   "name": "Valencia",
+   "countries": [
+    "spain"
+   ]
+  },
+  "valencian-community": {
+   "name": "Valencian Community",
+   "countries": [
+    "spain"
+   ]
+  },
+  "valledupar-region": {
+   "name": "Valledupar region",
+   "countries": [
+    "colombia"
+   ]
+  },
+  "vallejo": {
+   "name": "Vallejo",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "vanderbilt": {
+   "name": "Vanderbilt",
+   "countries": [
+    "uganda"
+   ]
+  },
+  "variety": {
+   "name": "Variety",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "venda": {
+   "name": "Venda",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "venezuelan-llanos": {
+   "name": "Venezuelan Llanos",
+   "countries": []
+  },
+  "veracruz": {
+   "name": "Veracruz",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "vermont-festival-2003": {
+   "name": "Vermont festival 2003",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "vienna": {
+   "name": "Vienna",
+   "countries": [
+    "austria"
+   ]
+  },
+  "ville-platte": {
+   "name": "Ville Platte",
+   "countries": []
+  },
+  "vine": {
+   "name": "Vine",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "virgin-islands": {
+   "name": "Virgin Islands",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "virgin-islands-st-croix": {
+   "name": "Virgin Islands St. Croix",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "virginia": {
+   "name": "Virginia",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "voa": {
+   "name": "VOA",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "vojvodina": {
+   "name": "Vojvodina",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "volendam": {
+   "name": "Volendam",
+   "countries": [
+    "netherlands"
+   ]
+  },
+  "volga-region": {
+   "name": "Volga region",
+   "countries": [
+    "russia"
+   ]
+  },
+  "volta-region": {
+   "name": "Volta Region",
+   "countries": [
+    "ghana"
+   ]
+  },
+  "wallonia": {
+   "name": "Wallonia",
+   "countries": [
+    "belgium"
+   ]
+  },
+  "warsaw": {
+   "name": "Warsaw",
+   "countries": [
+    "poland"
+   ]
+  },
+  "washington": {
+   "name": "Washington",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "wasulu-region": {
+   "name": "Wasulu region",
+   "countries": [
+    "mali"
+   ]
+  },
+  "west-28th-street": {
+   "name": "West 28th Street",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "west-africa": {
+   "name": "West Africa",
+   "countries": [
+    "ghana",
+    "guinea",
+    "mali",
+    "senegal",
+    "united-kingdom"
+   ]
+  },
+  "west-berlin": {
+   "name": "West Berlin",
+   "countries": [
+    "germany"
+   ]
+  },
+  "west-coast": {
+   "name": "West Coast",
+   "countries": []
+  },
+  "west-sides": {
+   "name": "West Sides",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "western-amazonia": {
+   "name": "western Amazonia",
+   "countries": [
+    "peru"
+   ]
+  },
+  "western-balkans": {
+   "name": "Western Balkans",
+   "countries": [
+    "serbia"
+   ]
+  },
+  "western-cape": {
+   "name": "Western Cape",
+   "countries": [
+    "south-africa"
+   ]
+  },
+  "western-christian": {
+   "name": "Western Christian",
+   "countries": []
+  },
+  "western-europe": {
+   "name": "Western Europe",
+   "countries": [
+    "italy"
+   ]
+  },
+  "western-great-plains": {
+   "name": "western Great Plains",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "western-high-atlas": {
+   "name": "Western High Atlas",
+   "countries": [
+    "morocco"
+   ]
+  },
+  "western-highlands": {
+   "name": "western highlands",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "western-moroccan-branch-out-of-europe-force": {
+   "name": "Western Moroccan branch out of Europe force",
+   "countries": []
+  },
+  "wider-caribbean": {
+   "name": "wider Caribbean",
+   "countries": [
+    "costa-rica"
+   ]
+  },
+  "wider-europe": {
+   "name": "wider Europe",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "wider-latin-american-circulation": {
+   "name": "wider Latin American circulation",
+   "countries": [
+    "puerto-rico"
+   ]
+  },
+  "wider-mesoamerican-scope": {
+   "name": "wider Mesoamerican scope",
+   "countries": []
+  },
+  "wider-west-africa": {
+   "name": "wider West Africa",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "winnipeg": {
+   "name": "Winnipeg",
+   "countries": [
+    "united-states"
+   ]
+  },
+  "with-international": {
+   "name": "with international",
+   "countries": []
+  },
+  "with-later-national": {
+   "name": "with later national",
+   "countries": [
+    "brazil"
+   ]
+  },
+  "with-national": {
+   "name": "with national",
+   "countries": [
+    "argentina"
+   ]
+  },
+  "wodaabe-fula": {
+   "name": "Wodaabe Fula",
+   "countries": [
+    "niger"
+   ]
+  },
+  "wolaita": {
+   "name": "Wolaita",
+   "countries": [
+    "ethiopia"
+   ]
+  },
+  "wolof": {
+   "name": "Wolof",
+   "countries": [
+    "senegal"
+   ]
+  },
+  "worldwide": {
+   "name": "worldwide",
+   "countries": []
+  },
+  "xhosa": {
+   "name": "Xhosa",
+   "countries": []
+  },
+  "xippi": {
+   "name": "Xippi",
+   "countries": []
+  },
+  "yaounde": {
+   "name": "Yaoundé",
+   "countries": [
+    "cameroon"
+   ]
+  },
+  "yaracuy": {
+   "name": "Yaracuy",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "yewa": {
+   "name": "Yewa",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yorkshire": {
+   "name": "Yorkshire",
+   "countries": [
+    "united-kingdom"
+   ]
+  },
+  "yoruba": {
+   "name": "Yoruba",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yoruba-areas": {
+   "name": "Yoruba areas",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yoruba-country": {
+   "name": "Yoruba country",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yoruba-south-western": {
+   "name": "Yoruba south-western",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yorubaland": {
+   "name": "Yorubaland",
+   "countries": [
+    "nigeria"
+   ]
+  },
+  "yucatan": {
+   "name": "Yucatán",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "yukon": {
+   "name": "Yukon",
+   "countries": [
+    "canada"
+   ]
+  },
+  "yungas": {
+   "name": "Yungas",
+   "countries": [
+    "bolivia"
+   ]
+  },
+  "zacatecas": {
+   "name": "Zacatecas",
+   "countries": [
+    "mexico"
+   ]
+  },
+  "zanzibar": {
+   "name": "Zanzibar",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "zaramo": {
+   "name": "Zaramo",
+   "countries": [
+    "tanzania"
+   ]
+  },
+  "zarma": {
+   "name": "Zarma",
+   "countries": [
+    "niger"
+   ]
+  },
+  "zeila": {
+   "name": "Zeila",
+   "countries": []
+  },
+  "zeila-borama-area": {
+   "name": "Zeila Borama area",
+   "countries": [
+    "somaliland"
+   ]
+  },
+  "zou": {
+   "name": "Zou",
+   "countries": [
+    "benin"
+   ]
+  },
+  "zou-department": {
+   "name": "Zou department",
+   "countries": [
+    "benin"
+   ]
+  },
+  "zulia": {
+   "name": "Zulia",
+   "countries": [
+    "venezuela"
+   ]
+  },
+  "zulu": {
+   "name": "Zulu",
+   "countries": [
+    "south-africa"
+   ]
+  }
+ }
+}

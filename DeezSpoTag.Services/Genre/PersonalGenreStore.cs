@@ -299,7 +299,8 @@ ON CONFLICT(job_id, file_path) DO UPDATE SET write_status = 'snapshot_error';
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
 SELECT enabled, max_genres, preserve_unmapped_tags, include_parent_genres,
-       normalize_genre_tags, genre_tag_alias_rules_json, genre_tag_block_list_json
+       normalize_genre_tags, genre_tag_alias_rules_json, genre_tag_block_list_json,
+       vocabulary_edits_json
 FROM personal_genre_settings
 WHERE id = 1;
 """;
@@ -319,7 +320,9 @@ WHERE id = 1;
             ParseAliasRules(reader.GetString(5)),
             // An absent row means the user never configured a block list, which is
             // different from an explicitly empty one.
-            reader.IsDBNull(6) ? null : ParseStringList(reader.GetString(6)));
+            reader.IsDBNull(6) ? null : ParseStringList(reader.GetString(6)),
+            TermEdits: reader.IsDBNull(7) ? null : ParseTermEdits(reader.GetString(7)),
+            SpellingConventions: reader.IsDBNull(7) ? null : ParseSpellingConventions(reader.GetString(7)));
     }
 
     /// <summary>
@@ -347,16 +350,19 @@ WHERE id = 1;
             GenreTagAliasRules = GenreNormalizationSnapshot.MergeDefaultAliasRules(
                 settings.GenreTagAliasRules ?? existing.GenreTagAliasRules,
                 PersonalGenreSettings.DefaultAliasRules),
-            GenreTagBlockList = settings.GenreTagBlockList ?? existing.GenreTagBlockList
+            GenreTagBlockList = settings.GenreTagBlockList ?? existing.GenreTagBlockList,
+            TermEdits = settings.TermEdits ?? existing.TermEdits,
+            SpellingConventions = settings.SpellingConventions ?? existing.SpellingConventions
         };
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
 INSERT INTO personal_genre_settings
     (id, enabled, max_genres, preserve_unmapped_tags, include_parent_genres,
-     normalize_genre_tags, genre_tag_alias_rules_json, genre_tag_block_list_json, updated_at_utc)
+     normalize_genre_tags, genre_tag_alias_rules_json, genre_tag_block_list_json,
+     vocabulary_edits_json, updated_at_utc)
 VALUES
     (1, @enabled, @maxGenres, @preserveUnmappedTags, @includeParentGenres,
-     @normalizeGenreTags, @aliasRulesJson, @blockListJson, @updatedAtUtc)
+     @normalizeGenreTags, @aliasRulesJson, @blockListJson, @vocabularyEditsJson, @updatedAtUtc)
 ON CONFLICT(id) DO UPDATE SET
     enabled = excluded.enabled,
     max_genres = excluded.max_genres,
@@ -365,6 +371,7 @@ ON CONFLICT(id) DO UPDATE SET
     normalize_genre_tags = excluded.normalize_genre_tags,
     genre_tag_alias_rules_json = excluded.genre_tag_alias_rules_json,
     genre_tag_block_list_json = excluded.genre_tag_block_list_json,
+    vocabulary_edits_json = excluded.vocabulary_edits_json,
     updated_at_utc = excluded.updated_at_utc;
 """;
         await using var command = new SqliteCommand(sql, connection);
@@ -380,6 +387,7 @@ ON CONFLICT(id) DO UPDATE SET
         command.Parameters.AddWithValue("blockListJson", normalized.GenreTagBlockList is null
             ? DBNull.Value
             : JsonSerializer.Serialize(normalized.GenreTagBlockList));
+        command.Parameters.AddWithValue("vocabularyEditsJson", SerializeVocabularyEdits(normalized));
         command.Parameters.AddWithValue("updatedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
         await command.ExecuteNonQueryAsync(cancellationToken);
         return normalized;
@@ -1383,6 +1391,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_settings (
     -- Nullable on purpose: NULL means "never configured", which is different from
     -- an empty list meaning "the user wants nothing blocked".
     genre_tag_block_list_json TEXT NULL,
+    vocabulary_edits_json TEXT NULL,
     updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
@@ -1541,7 +1550,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_observation_history (
 -- `origin_fields_json` records which file fields a classification was seen in,
 -- which is what makes a field correction auditable. `confidence` and
 -- `sources_json` are provider-era columns: they stay in place so existing
--- history is not destroyed, and nothing writes them any more.
+-- history is not destroyed, and nothing writes them any more. A NOT NULL
+-- flag left on those columns is relaxed by the migration below.
 CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
     resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
     taxon_id TEXT NOT NULL,
@@ -1572,9 +1582,10 @@ CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
     /// The obsolete columns (provider <c>source</c>, <c>weight</c>,
     /// <c>authority_cap</c>, <c>confidence</c>, <c>sources_json</c>,
     /// <c>evidence_state</c>) are left in place. Dropping them would discard the
-    /// record of what past resolutions believed, and SQLite column removal also
-    /// rewrites every history table. Nothing writes them any more, so they cannot
-    /// mislead a current result — they are simply history about history.
+    /// record of what past resolutions believed. Nothing writes them any more.
+    /// A provider-era NOT NULL flag with no default still rejects the current
+    /// insert, so those flags are relaxed. Existing values are copied. A missing
+    /// confidence stays missing; it is not replaced with a made-up score.
     ///
     /// Existing rows are preserved: the old evidence JSON is migrated into the
     /// snapshot table as a <c>legacy</c> stage so an interrupted run can still be
@@ -1592,6 +1603,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
         await AddColumnIfMissingAsync(connection, "personal_genre_track", "post_autotag_json", "TEXT", cancellationToken);
         await AddColumnIfMissingAsync(connection, "personal_genre_resolution_history", "preserved_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
         await AddColumnIfMissingAsync(connection, "personal_genre_classification_history", "origin_fields_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await SqliteSchemaUtils.RelaxObsoleteClassificationHistoryConstraintsAsync(connection, cancellationToken);
         await AddColumnIfMissingAsync(connection, "personal_genre_observation_history", "origin", "TEXT NOT NULL DEFAULT 'post_platform'", cancellationToken);
         await AddColumnIfMissingAsync(connection, "personal_genre_settings", "normalize_genre_tags", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await AddColumnIfMissingAsync(connection, "personal_genre_settings", "genre_tag_alias_rules_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
@@ -1600,6 +1612,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
         // which is distinguishable from a user who deliberately emptied the list.
         // A default of '[]' here would collapse those two states into one.
         await AddColumnIfMissingAsync(connection, "personal_genre_settings", "genre_tag_block_list_json", "TEXT", cancellationToken);
+        await AddColumnIfMissingAsync(connection, "personal_genre_settings", "vocabulary_edits_json", "TEXT", cancellationToken);
         // Regional organization is additive metadata. An existing row reads as NULL,
         // which is unscoped, so no user-created term is hidden by this change and no
         // existing row has to be rewritten.
@@ -1889,6 +1902,19 @@ LIMIT 1;
 
     private static IReadOnlyList<string> ParseStringList(string json)
         => JsonSerializer.Deserialize<List<string>>(json) ?? [];
+
+    private sealed record VocabularyEditsDocument(
+        IReadOnlyList<PersonalGenreTermEdit>? TermEdits,
+        IReadOnlyList<PersonalGenreSpellingConvention>? SpellingConventions);
+
+    private static string SerializeVocabularyEdits(PersonalGenreSettings settings)
+        => JsonSerializer.Serialize(new VocabularyEditsDocument(settings.TermEdits, settings.SpellingConventions));
+
+    private static IReadOnlyList<PersonalGenreTermEdit>? ParseTermEdits(string json)
+        => JsonSerializer.Deserialize<VocabularyEditsDocument>(json)?.TermEdits;
+
+    private static IReadOnlyList<PersonalGenreSpellingConvention>? ParseSpellingConventions(string json)
+        => JsonSerializer.Deserialize<VocabularyEditsDocument>(json)?.SpellingConventions;
 
     private static PersonalGenreMappingAction ParseMappingAction(string value)
         => value.Trim().ToLowerInvariant() switch
