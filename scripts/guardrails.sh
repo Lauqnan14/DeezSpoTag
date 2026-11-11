@@ -199,6 +199,8 @@ if [[ "$MODE" == "changed" ]]; then
       *Security*|*LogSanitizer*|*OutboundUrlGuard*) add_tests_matching '(Security|Secret|CodeQlCleanup)' ;;
       DeezSpoTag.Web/Services/PlaylistPlatformSnapshotCoordinator.cs)
         add_tests_matching '^(PlaylistPlatformSnapshotTest|WatchlistPlatformProgressTest)$' ;;
+      DeezSpoTag.Web/Services/DeferredHostedService.cs|DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs)
+        add_tests_matching '^(DeferredHostedService|WatchlistRunCoordinatorHardening|WatchlistSettingsBehavior|MonitoredPlaylistPresentationGuardrail)Test$' ;;
       *Recommendation*|*Pathfinder*) add_tests_matching '(Recommendation|WeeklyPathfinder)' ;;
       DeezSpoTag.Services/Genre/*) add_tests_matching '(Genre|PersonalGenre|ResearchedGenre)' ;;
       DeezSpoTag.Services/DeezSpoTag.Services.csproj)

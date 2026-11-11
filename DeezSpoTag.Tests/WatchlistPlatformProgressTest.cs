@@ -251,7 +251,13 @@ public sealed class WatchlistPlatformProgressTest
     public void TheUiRendersOneLinePerPlatform()
     {
         var script = ScriptSource();
+        // The runtime payload can be absent (the fetch resolves to null on failure),
+        // so the summary helper must keep tolerating that instead of throwing.
         Assert.Contains("runtime?.platforms", script, StringComparison.Ordinal);
+        Assert.Contains("runtime?.runtime", script, StringComparison.Ordinal);
+        Assert.Contains("runtime?.claims", script, StringComparison.Ordinal);
+        Assert.Contains("runtime?.targetSyncJobs", script, StringComparison.Ordinal);
+        Assert.Contains("runtime?.presentation", script, StringComparison.Ordinal);
         Assert.Contains("platform.label", script, StringComparison.Ordinal);
         Assert.Contains("platform.summary", script, StringComparison.Ordinal);
 

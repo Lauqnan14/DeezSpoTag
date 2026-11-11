@@ -301,6 +301,22 @@ public sealed class PublishingWorkflowGuardrailTest
     /// This proves the mapping still resolves to real test selectors.
     /// </summary>
     [Theory]
+    [InlineData("DeezSpoTag.Web/Services/DeferredHostedService.cs", new[] { "DeferredHostedServiceTest", "WatchlistRunCoordinatorHardeningTest", "WatchlistSettingsBehaviorTest", "MonitoredPlaylistPresentationGuardrailTest" })]
+    [InlineData("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs", new[] { "DeferredHostedServiceTest", "WatchlistRunCoordinatorHardeningTest", "WatchlistSettingsBehaviorTest", "MonitoredPlaylistPresentationGuardrailTest" })]
+    public async Task WorkerReliabilityCandidateFiles_SelectTheirMappedRegressions(string sourcePath, string[] expectedTests)
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        await fixture.CommitFileAsync(sourcePath, "// watchlist worker reliability candidate changed");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        foreach (var expected in expectedTests)
+        {
+            Assert.Contains($"FullyQualifiedName~DeezSpoTag.Tests.{expected}.", fixture.Calls[1]);
+        }
+    }
+
+    [Theory]
     [InlineData("DeezSpoTag.Services/DeezSpoTag.Services.csproj")]
     [InlineData("DeezSpoTag.Services/Utils/SqliteSchemaUtils.cs")]
     [InlineData("DeezSpoTag.Web/Controllers/Api/PersonalGenreApiController.cs")]

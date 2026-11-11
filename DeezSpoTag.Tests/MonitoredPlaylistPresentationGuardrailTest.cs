@@ -134,6 +134,142 @@ public sealed class MonitoredPlaylistPresentationGuardrailTest
         Assert.DoesNotContain("window.setInterval", viewSource, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The runtime health summary is the only worker-status surface the watchlist page shows.
+    /// It must run in the real script: a failed or retrying worker is named as such with its
+    /// failure stage and sanitized error, a stopped worker is stopped, and an ordinary pending
+    /// trigger never reads as a dead or healthy-unknown worker.
+    /// </summary>
+    [Fact]
+    public void Worker_health_renders_retrying_failed_and_stopped_states_distinctly()
+    {
+        RunHealthHarness("""
+            const render = parts => `<div class="watchlist-runtime-health">${escapeHtml(parts.join(' • '))}</div>`;
+
+            const failed = buildWatchlistRuntimeHealthSummary({
+                runtime: {
+                    workerState: 'failed',
+                    workerFailureStage: 'startup-recovery',
+                    workerLastError: 'Transient DB failure <script>alert(1)</script>',
+                    workerFailureUtc: '2026-11-11T10:00:00Z',
+                    triggerPending: false
+                }
+            });
+            assert.ok(failed.some(p => p.includes('failed')), failed.join(' | '));
+            assert.ok(failed.some(p => p.includes('startup-recovery')), failed.join(' | '));
+            assert.ok(failed.some(p => p.includes('Transient DB failure')), failed.join(' | '));
+            const failedHtml = render(failed);
+            assert.ok(!failedHtml.includes('<script>'), failedHtml);
+            assert.ok(failedHtml.includes('&lt;script&gt;'), failedHtml);
+            // A dead worker must not be dressed up as an ordinary idle worker.
+            assert.ok(!failed.some(p => p.includes('has not completed a cycle yet')), failed.join(' | '));
+            assert.ok(!failed.some(p => /^Last cycle /.test(p)), failed.join(' | '));
+
+            const retrying = buildWatchlistRuntimeHealthSummary({
+                runtime: {
+                    workerState: 'retrying',
+                    workerFailureStage: 'scheduler-wait',
+                    workerLastError: 'transient storage failure',
+                    workerNextRetryUtc: '2026-11-11T10:05:00Z',
+                    triggerPending: true
+                }
+            });
+            assert.ok(retrying.some(p => p.includes('retrying')), retrying.join(' | '));
+            assert.ok(retrying.some(p => p.includes('scheduler-wait')), retrying.join(' | '));
+            assert.ok(retrying.some(p => p.includes('transient storage failure')), retrying.join(' | '));
+            assert.ok(retrying.some(p => p.includes('retry')), retrying.join(' | '));
+            assert.ok(retrying.some(p => p.includes('trigger queued')), retrying.join(' | '));
+
+            const stopped = buildWatchlistRuntimeHealthSummary({
+                runtime: { workerState: 'stopped', triggerPending: false }
+            });
+            assert.ok(stopped.some(p => p.includes('stopped')), stopped.join(' | '));
+
+            const healthy = buildWatchlistRuntimeHealthSummary({
+                runtime: { workerState: 'waiting', triggerPending: false, lastCycleCompletedUtc: '2026-11-11T09:00:00Z' }
+            });
+            assert.ok(healthy.some(p => /^Last cycle /.test(p)), healthy.join(' | '));
+            assert.ok(!healthy.some(p => p.includes('failed') || p.includes('retrying')), healthy.join(' | '));
+
+            // Legacy record without worker state: unknown, never healthy-claimed.
+            const legacy = buildWatchlistRuntimeHealthSummary({ runtime: { triggerPending: false } });
+            assert.ok(legacy.some(p => p.includes('has not completed a cycle yet')), legacy.join(' | '));
+            """);
+    }
+
+    private void RunHealthHarness(string assertions)
+    {
+        if (!NodeIsAvailable())
+        {
+            return;
+        }
+
+        var script = File.ReadAllText(FindSourceFile("DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var start = script.IndexOf("function buildWatchlistRuntimeHealthSummary(", StringComparison.Ordinal);
+        var formatStart = script.IndexOf("function formatRelativeTime(", StringComparison.Ordinal);
+        Assert.True(start >= 0, "the runtime health summary must stay liftable for this harness.");
+        var end = script.IndexOf("\nfunction ", start + 10, StringComparison.Ordinal);
+        Assert.True(end > start, "the runtime health summary function must be closed by the next function.");
+        var summary = script[start..end];
+        string format;
+        if (formatStart >= 0)
+        {
+            var formatEnd = script.IndexOf("\nfunction ", formatStart + 10, StringComparison.Ordinal);
+            format = formatEnd > formatStart ? script[formatStart..formatEnd] : script[formatStart..];
+        }
+        else
+        {
+            format = "function formatRelativeTime(value){ return 'at ' + String(value); }";
+        }
+
+        var harness = $$"""
+            const assert = require('node:assert/strict');
+            function escapeHtml(text) {
+                if (text === null || text === undefined) return '';
+                return String(text).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#39;");
+            }
+            {{format}}
+            {{summary}}
+            {{assertions}}
+            """;
+        var process = new System.Diagnostics.ProcessStartInfo("node")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        using var node = System.Diagnostics.Process.Start(process)!;
+        node.StandardInput.Write(harness);
+        node.StandardInput.Close();
+        Assert.True(node.WaitForExit(30000), node.StandardError.ReadToEnd());
+        var error = node.StandardError.ReadToEnd();
+        Assert.True(node.ExitCode == 0, error);
+    }
+
+    private static bool NodeIsAvailable()
+    {
+        try
+        {
+            using var probe = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("node", "--version")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            });
+            if (probe is null)
+            {
+                return false;
+            }
+
+            return probe.WaitForExit(10000) && probe.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     private static string FindSourceFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

@@ -18,6 +18,116 @@ function escapeHtml(text) {
         .replaceAll("'", '&#39;');
 }
 
+/// Every line the watchlist header shows about worker and queue health, from the
+/// watch-runtime payload. Worker lifecycle state is reported as its own fact: a
+/// failed or retrying worker is never dressed up as an ordinary idle worker, and
+/// a legacy record without worker state stays "unknown" instead of healthy.
+/// The returned strings are raw text; the caller escapes them once, together.
+function buildWatchlistRuntimeHealthSummary(runtime) {
+    const parts = [];
+    if (!runtime) {
+        parts.push('Watchlist runtime telemetry unavailable');
+        return parts;
+    }
+
+    // `runtime` can be absent (the fetch above resolves to null on failure), so
+    // every access here stays optional-chained exactly like the call site.
+    const runtimeHealth = runtime?.runtime || {};
+    const claimHealth = runtime?.claims || {};
+    const syncJobHealth = runtime?.targetSyncJobs || {};
+    const workerState = String(runtimeHealth.workerState || '').trim().toLowerCase();
+    if (workerState === 'failed') {
+        parts.push(`Watchlist worker failed${runtimeHealth.workerFailureStage ? ` (${runtimeHealth.workerFailureStage})` : ''}`);
+        if (runtimeHealth.workerLastError) {
+            parts.push(runtimeHealth.workerLastError);
+        }
+    } else if (workerState === 'retrying') {
+        parts.push(`Watchlist worker retrying after failure${runtimeHealth.workerFailureStage ? ` (${runtimeHealth.workerFailureStage})` : ''}`);
+        if (runtimeHealth.workerLastError) {
+            parts.push(runtimeHealth.workerLastError);
+        }
+        if (runtimeHealth.workerNextRetryUtc) {
+            parts.push(`next retry ${formatRelativeTime(runtimeHealth.workerNextRetryUtc)}`);
+        }
+    } else if (workerState === 'stopped') {
+        parts.push('Watchlist worker stopped');
+    } else if (runtimeHealth.isRunning) {
+        parts.push('Watchlist cycle running');
+    } else if (runtimeHealth.lastCycleCompletedUtc) {
+        parts.push(`Last cycle ${formatRelativeTime(runtimeHealth.lastCycleCompletedUtc)}`);
+    } else {
+        parts.push('Watchlist worker has not completed a cycle yet');
+    }
+    if (runtimeHealth.triggerPending) {
+        parts.push('trigger queued');
+    }
+    if (Number(runtimeHealth.pendingReconciliationRequests || 0) > 0) {
+        parts.push(`${runtimeHealth.pendingReconciliationRequests} reconciliation request(s)`);
+    }
+    if (runtimeHealth.lastAdmissionBlockReason) {
+        parts.push(runtimeHealth.lastAdmissionBlockReason);
+    }
+    if (Number(runtimeHealth.lastRecoveredClaimCount || 0) > 0) {
+        parts.push(`recovered ${runtimeHealth.lastRecoveredClaimCount} stale claim(s)`);
+    }
+    // Platform-level snapshot progress: one compact line per platform instead of an activity
+    // message per playlist. Per-playlist detail stays on each card and in watchlist history.
+    const platformProgress = Array.isArray(runtime?.platforms) ? runtime.platforms : [];
+    platformProgress.forEach(platform => {
+        if (!platform) {
+            return;
+        }
+        const label = String(platform.label || platform.source || '').trim();
+        const summary = String(platform.summary || '').trim();
+        if (!label) {
+            return;
+        }
+        parts.push(summary ? `${label} · ${summary}` : label);
+    });
+    if (Number(claimHealth.orphanedPending || 0) > 0) {
+        parts.push(`${claimHealth.orphanedPending} orphaned pending claim(s)`);
+    }
+    const targetSyncWork = Number(syncJobHealth.due || 0)
+        + Number(syncJobHealth.processing || 0)
+        + Number(syncJobHealth.retryWaiting || 0)
+        + Number(syncJobHealth.repairRequired || 0)
+        + Number(syncJobHealth.blocked || 0);
+    if (targetSyncWork > 0) {
+        parts.push(`${targetSyncWork} target sync job(s)`);
+    }
+    if (Number(syncJobHealth.expiredProcessing || 0) > 0) {
+        parts.push(`${syncJobHealth.expiredProcessing} expired target lease(s)`);
+    }
+    if (Number(syncJobHealth.repairRequired || 0) > 0) {
+        parts.push(`${syncJobHealth.repairRequired} target job(s) awaiting automatic repair`);
+    }
+    if (Number(syncJobHealth.blocked || 0) > 0) {
+        parts.push(`${syncJobHealth.blocked} blocked target job(s)`);
+    }
+    if (syncJobHealth.oldestPendingUtc) {
+        parts.push(`oldest target job ${formatRelativeTime(syncJobHealth.oldestPendingUtc)}`);
+    }
+    if (syncJobHealth.lastError) {
+        parts.push(syncJobHealth.lastError);
+    }
+    const presentation = runtime?.presentation || {};
+    const presentationParts = [
+        [presentation.review, 'review'],
+        [presentation.missing, 'missing'],
+        [presentation.mappingRetry, 'mapping retry'],
+        [presentation.blocked, 'blocked'],
+        [presentation.failed, 'failed'],
+        [presentation.queued, 'queued'],
+        [presentation.downloading, 'downloading']
+    ];
+    presentationParts.forEach(([count, label]) => {
+        if (Number(count || 0) > 0) {
+            parts.push(`${count} ${label}`);
+        }
+    });
+    return parts;
+}
+
 function emitActivitiesLiveUpdate(source, context = {}) {
     if (typeof globalThis.dispatchEvent !== 'function') {
         return;
@@ -1693,86 +1803,7 @@ async function loadPlaylistWatchlist() {
                 .map(circuit => [String(circuit.source || '').trim().toLowerCase(), circuit])
                 .filter(entry => Boolean(entry[0]))
         );
-        const runtimeHealth = runtime?.runtime || {};
-        const claimHealth = runtime?.claims || {};
-        const syncJobHealth = runtime?.targetSyncJobs || {};
-        const runtimeHealthParts = [];
-        if (!runtime) {
-            runtimeHealthParts.push('Watchlist runtime telemetry unavailable');
-        } else if (runtimeHealth.isRunning) {
-            runtimeHealthParts.push('Watchlist cycle running');
-        } else if (runtimeHealth.lastCycleCompletedUtc) {
-            runtimeHealthParts.push(`Last cycle ${formatRelativeTime(runtimeHealth.lastCycleCompletedUtc)}`);
-        } else {
-            runtimeHealthParts.push('Watchlist worker has not completed a cycle yet');
-        }
-        if (runtimeHealth.triggerPending) {
-            runtimeHealthParts.push('trigger queued');
-        }
-        if (Number(runtimeHealth.pendingReconciliationRequests || 0) > 0) {
-            runtimeHealthParts.push(`${runtimeHealth.pendingReconciliationRequests} reconciliation request(s)`);
-        }
-        if (runtimeHealth.lastAdmissionBlockReason) {
-            runtimeHealthParts.push(runtimeHealth.lastAdmissionBlockReason);
-        }
-        if (Number(runtimeHealth.lastRecoveredClaimCount || 0) > 0) {
-            runtimeHealthParts.push(`recovered ${runtimeHealth.lastRecoveredClaimCount} stale claim(s)`);
-        }
-        // Platform-level snapshot progress: one compact line per platform instead of an activity
-        // message per playlist. Per-playlist detail stays on each card and in watchlist history.
-        const platformProgress = Array.isArray(runtime?.platforms) ? runtime.platforms : [];
-        platformProgress.forEach(platform => {
-            if (!platform) {
-                return;
-            }
-            const label = String(platform.label || platform.source || '').trim();
-            const summary = String(platform.summary || '').trim();
-            if (!label) {
-                return;
-            }
-            runtimeHealthParts.push(summary ? `${label} · ${summary}` : label);
-        });
-        if (Number(claimHealth.orphanedPending || 0) > 0) {
-            runtimeHealthParts.push(`${claimHealth.orphanedPending} orphaned pending claim(s)`);
-        }
-        const targetSyncWork = Number(syncJobHealth.due || 0)
-            + Number(syncJobHealth.processing || 0)
-            + Number(syncJobHealth.retryWaiting || 0)
-            + Number(syncJobHealth.repairRequired || 0)
-            + Number(syncJobHealth.blocked || 0);
-        if (targetSyncWork > 0) {
-            runtimeHealthParts.push(`${targetSyncWork} target sync job(s)`);
-        }
-        if (Number(syncJobHealth.expiredProcessing || 0) > 0) {
-            runtimeHealthParts.push(`${syncJobHealth.expiredProcessing} expired target lease(s)`);
-        }
-        if (Number(syncJobHealth.repairRequired || 0) > 0) {
-            runtimeHealthParts.push(`${syncJobHealth.repairRequired} target job(s) awaiting automatic repair`);
-        }
-        if (Number(syncJobHealth.blocked || 0) > 0) {
-            runtimeHealthParts.push(`${syncJobHealth.blocked} blocked target job(s)`);
-        }
-        if (syncJobHealth.oldestPendingUtc) {
-            runtimeHealthParts.push(`oldest target job ${formatRelativeTime(syncJobHealth.oldestPendingUtc)}`);
-        }
-        if (syncJobHealth.lastError) {
-            runtimeHealthParts.push(syncJobHealth.lastError);
-        }
-        const presentation = runtime?.presentation || {};
-        const presentationParts = [
-            [presentation.review, 'review'],
-            [presentation.missing, 'missing'],
-            [presentation.mappingRetry, 'mapping retry'],
-            [presentation.blocked, 'blocked'],
-            [presentation.failed, 'failed'],
-            [presentation.queued, 'queued'],
-            [presentation.downloading, 'downloading']
-        ];
-        presentationParts.forEach(([count, label]) => {
-            if (Number(count || 0) > 0) {
-                runtimeHealthParts.push(`${count} ${label}`);
-            }
-        });
+        const runtimeHealthParts = buildWatchlistRuntimeHealthSummary(runtime);
         const runtimeHealthHtml = `<div class="watchlist-runtime-health">${escapeHtml(runtimeHealthParts.join(' • '))}</div>`;
         if (mergeButton) {
             mergeButton.disabled = items.length < 2;

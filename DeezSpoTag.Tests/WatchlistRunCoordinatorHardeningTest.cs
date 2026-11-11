@@ -652,6 +652,489 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         Assert.True(summary.Fields.ContainsKey("cycle_gate_wait_ms"));
     }
 
+    // ------------------------------------------------------------------ hosted lifecycle reliability
+    //
+    // These regressions start the real coordinator through StartAsync (the actual hosted
+    // lifecycle), inject one recoverable failure at a guarded boundary, and require the SAME
+    // worker instance to recover, keep its pending trigger and consume the retained request.
+    // The fault-injection and retry-delay seams are internal test hooks that are null in
+    // production; the assertions are about recovery behavior, not about the seams.
+
+    private async Task<WatchlistRunCoordinator> StartRecoveryFixtureAsync(
+        ListLogger<WatchlistRunCoordinator> logger,
+        BackgroundWorkCoordinator background,
+        string playlistId)
+    {
+        await _repository.AddPlaylistWatchlistAsync("unsupported", playlistId, new PlaylistWatchlistMetadataInput("Lifecycle", null, null, 0));
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "unsupported", playlistId);
+        await _repository.UpdateWatchlistCycleStateAsync(
+            "playlist", "due", cycleStartedUtc: null, cycleCompletedUtc: null, nextCycleUtc: DateTimeOffset.UtcNow.AddMinutes(-1));
+        return new WatchlistRunCoordinator(_provider, background, new WatchlistRunSignal(), logger);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, Func<string> describe, int seconds = 20)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (!await condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                Assert.Fail(describe());
+            }
+
+            await Task.Delay(50);
+        }
+    }
+
+    /// <summary>
+    /// The full recovery path over the real admission machinery: a persisted due request,
+    /// one injected startup failure, the worker retrying into recovery, request consumption
+    /// and exactly one admission through the shared dedupe path — with the queue stable
+    /// across further cycles, so recovery never double-admits.
+    /// </summary>
+    [Fact]
+    public async Task HostedWorker_StartupRecoveryFailure_IsRetriedAndTheRetainedRequestIsConsumed()
+    {
+        EnableRealQueueAdmissionFixture();
+        var settings = _settingsService.LoadSettings();
+        settings.WatchMaxItemsPerRun = 5;
+        settings.WatchDelayBetweenPlaylistsSeconds = 0;
+        settings.Service = "deezer";
+        _settingsService.SaveSettings(settings);
+        const string playlistId = "12345678-1234-1234-1234-123456789ab1";
+        await _repository.AddPlaylistWatchlistAsync("spotify", playlistId, new PlaylistWatchlistMetadataInput("Recovery Admission", null, null, 1));
+        await ConfigurePlaylistDestinationAsync("spotify", playlistId);
+        _snapshotHttp.AsyncResponse = (request, _) =>
+        {
+            var isItems = request.RequestUri!.AbsolutePath.EndsWith("/items", StringComparison.Ordinal);
+            var content = isItems
+                ? System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    totalNumberOfItems = 1,
+                    items = new[] { new { item = new { id = "0000000000000000000001", title = "Synthetic 1", isrc = "USAAA2600001", duration = 180, artist = new { name = "Fixture Artist" }, album = new { title = "Album 1" } } } }
+                })
+                : "{\"title\":\"Recovery Admission\",\"numberOfTracks\":1,\"lastUpdated\":\"one\"}";
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(content) });
+        };
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", playlistId);
+        await _repository.UpdateWatchlistCycleStateAsync(
+            "playlist", "due", cycleStartedUtc: null, cycleCompletedUtc: null, nextCycleUtc: DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = new WatchlistRunCoordinator(_provider, background, new WatchlistRunSignal(), logger);
+        var recoveryFaults = 0;
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "startup-recovery" && Interlocked.CompareExchange(ref recoveryFaults, 1, 0) == 0
+                ? new InvalidOperationException("transient startup recovery failure")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = (_, _) => Task.CompletedTask;
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => await _repository.GetWatchlistReconciliationRequestCountAsync() == 0
+                    && (await _queueRepository.GetTasksAsync()).Count > 0,
+                () => "the worker did not recover from the startup failure, consume the retained request and admit due work. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            Assert.Equal(1, recoveryFaults);
+            var health = hosted.GetRuntimeHealth();
+            Assert.True(
+                string.IsNullOrEmpty(health.WorkerState) || health.WorkerState is "waiting" or "running",
+                $"worker state after recovery: {health.WorkerState} / {health.WorkerLastError}");
+            Assert.Null(health.WorkerLastError);
+
+            // The queue stays exactly one across further cycles: recovery never double-admits.
+            var queue = await _queueRepository.GetTasksAsync();
+            Assert.Single(queue);
+            Assert.All(queue, item => Assert.Equal("queued", item.Status));
+            await Task.Delay(TimeSpan.FromSeconds(3), lifetime.Token);
+            var settledQueue = await _queueRepository.GetTasksAsync();
+            Assert.Equal(queue.Count, settledQueue.Count);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        Assert.Equal("stopped", hosted.GetRuntimeHealth().WorkerState);
+    }
+
+    [Fact]
+    public async Task HostedWorker_StartupRecoveryFailure_EmptyFixture_IsRetriedAndTheRetainedRequestIsConsumed()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "recovery-startup");
+        var recoveryFaults = 0;
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "startup-recovery" && Interlocked.CompareExchange(ref recoveryFaults, 1, 0) == 0
+                ? new InvalidOperationException("transient startup recovery failure")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = (_, _) => Task.CompletedTask;
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => await _repository.GetWatchlistReconciliationRequestCountAsync() == 0,
+                () => "the worker did not recover from the startup failure and consume the retained request. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            Assert.Equal(1, recoveryFaults);
+            var health = hosted.GetRuntimeHealth();
+            Assert.True(
+                string.IsNullOrEmpty(health.WorkerState) || health.WorkerState is "waiting" or "running",
+                $"worker state after recovery: {health.WorkerState} / {health.WorkerLastError}");
+            Assert.Null(health.WorkerLastError);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        Assert.Equal("stopped", hosted.GetRuntimeHealth().WorkerState);
+    }
+
+    [Fact]
+    public async Task HostedWorker_SchedulerWaitFailure_IsRetriedWithoutARestart_AndConsumesRetainedWork()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "recovery-scheduler");
+        var waitFaults = 0;
+        var retryGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "scheduler-wait" && Interlocked.CompareExchange(ref waitFaults, 1, 0) == 0
+                ? new InvalidOperationException("transient scheduler wait failure")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = async (_, token) =>
+        {
+            if (Interlocked.CompareExchange(ref waitFaults, 0, 0) == 1)
+            {
+                await retryGate.Task.WaitAsync(token);
+            }
+        };
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            // Hold inside the backoff and verify the reported stage is the boundary
+            // that actually failed, not a later one.
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "retrying"
+                    && hosted.GetRuntimeHealth().WorkerLastError is not null,
+                () => "the worker never entered its retry backoff. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            Assert.Equal("scheduler-wait", hosted.GetRuntimeHealth().WorkerFailureStage);
+
+            retryGate.TrySetResult();
+            await WaitUntilAsync(
+                async () => await _repository.GetWatchlistReconciliationRequestCountAsync() == 0,
+                () => "a scheduler-wait failure killed the worker instead of being retried. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            Assert.Equal(1, waitFaults);
+        }
+        finally
+        {
+            retryGate.TrySetResult();
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        Assert.Equal("stopped", hosted.GetRuntimeHealth().WorkerState);
+    }
+
+    [Fact]
+    public async Task HostedWorker_NonShutdownCancellation_IsRecoverableAndDoesNotExitTheLoop()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "recovery-cancel");
+        var cancellations = 0;
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "cycle-run" && Interlocked.CompareExchange(ref cancellations, 1, 0) == 0
+                ? new OperationCanceledException("synthetic non-shutdown cancellation")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = (_, _) => Task.CompletedTask;
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        var shutdownErrorCount = 0;
+        try
+        {
+            await WaitUntilAsync(
+                async () => await _repository.GetWatchlistReconciliationRequestCountAsync() == 0,
+                () => "an unexpected cancellation permanently exited the worker loop. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            Assert.Equal(1, cancellations);
+            shutdownErrorCount = logger.Entries.Count(entry => entry.Level == LogLevel.Error);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        Assert.Equal("stopped", hosted.GetRuntimeHealth().WorkerState);
+        // Genuine shutdown must exit promptly without an additional erroneous failure log.
+        Assert.Equal(shutdownErrorCount, logger.Entries.Count(entry => entry.Level == LogLevel.Error));
+    }
+
+    [Fact]
+    public async Task HostedWorker_FatalException_RemainsTerminalAndIsVisibleInRuntimeHealth()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "fatal-worker");
+        hosted.LifecycleFaultInjectionForTesting = _ => new UnrecoverableWorkerFaultException("watchlist coordinator is unrecoverable");
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "failed",
+                () => "a fatal worker exception was never made visible in runtime health. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            var health = hosted.GetRuntimeHealth();
+            // The fault escaped local handling, so the escape point is the honest stage.
+            Assert.Equal("execute-task", health.WorkerFailureStage);
+            Assert.Contains("unrecoverable", health.WorkerLastError, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(health.WorkerFailureUtc);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
+    [Fact]
+    public async Task HostedWorker_RuntimeReset_PreservesAnUnresolvedWorkerFailure()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "reset-preserves");
+        var recoveryFaults = 0;
+        var recoveryRetryGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "startup-recovery" && Interlocked.CompareExchange(ref recoveryFaults, 1, 0) == 0
+                ? new InvalidOperationException("unresolved recovery failure")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = async (_, token) =>
+        {
+            if (Interlocked.CompareExchange(ref recoveryFaults, 0, 0) == 1)
+            {
+                await recoveryRetryGate.Task.WaitAsync(token);
+            }
+        };
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "retrying"
+                    && hosted.GetRuntimeHealth().WorkerLastError is not null,
+                () => "the worker never reported its retrying state. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+
+            var before = hosted.GetRuntimeHealth();
+            await hosted.ResetRuntimeAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+            var after = hosted.GetRuntimeHealth();
+            // The reset must not erase the unresolved failure and must not claim a completed cycle.
+            Assert.Equal("retrying", after.WorkerState);
+            Assert.Equal(before.WorkerLastError, after.WorkerLastError);
+            Assert.Equal(before.WorkerFailureUtc, after.WorkerFailureUtc);
+            Assert.Null(after.LastCycleCompletedUtc);
+
+            // Actual recovery — not the reset — clears the failure.
+            recoveryFaults = 0;
+            recoveryRetryGate.TrySetResult();
+            await WaitUntilAsync(
+                async () => await _repository.GetWatchlistReconciliationRequestCountAsync() == 0,
+                () => "the worker never recovered after the failure was released. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            var recovered = hosted.GetRuntimeHealth();
+            Assert.True(recovered.WorkerState is "waiting" or "running", $"state after recovery: {recovered.WorkerState}");
+            Assert.Null(recovered.WorkerLastError);
+        }
+        finally
+        {
+            recoveryRetryGate.TrySetResult();
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
+    [Fact]
+    public async Task HostedWorker_ShutdownDuringRetryBackoff_ReportsStoppedNotFailed()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "shutdown-backoff");
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "scheduler-wait" ? new InvalidOperationException("recurring recoverable failure") : null;
+        // Hold the worker inside the backoff until the test cancels, then reproduce
+        // exactly what Task.Delay does: throw the stopping cancellation.
+        hosted.LifecycleRetryDelayForTesting = async (_, token) =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(20);
+            }
+
+            throw new OperationCanceledException(token);
+        };
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "retrying",
+                () => "the worker never entered its retry backoff. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        // Shutdown during the backoff must end the graceful path: ExecuteTask is
+        // completed (not faulted), and the worker state reads stopped, never failed.
+        Assert.True(hosted.ExecuteTask.IsCompleted);
+        Assert.False(hosted.ExecuteTask.IsFaulted);
+        var stopped = hosted.GetRuntimeHealth();
+        Assert.Equal("stopped", stopped.WorkerState);
+        // The historical failure stays separately identifiable after shutdown.
+        Assert.Equal("scheduler-wait", stopped.WorkerFailureStage);
+        Assert.Contains("recurring recoverable failure", stopped.WorkerLastError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HostedWorker_FatalCycleCoreFailure_IsTerminalNotSwallowedByTheCycleHandler()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "fatal-cycle-core");
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "cycle-core" ? new UnrecoverableWorkerFaultException("fatal inside the cycle handler") : null;
+        hosted.LifecycleRetryDelayForTesting = (_, _) => Task.CompletedTask;
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "failed",
+                () => "a fatal failure inside the cycle handler was swallowed and the worker kept running as if healthy. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            var health = hosted.GetRuntimeHealth();
+            Assert.Contains("fatal inside the cycle handler", health.WorkerLastError, StringComparison.OrdinalIgnoreCase);
+            // The swallowed-and-continued failure would have consumed the request.
+            Assert.True(await _repository.GetWatchlistReconciliationRequestCountAsync() > 0,
+                "the fatal cycle failure must not have been followed by further admission.");
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
+    [Fact]
+    public async Task HostedWorker_CycleCoreRecoverableFailure_UsesTheWorkerRetryPolicy()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var background = new BackgroundWorkCoordinator();
+        var hosted = await StartRecoveryFixtureAsync(logger, background, "cycle-core-retry");
+        var cycleFaults = 0;
+        var retryGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        hosted.LifecycleFaultInjectionForTesting = stage =>
+            stage == "cycle-core" && Interlocked.CompareExchange(ref cycleFaults, 1, 0) == 0
+                ? new InvalidOperationException("transient cycle failure")
+                : null;
+        hosted.LifecycleRetryDelayForTesting = async (_, token) =>
+        {
+            if (Interlocked.CompareExchange(ref cycleFaults, 0, 0) == 1)
+            {
+                await retryGate.Task.WaitAsync(token);
+            }
+        };
+
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await hosted.StartAsync(lifetime.Token);
+        background.ReleaseBackgroundWorkers();
+        try
+        {
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerState == "retrying"
+                    && hosted.GetRuntimeHealth().WorkerLastError is not null,
+                () => "a real cycle failure never became a visible worker retry. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+            var health = hosted.GetRuntimeHealth();
+            // The cycle-run boundary is the guarded boundary a cycle-core failure
+            // belongs to; scheduler-wait must never be named for it.
+            Assert.Equal("cycle-run", health.WorkerFailureStage);
+            Assert.NotNull(health.WorkerNextRetryUtc);
+
+            // The failed cycle scheduled its next attempt at the watch interval
+            // (existing end-of-cycle semantics). Pull the retained request's due
+            // slot forward like a user re-trigger: re-mark the scheduler row due
+            // and wake the worker through its own trigger API, so the retried
+            // attempt runs deterministically instead of after the full interval.
+            retryGate.TrySetResult();
+            await _repository.UpdateWatchlistCycleStateAsync(
+                "playlist", "due", cycleStartedUtc: null, cycleCompletedUtc: null,
+                nextCycleUtc: DateTimeOffset.UtcNow.AddMinutes(-1));
+            await hosted.TriggerRunOnceAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+            await WaitUntilAsync(
+                async () => hosted.GetRuntimeHealth().WorkerLastError is null
+                    && hosted.GetRuntimeHealth().WorkerState is "waiting" or "running",
+                () => "the retried attempt never ran to a success that clears the failure. Logs:\n"
+                    + string.Join("\n", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}")));
+
+            // The lease safeguard is preserved: the failed cycle held the request's
+            // lease, so the retained request stays claimed — never deleted, never
+            // reset — until its lease window expires, exactly as designed. The
+            // re-trigger's own "all" request may still be pending for its slot.
+            var retained = Assert.Single(
+                await _repository.GetWatchlistReconciliationRequestsAsync(includePreparedSnapshotJson: false),
+                item => item.Identifier == "cycle-core-retry");
+            Assert.Equal("processing", retained.Status);
+            var recovered = hosted.GetRuntimeHealth();
+            Assert.True(recovered.WorkerState is "waiting" or "running", $"state after recovery: {recovered.WorkerState}");
+            Assert.Null(recovered.WorkerLastError);
+        }
+        finally
+        {
+            retryGate.TrySetResult();
+            lifetime.Cancel();
+            await hosted.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
+    private sealed class UnrecoverableWorkerFaultException : Exception
+    {
+        public UnrecoverableWorkerFaultException(string message) : base(message) { }
+    }
+
     [Fact]
     public async Task ReconciliationMeasurement_ReportsRealProviderFailureWithoutReplacingException()
     {

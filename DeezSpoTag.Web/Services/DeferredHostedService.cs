@@ -94,6 +94,7 @@ public sealed class DeferredHostedService<TService> : IHostedService
             }
 
             await service.StartAsync(_applicationLifetime.ApplicationStopping);
+            ObserveBackgroundServiceFaults(service);
         }
         catch (OperationCanceledException) when (_applicationLifetime.ApplicationStopping.IsCancellationRequested)
         {
@@ -102,6 +103,60 @@ public sealed class DeferredHostedService<TService> : IHostedService
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogError(ex, "Deferred hosted service {ServiceName} failed to start.", typeof(TService).FullName);
+        }
+    }
+
+    /// <summary>
+    /// A deferred BackgroundService's ExecuteTask faults outside StartAsync, and until
+    /// now nothing observed it: a worker that died minutes after startup stayed
+    /// invisible. Attach a detached monitor to the real ExecuteTask after the start
+    /// has completed and record asynchronous faults. Ordinary (non-BackgroundService)
+    /// hosted services keep their host-owned behavior, and StopAsync still sends stop
+    /// without waiting for normal worker completion.
+    /// </summary>
+    private void ObserveBackgroundServiceFaults(TService service)
+    {
+        if (service is not BackgroundService background)
+        {
+            return;
+        }
+
+        _ = ObserveExecuteTaskAsync(background);
+    }
+
+    private async Task ObserveExecuteTaskAsync(BackgroundService background)
+    {
+        var executeTask = background.ExecuteTask;
+        if (executeTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await executeTask;
+        }
+        catch (OperationCanceledException) when (_applicationLifetime.ApplicationStopping.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Deferred hosted service {ServiceName} stopped with the application shutdown.",
+                typeof(TService).FullName);
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deferred hosted service {ServiceName} was cancelled unexpectedly after startup.",
+                typeof(TService).FullName);
+        }
+        // Filtered, not broad: cancellation is handled above, so this arm logs
+        // only real failures, as the broad-catch guardrail requires.
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(
+                ex,
+                "Deferred hosted service {ServiceName} failed while running after startup.",
+                typeof(TService).FullName);
         }
     }
 }

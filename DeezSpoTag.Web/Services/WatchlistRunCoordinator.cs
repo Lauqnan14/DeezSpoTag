@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
+using DeezSpoTag.Core.Diagnostics;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Runtime;
@@ -109,7 +110,17 @@ public sealed record WatchlistRuntimeHealth(
     string? LastAdmissionBlockReason,
     int LastRecoveredClaimCount,
     int PendingReconciliationRequests = 0,
-    IReadOnlyList<WatchlistPlatformProgress>? Platforms = null)
+    IReadOnlyList<WatchlistPlatformProgress>? Platforms = null,
+    /// <summary>
+    /// Lifecycle state of the worker itself: starting, recovering, waiting, running,
+    /// retrying, failed or stopped. Empty on a legacy record that never reported it,
+    /// which the UI must treat as unknown rather than healthy.
+    /// </summary>
+    string WorkerState = "",
+    string? WorkerFailureStage = null,
+    string? WorkerLastError = null,
+    DateTimeOffset? WorkerFailureUtc = null,
+    DateTimeOffset? WorkerNextRetryUtc = null)
 {
     /// <summary>Never null, so callers and serializers do not each need their own null handling.</summary>
     public IReadOnlyList<WatchlistPlatformProgress> PlatformProgress => Platforms ?? [];
@@ -154,6 +165,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     /// of work per cycle does not vary with machine speed or provider latency.
     /// </summary>
     internal const int MaxDrainJobsPerCycle = 25;
+    /// <summary>
+    /// Worker-level recovery backoff: 5, 10, 20, 40, then a 60-second ceiling. This
+    /// bounds how often the worker retries a recoverable lifecycle failure; it is
+    /// not a change to any per-track or per-provider retry policy.
+    /// </summary>
+    internal static readonly int[] WorkerRetryDelaySeconds = [5, 10, 20, 40];
+    internal const int MaxWorkerRetryDelaySeconds = 60;
+    internal const int MaxWorkerErrorLength = 500;
     private readonly IServiceProvider _serviceProvider;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly WatchlistRunSignal _runSignal;
@@ -170,6 +189,35 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private CancellationTokenSource? _activeCycleCancellation;
     private int _runtimeResetRequested;
     private WatchlistRuntimeHealth _runtimeHealth = new(false, false, null, null, null, 0);
+    private int _workerFailureStreak;
+    private int _executeStarted;
+
+    internal static int WorkerRetryDelaySecondsForAttempt(int attempt)
+        => attempt <= WorkerRetryDelaySeconds.Length
+            ? WorkerRetryDelaySeconds[attempt - 1]
+            : MaxWorkerRetryDelaySeconds;
+
+    /// <summary>
+    /// Narrow lifecycle-fault injection seam for the hosted-lifecycle regressions.
+    /// Invoked with the stage name at each guarded boundary; a non-null return is
+    /// thrown as if that stage failed. Null in production.
+    /// </summary>
+    internal Func<string, Exception?>? LifecycleFaultInjectionForTesting { get; set; }
+
+    /// <summary>
+    /// Narrow retry-delay seam so lifecycle regressions do not sleep through the
+    /// real 5/10/20/40/60-second worker recovery backoff. Null in production.
+    /// </summary>
+    internal Func<int, CancellationToken, Task>? LifecycleRetryDelayForTesting { get; set; }
+
+    private void ThrowInjectedLifecycleFault(string stage)
+    {
+        var injected = LifecycleFaultInjectionForTesting?.Invoke(stage);
+        if (injected is not null)
+        {
+            throw injected;
+        }
+    }
 
     public WatchlistRunCoordinator(
         IServiceProvider serviceProvider,
@@ -194,6 +242,25 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     {
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        // Marks the real hosted lifecycle, so runtime health can tell an unstarted
+        // test coordinator from a worker whose ExecuteTask ended unexpectedly.
+        Volatile.Write(ref _executeStarted, 1);
+        await base.StartAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The whole worker lifecycle lives inside recoverable boundaries: startup
+    /// recovery first, then the scheduler loop. A recoverable failure at either
+    /// boundary is retried in this same ExecuteAsync invocation with a bounded
+    /// 5/10/20/40/60-second backoff, so a transient throw can no longer leave an
+    /// enabled, due watchlist permanently unconsumed. Unexpected (non-recoverable)
+    /// exceptions keep propagating and remain terminal; they are observed by
+    /// <see cref="DeferredHostedService{TService}"/> and surfaced through
+    /// <see cref="GetRuntimeHealth"/>. Genuine shutdown exits promptly without a
+    /// failure log and reports state <c>stopped</c>.
+    /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Playlist watch service started.");
@@ -205,22 +272,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         try
         {
-            await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
-            await RecoverCoordinatorStateAsync(stoppingToken);
-            UpdateRuntimeHealth(health => health with { IsRunning = false });
-
-            while (!stoppingToken.IsCancellationRequested)
+            if (!await RunStartupRecoveryWithRetriesAsync(stoppingToken))
             {
-                try
-                {
-                    await WaitForFullRunDeadlineAsync(stoppingToken);
-                    await ExecuteRunAsync(stoppingToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
+                return;
             }
+
+            UpdateRuntimeHealth(health => health with { IsRunning = false, WorkerState = "waiting" });
+            await RunSchedulerLoopWithRetriesAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Any shutdown-path cancellation — including one that escaped a local
+            // boundary — still ends the graceful path below as stopped.
         }
         finally
         {
@@ -230,7 +293,196 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
         }
 
+        SetWorkerState("stopped");
         _logger.LogInformation("Playlist watch service stopped.");
+    }
+
+    /// <summary>Startup recovery: retried until it succeeds, before any normal admission.</summary>
+    /// <returns>False only when the worker is shutting down.</returns>
+    private async Task<bool> RunStartupRecoveryWithRetriesAsync(CancellationToken stoppingToken)
+    {
+        SetWorkerState("recovering", "startup-recovery");
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                ThrowInjectedLifecycleFault("startup-recovery");
+                await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+                await RecoverCoordinatorStateAsync(stoppingToken);
+                ClearWorkerFailure();
+                return true;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex) when (ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                if (!await RecordWorkerRecoverableFailureAsync("startup-recovery", ex, stoppingToken))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Scheduler wait plus one watch cycle: recoverable failures here retry the
+    /// same attempt after the bounded backoff instead of ending the worker. The
+    /// stage travels with the attempt so health names the boundary that actually
+    /// failed; fatal (non-recoverable) cycle exceptions keep propagating and are
+    /// never swallowed back into a healthy-looking success.
+    /// </summary>
+    private async Task RunSchedulerLoopWithRetriesAsync(CancellationToken stoppingToken)
+    {
+        var stage = "scheduler-wait";
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                stage = "scheduler-wait";
+                ThrowInjectedLifecycleFault(stage);
+                await WaitForFullRunDeadlineAsync(stoppingToken);
+                stage = "cycle-run";
+                ThrowInjectedLifecycleFault(stage);
+                await ExecuteRunAsync(stoppingToken);
+                // One successful wait+run attempt resets the failure streak.
+                ClearWorkerFailure();
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (OperationCanceledException) when (Volatile.Read(ref _runtimeResetRequested) != 0)
+            {
+                // A runtime reset cancelled the active cycle on purpose; the reset
+                // itself re-requests a run, so this is not a worker failure.
+            }
+            catch (OperationCanceledException ex)
+            {
+                // A non-shutdown cancellation is recoverable: never exit the loop for it.
+                if (!await RecordWorkerRecoverableFailureAsync(stage, ex, stoppingToken))
+                {
+                    return;
+                }
+            }
+            catch (Exception ex) when (ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                if (!await RecordWorkerRecoverableFailureAsync(stage, ex, stoppingToken))
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task<bool> RecordWorkerRecoverableFailureAsync(string stage, Exception ex, CancellationToken stoppingToken)
+    {
+        var attempt = Interlocked.Increment(ref _workerFailureStreak);
+        var delaySeconds = WorkerRetryDelaySecondsForAttempt(attempt);
+        var nextRetryUtc = DateTimeOffset.UtcNow.AddSeconds(delaySeconds);
+        _logger.LogError(
+            ex,
+            "Watchlist worker recoverable failure at {Stage}; retrying in {RetryDelaySeconds}s (attempt {Attempt}).",
+            stage,
+            delaySeconds,
+            attempt);
+        SetWorkerState("retrying", stage, SanitizeWorkerError(ex), nextRetryUtc);
+        if (stoppingToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        try
+        {
+            var delay = LifecycleRetryDelayForTesting;
+            if (delay is not null)
+            {
+                await delay(delaySeconds, stoppingToken);
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Shutdown arriving during the backoff must end the graceful path here,
+            // never escape as a cancelled worker that health would report failed.
+        }
+
+        if (stoppingToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        // The backoff expired: the retry attempt is now governed by the normal
+        // scheduler wait (next_cycle_utc), which can legitimately be hours out.
+        // The worker is waiting again, not retrying; the failure stays visible
+        // as history until the attempt succeeds and clears it.
+        SetWorkerState("waiting");
+        lock (_runtimeHealthGate)
+        {
+            _runtimeHealth = _runtimeHealth with { WorkerNextRetryUtc = null };
+        }
+
+        return true;
+    }
+
+    private void ClearWorkerFailure()
+    {
+        Volatile.Write(ref _workerFailureStreak, 0);
+        lock (_runtimeHealthGate)
+        {
+            // Called only after a successful lifecycle attempt: actual recovery is
+            // what clears the failure, whatever state the attempt passed through.
+            _runtimeHealth = _runtimeHealth with
+            {
+                WorkerState = "waiting",
+                WorkerFailureStage = null,
+                WorkerLastError = null,
+                WorkerFailureUtc = null,
+                WorkerNextRetryUtc = null
+            };
+        }
+    }
+
+    private void SetWorkerState(string state, string? stage = null, string? error = null, DateTimeOffset? nextRetryUtc = null)
+    {
+        lock (_runtimeHealthGate)
+        {
+            // The failure stage belongs to a failure. Phase transitions
+            // (recovering/waiting/running/stopped) leave the last known failure
+            // stage alone so a historical failure stays identifiable.
+            var failureStage = state is "failed" or "retrying" ? stage ?? _runtimeHealth.WorkerFailureStage : _runtimeHealth.WorkerFailureStage;
+            _runtimeHealth = _runtimeHealth with
+            {
+                WorkerState = state,
+                WorkerFailureStage = failureStage,
+                WorkerLastError = error ?? _runtimeHealth.WorkerLastError,
+                WorkerFailureUtc = error is null ? _runtimeHealth.WorkerFailureUtc : DateTimeOffset.UtcNow,
+                WorkerNextRetryUtc = nextRetryUtc ?? _runtimeHealth.WorkerNextRetryUtc
+            };
+        }
+    }
+
+    internal static string SanitizeWorkerError(Exception? exception)
+    {
+        if (exception is null)
+        {
+            return string.Empty;
+        }
+
+        var message = exception.Message ?? string.Empty;
+        var flattened = new string(message
+            .Select(character => char.IsControl(character) ? ' ' : character)
+            .ToArray());
+        var compact = string.Join(' ', flattened.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var typeName = exception.GetType().Name;
+        var text = string.IsNullOrEmpty(compact) ? typeName : $"{typeName}: {compact}";
+        return text.Length <= MaxWorkerErrorLength ? text : text[..MaxWorkerErrorLength] + "…";
     }
 
     private async Task HandleSpotifyAuthenticationRecoveredAsync(
@@ -721,8 +973,76 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     {
         lock (_runtimeHealthGate)
         {
-            return _runtimeHealth with { TriggerPending = _runSignal.IsPending };
+            var health = _runtimeHealth with { TriggerPending = _runSignal.IsPending };
+            return ObserveExecuteTaskOutcome(health);
         }
+    }
+
+    /// <summary>
+    /// Belt-and-braces worker truth: even if a failure escaped the recoverable
+    /// boundary and faulted <see cref="BackgroundService.ExecuteTask"/> before any
+    /// local handler recorded it, health must report failed. The stage of a fault
+    /// that escaped local handling is honestly <c>execute-task</c> — the escape
+    /// point, not a stage a local handler observed. An un-started coordinator
+    /// (some tests call single runs directly) reports nothing; a worker that
+    /// completed or was cancelled outside the graceful shutdown path must not
+    /// read as healthy idle — only the shutdown path records <c>stopped</c>.
+    /// </summary>
+    private WatchlistRuntimeHealth ObserveExecuteTaskOutcome(WatchlistRuntimeHealth health)
+    {
+        if (Volatile.Read(ref _executeStarted) == 0)
+        {
+            return health;
+        }
+
+        var executeTask = ExecuteTask;
+        if (executeTask is null)
+        {
+            // A null ExecuteTask means the hosted lifecycle never ran it.
+            return health;
+        }
+
+        if (executeTask.IsFaulted)
+        {
+            var fault = executeTask.Exception is null
+                ? null
+                : executeTask.Exception.Flatten().InnerException ?? (Exception)executeTask.Exception;
+            return health.WorkerState == "failed" && health.WorkerLastError is not null
+                ? health
+                : health with
+                {
+                    WorkerState = "failed",
+                    WorkerFailureStage = "execute-task",
+                    WorkerLastError = SanitizeWorkerError(fault),
+                    WorkerFailureUtc = health.WorkerFailureUtc ?? DateTimeOffset.UtcNow
+                };
+        }
+
+        if (executeTask.IsCompletedSuccessfully && health.WorkerState != "stopped")
+        {
+            return health with
+            {
+                WorkerState = "failed",
+                WorkerFailureStage = health.WorkerFailureStage ?? "execute-completed",
+                WorkerLastError = health.WorkerLastError
+                    ?? "Watchlist worker exited unexpectedly without a shutdown.",
+                WorkerFailureUtc = health.WorkerFailureUtc ?? DateTimeOffset.UtcNow
+            };
+        }
+
+        if (executeTask.IsCanceled && health.WorkerState != "stopped")
+        {
+            return health with
+            {
+                WorkerState = "failed",
+                WorkerFailureStage = health.WorkerFailureStage ?? "execute-cancelled",
+                WorkerLastError = health.WorkerLastError
+                    ?? "Watchlist worker was cancelled outside the shutdown path.",
+                WorkerFailureUtc = health.WorkerFailureUtc ?? DateTimeOffset.UtcNow
+            };
+        }
+
+        return health;
     }
 
     public void ResetPlaylistRuntimeStateForAll(IReadOnlyCollection<PlaylistWatchlistDto> playlists)
@@ -820,7 +1140,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _consecutiveFailures.Clear();
             _lastDestinationRepairUtc = DateTimeOffset.MinValue;
             _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
-            UpdateRuntimeHealth(_ => new WatchlistRuntimeHealth(false, false, null, DateTimeOffset.UtcNow, null, 0));
+            // The reset clears cycle bookkeeping but must not erase an unresolved
+            // worker failure, and it must not invent a completed cycle: the worker
+            // fields and LastCycleCompletedUtc are preserved/null respectively.
+            // Only actual recovery (ClearWorkerFailure) clears the failure state.
+            UpdateRuntimeHealth(health => health with
+            {
+                IsRunning = false,
+                LastCycleStartedUtc = null,
+                LastCycleCompletedUtc = null,
+                LastAdmissionBlockReason = null,
+                LastRecoveredClaimCount = 0,
+                PendingReconciliationRequests = 0
+            });
 
             var triggerStatus = WatchlistTriggerStatus.Disabled;
             if (restartWhenEnabled && IsWatchlistEnabled())
@@ -873,6 +1205,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         UpdateRuntimeHealth(health => health with
         {
             IsRunning = true,
+            WorkerState = "running",
             LastCycleStartedUtc = DateTimeOffset.UtcNow,
             LastAdmissionBlockReason = null,
             LastRecoveredClaimCount = 0
@@ -907,36 +1240,49 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Playlist watch run failed.");
-        }
+        // Deliberately no broad exception catch above. Every cycle failure —
+        // recoverable or fatal — flows to the scheduler-loop boundary, which
+        // applies ExpectedExceptionPolicy.IsRecoverable: recoverable failures
+        // are retried with the worker backoff and visible in runtime health;
+        // fatal ones stay terminal. Swallowing them here would let the outer
+        // loop clear the failure as though the attempt had succeeded.
         finally
         {
-            if (!cycleCompleted) runMeasurement.SetOutcome(cycleCancellation.IsCancellationRequested ? "cancelled" : "failed");
             var cycleCompletedUtc = DateTimeOffset.UtcNow;
+            if (!cycleCompleted) runMeasurement.SetOutcome(cycleCancellation.IsCancellationRequested ? "cancelled" : "failed");
             if (!stoppingToken.IsCancellationRequested
                 && Volatile.Read(ref _runtimeResetRequested) == 0
                 && IsWatchlistEnabled())
             {
-                using var scope = _serviceProvider.CreateScope();
-                var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-                if (repository.IsConfigured)
+                try
                 {
-                    var batchGate = await EvaluateBatchGateAsync(repository, cycleStartedUtc, stoppingToken);
-                    var completionAnchorUtc = batchGate.LastBatchCompletedUtc ?? cycleCompletedUtc;
-                    var nextCycleUtc = completionAnchorUtc + GetWatchInterval();
-                    await repository.UpdateWatchlistCycleStateAsync(
-                        PlaylistWatchType,
-                        batchGate.HasActiveDownloads
-                            ? "waiting_downloads"
-                            : cycleCompleted ? "completed" : "failed",
-                        cycleStartedUtc,
-                        completionAnchorUtc,
-                        nextCycleUtc,
-                        stoppingToken);
+                    using var scope = _serviceProvider.CreateScope();
+                    var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+                    if (repository.IsConfigured)
+                    {
+                        var batchGate = await EvaluateBatchGateAsync(repository, cycleStartedUtc, stoppingToken);
+                        var completionAnchorUtc = batchGate.LastBatchCompletedUtc ?? cycleCompletedUtc;
+                        var nextCycleUtc = completionAnchorUtc + GetWatchInterval();
+                        await repository.UpdateWatchlistCycleStateAsync(
+                            PlaylistWatchType,
+                            batchGate.HasActiveDownloads
+                                ? "waiting_downloads"
+                                : cycleCompleted ? "completed" : "failed",
+                            cycleStartedUtc,
+                            completionAnchorUtc,
+                            nextCycleUtc,
+                            stoppingToken);
+                    }
+                }
+                catch (Exception schedulingError) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // A failure writing the end-of-cycle schedule must not leak the
+                    // cycle gate or replace the cycle's own failure. The next
+                    // successful attempt reschedules; the failure is recorded here.
+                    _logger.LogError(schedulingError, "Failed to persist the watchlist end-of-cycle schedule.");
                 }
             }
+
             lock (_activeCycleGate)
             {
                 if (ReferenceEquals(_activeCycleCancellation, cycleCancellation))
@@ -1090,6 +1436,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
     private async Task RecoverCoordinatorStateAsync(CancellationToken cancellationToken)
     {
+        ThrowInjectedLifecycleFault("startup-recovery");
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
@@ -1254,6 +1601,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _logger.LogDebug("Watchlist skipped - library DB not configured.");
             return PlaylistRunResult.Empty;
         }
+
+        ThrowInjectedLifecycleFault("cycle-core");
 
         var profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         await TryRepairWatchlistDestinationIntegrityAsync(repository, profileResolutionService, stoppingToken);
