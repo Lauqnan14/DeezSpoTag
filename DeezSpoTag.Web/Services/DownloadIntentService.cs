@@ -2044,8 +2044,11 @@ public sealed class DownloadIntentService
                 if (identity is null || !identity.Candidates.Any(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id)))
                 {
                     _logger.LogWarning("YouTube recording {VideoId} could not be resolved. Catalog results: {Results}",
-                        youtubeId, identity is null ? "no resolution" : string.Join(", ", identity.Candidates.Select(candidate =>
-                            candidate.Platform + ": " + candidate.Reason)));
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(youtubeId),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(identity is null
+                            ? "no resolution"
+                            : string.Join(", ", identity.Candidates.Select(candidate =>
+                                candidate.Platform + ": " + candidate.Reason))));
                     throw new InvalidOperationException("Could not find a verified match for this YouTube Music song. Download blocked.");
                 }
             }

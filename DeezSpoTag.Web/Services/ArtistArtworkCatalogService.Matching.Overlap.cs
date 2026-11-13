@@ -179,7 +179,7 @@ public sealed partial class ArtistArtworkCatalogService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer artist search failed for {ArtistName}.", artistName);
+            _logger.LogDebug(ex, "Deezer artist search failed for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             throw;
         }
     }
@@ -224,7 +224,7 @@ public sealed partial class ArtistArtworkCatalogService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz artist search failed for {ArtistName}.", artistName);
+            _logger.LogDebug(ex, "Qobuz artist search failed for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             throw;
         }
     }
@@ -288,7 +288,7 @@ public sealed partial class ArtistArtworkCatalogService
         }
         catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
         {
-            _logger.LogDebug(ex, "Tidal artist search failed for {ArtistName}.", artistName);
+            _logger.LogDebug(ex, "Tidal artist search failed for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             throw;
         }
     }

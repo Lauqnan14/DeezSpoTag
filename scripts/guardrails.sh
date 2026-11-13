@@ -217,7 +217,7 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
       DeezSpoTag.Web/Services/ArtistArtworkCatalogService.cs|DeezSpoTag.Web/Services/ArtistArtworkCatalogService.Matching.cs|DeezSpoTag.Web/Services/ArtistArtworkCatalogService.Matching.Overlap.cs|DeezSpoTag.Web/Services/ArtistArtworkTextInspector.cs)
-        add_tests_matching '^(ArtistMetadataUpdaterServicePlexPush|ArtistMetadataTargetSelectionGuardrail|DeezerPlaceholderArtwork|ArtistArtworkCatalogService|ArtistMetadataAliasLookup)Test$' ;;
+        add_tests_matching '^(ArtistMetadataUpdaterServicePlexPush|ArtistMetadataTargetSelectionGuardrail|DeezerPlaceholderArtwork|ArtistArtworkCatalogService|ArtistMetadataAliasLookup|LogForgingSanitization)Test$' ;;
       DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs)
         add_tests_matching '^(MusicBrainzArtistLocation|ArtistLocationResolver)' ;;
       DeezSpoTag.Web/Services/PersistentArtistQueueStore.cs)
@@ -252,7 +252,7 @@ if [[ "$MODE" == "changed" ]]; then
       *Spotify*) add_tests_matching '^Spotify' ;;
       *Lyrics*|*lyrics*) add_tests_matching '(Lyrics|Lrc|Ttml)' ;;
       *Download/Queue/*|*VerificationRetry*|*PublicApiVerification*|*DownloadIntent*|*DownloadOrchestration*|*DownloadQueueEnqueue*|*DownloadApiController*)
-        add_tests_matching '(DownloadQueue|DownloadIntent|VerificationRetry|EngineFallback|PublicApiDownload|PublicDownloadProvider)' ;;
+        add_tests_matching '(DownloadQueue|DownloadIntent|VerificationRetry|EngineFallback|PublicApiDownload|PublicDownloadProvider|LogForgingSanitization)' ;;
       *Download/Fallback/*) add_tests_matching '(Fallback|DownloadIntent)' ;;
       *Download/Apple/*) add_tests_matching '^Apple' ;;
       *Download/Tidal/*|*TidalCatalog*) add_tests_matching '^Tidal' ;;
