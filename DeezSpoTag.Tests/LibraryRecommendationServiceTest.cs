@@ -326,7 +326,7 @@ public sealed class LibraryRecommendationServiceTest
 
     [Theory]
     [InlineData(12, "generating")]
-    [InlineData(23, "waiting")]
+    [InlineData(23, "generating")]
     public async System.Threading.Tasks.Task PreviousDailySelectionIsExpiredInsteadOfServedForToday(int hour, string expectedStatus)
     {
         var clock = new DailyExpiryClock(hour);

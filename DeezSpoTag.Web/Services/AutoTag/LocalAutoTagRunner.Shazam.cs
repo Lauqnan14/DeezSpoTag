@@ -260,6 +260,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return cloned;
     }
 
+    private static void RestoreRecognizedShazamIdentity(AutoTagMatchResult match, ShazamRecognitionInfo recognized)
+    {
+        if (string.IsNullOrWhiteSpace(recognized.TrackId)) return;
+        var recording = new AutoTagTrack
+        {
+            Title = recognized.Title,
+            Artists = ResolveShazamArtists(recognized),
+            Isrc = recognized.Isrc,
+            Duration = recognized.DurationMs is > 0 ? TimeSpan.FromMilliseconds(recognized.DurationMs.Value) : null
+        };
+        // The resolver's metadata must describe the fingerprinted recording before its
+        // identity can be attached. Keep the original core metadata and provider IDs.
+        if (!SameSharedDetailsRecording(match.Track, recording)) return;
+        match.Track.TrackId = recognized.TrackId.Trim();
+        match.Track.Other["SHAZAM_TRACK_ID"] = [match.Track.TrackId];
+        match.Track.Url = ShazamOwnedUrl(recognized.Url);
+        match.ProviderIdentity = CaptureProviderIdentity(ShazamPlatform, match);
+    }
+
     private static AutoTagMatchResult PrepareShazamIdFirstMatch(
         AutoTagMatchResult match,
         string provider,

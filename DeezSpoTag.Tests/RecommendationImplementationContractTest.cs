@@ -114,7 +114,7 @@ public sealed class RecommendationImplementationContractTest
     }
 
     [Fact]
-    public void RecommendationAutomation_ReconcilesCapturedCalendarTime()
+    public void RecommendationAutomation_RunsPublicationClockAndPreparationSchedule()
     {
         var source = File.ReadAllText(Path.Join(
             FindRepoRoot(),
@@ -122,10 +122,56 @@ public sealed class RecommendationImplementationContractTest
             "Services",
             "LibraryRecommendationAutomationHostedService.cs"));
 
-        Assert.Contains("_recommendationService.ReconcileRecommendationGenerationAsync(targetTime, token)", source, StringComparison.Ordinal);
-        Assert.Contains("GetReconciliationDelay", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunRecommendationLoopsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_recommendationService.ReconcileRecommendationGenerationAsync(", source, StringComparison.Ordinal);
         Assert.Contains("RunHeavyWorkAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ActivateReadyDailyRecommendationsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PublicationClockAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IsDailyPreparationDueAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PreparePendingDailyRecommendationsAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunRecommendationLoopsAsync", source, StringComparison.Ordinal);
+        // Publication must never wait for the heavy work gate.
+        var clock = ExtractBetween(source, "private async Task PublicationClockAsync", "private static TimeSpan GetReconciliationDelay");
+        Assert.DoesNotContain("RunHeavyWorkAsync", clock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DailyReadsAreFrozenWithoutReselectionOrWrites()
+    {
+        var source = ReadRecommendationServiceSource();
+        var method = ExtractBetween(
+            source,
+            "private async Task<RecommendationDetailDto> GetCurrentDailyResponseAsync",
+            "private const string FolderContentMusic");
+
+        Assert.DoesNotContain("GetRecommendationRejectedTrackIdsAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlaylistWatchIgnoredTrackIdsAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvaluateDailyAiPolicy", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildVisibleDailySelection", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertPlaylistTrackCandidateCacheAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("PublishRecommendationSnapshotAsync", method, StringComparison.Ordinal);
+        // Stored published order is served directly; only legacy full-pool rows project deterministically.
+        Assert.Contains("BuildSavedDailySelection", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutomaticScheduleStagesPreparedSelectionsAndRemovedDailyMaintenance()
+    {
+        var source = ReadRecommendationServiceSource();
+
+        Assert.Contains("StagePreparedDailyRecommendationSnapshotAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ActivatePreparedDailyRecommendationSnapshotsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PreparedDailyPoolCacheSource", source, StringComparison.Ordinal);
+        var reconcile = ExtractBetween(
+            source,
+            "public async Task ReconcileRecommendationGenerationAsync",
+            "private async Task InitializeMissingWeeklyRecommendationsAsync");
+        Assert.DoesNotContain("RefreshDailyRecommendationsForDateAsync(today,", reconcile, StringComparison.Ordinal);
+        var maintenance = ExtractBetween(
+            source,
+            "private async Task MaintainSavedRecommendationsAsync",
+            "private async Task RunRecommendationMaintenanceAsync");
+        Assert.DoesNotContain("DailyPoolCacheSource", maintenance, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnrichRecommendationMetadataAsync", maintenance, StringComparison.Ordinal);
     }
 
     [Fact]

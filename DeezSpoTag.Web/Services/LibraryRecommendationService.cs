@@ -750,6 +750,48 @@ public sealed class LibraryRecommendationService
 
     private static readonly TimeOnly AutomaticDailyCutoff = new(20, 0);
 
+    /// <summary>Approved plan decision: advance preparation starts 20:00 on the preceding local day.</summary>
+    internal static readonly TimeOnly AutomaticPreparationStart = new(20, 0);
+
+    public const string GenerationReasonPreparation = "preparation";
+
+    internal static DateTimeOffset DailyPreparationBoundaryUtc(DateOnly day, TimeZoneInfo zone)
+        => DailyBoundaryUtc(day, AutomaticPreparationStart, zone);
+
+    /// <summary>
+    ///     Stable identity of the daily configuration used for a prepared selection. Activation
+    ///     refuses prepared data whose fingerprint no longer matches the current settings, so a
+    ///     preference change before publication always reprepares instead of publishing stale data.
+    /// </summary>
+    internal static string BuildDailyConfigurationFingerprint(DailyRecommendationSettings configuration)
+        => string.Join("|", configuration.TrackCount, (int)configuration.AiFilterMode,
+            string.Join(",", new[] { "shazam", "deezer", "spotify", "tidal" }
+                .Select(source => source + ":" + configuration.Allocations()[source])));
+
+    private static string FingerprintFromSavedDailyPool(RecommendationDetailDto pool)
+        => BuildDailyConfigurationFingerprint(ConfigurationFromSavedDailyPool(pool));
+
+    private static string FingerprintFromPersistedDailyPool(PersistedDailyPoolDto payload)
+        => BuildDailyConfigurationFingerprint(FromPersistedDailyPool(payload));
+
+    private static DailyRecommendationSettings FromPersistedDailyPool(PersistedDailyPoolDto payload)
+    {
+        var allocations = payload.Allocations ?? new Dictionary<string, int>();
+        return new DailyRecommendationSettings
+        {
+            TrackCount = payload.TrackCount ?? MaxDailyRecommendations,
+            ShazamEnabled = allocations.GetValueOrDefault("shazam") > 0,
+            ShazamTrackCount = allocations.GetValueOrDefault("shazam"),
+            DeezerEnabled = allocations.GetValueOrDefault("deezer") > 0,
+            DeezerTrackCount = allocations.GetValueOrDefault("deezer"),
+            SpotifyEnabled = allocations.GetValueOrDefault("spotify") > 0,
+            SpotifyTrackCount = allocations.GetValueOrDefault("spotify"),
+            TidalEnabled = allocations.GetValueOrDefault("tidal") > 0,
+            TidalTrackCount = allocations.GetValueOrDefault("tidal"),
+            AiFilterMode = payload.AiFilterMode ?? DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated
+        };
+    }
+
     internal static bool AutomaticDailyAllowed(DateTimeOffset nowLocal)
         => TimeOnly.FromDateTime(nowLocal.DateTime) < AutomaticDailyCutoff;
 
@@ -782,32 +824,30 @@ public sealed class LibraryRecommendationService
             return StampDailyResponse(CreateDisabledDailyResponse(scope, _timeProvider.GetUtcNow()), targetDay);
         var pool = await GetDailyPoolAsync(BuildDailyCacheKey(scope.ScopeKey, targetDay), scope, targetDay, artwork, cancellationToken);
         var state = await _repository.GetRecommendationGenerationStateAsync(scope.LibraryId, scope.FolderId, scope.StationId, targetDay, cancellationToken);
-        var late = !AutomaticDailyAllowed(_timeProvider.GetLocalNow());
         if (pool is null)
         {
             var reasons = state?.Status == "failed" ? ResolveGenerationStateReasonCodes(state) : new[] { GenerationQueuedReason };
             var unavailable = CreateUnavailableRecommendationDetail(scope, artwork, targetDay, reasons);
-            var unavailableStatus = late ? "waiting" : state?.Status == "failed" ? "failed" : "generating";
-            var unavailableMessage = late ? "Today's selection is empty. Automatic recommendations resume at midnight (20:00 cutoff)."
-                : state?.Status == "failed" ? "Today's selection could not be generated. " + BuildRecommendationUnavailableMessage(reasons)
-                : "Today's selection is being prepared. No expired daily playlist is shown.";
+            var unavailableStatus = state?.Status == "failed" ? "failed" : "generating";
+            var unavailableMessage = state?.Status == "failed" ? "Today's selection could not be generated. " + BuildRecommendationUnavailableMessage(reasons)
+                : "Today's selection is being prepared and will be published as soon as it is complete. No expired daily playlist is shown.";
             return StampDailyResponse(unavailable with { Status = unavailableStatus, Message = unavailableMessage,
                 DailyTrackCount = configuration.TrackCount, DailyAllocations = configuration.Allocations(),
                 Station = unavailable.Station with { Status = unavailableStatus, Message = unavailableMessage, TrackCount = 0 } }, targetDay);
         }
-        var excluded = BuildNormalizedRecommendationIdSet(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, cancellationToken));
-        excluded.UnionWith(await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, cancellationToken));
-        // Generation and background maintenance check library ownership before saving the pool.
-        // Display requests only project that saved result: rerunning the identity lookup here
-        // starts a database transaction and can block every recommendation section behind a writer.
-        // Current AI preferences use the evidence already saved with each track, without fetching.
+        // Published daily selections are frozen: reads project the stored order directly, with no
+        // request-time reselection, no live AI-policy filtering, no exclusion reads and no writes.
+        // Generation checked library ownership, AI policy and dedupe before the selection froze.
         var aiMode = _settings is null ? pool.DailyAiFilterMode ?? configuration.AiFilterMode : configuration.AiFilterMode;
-        var eligibleTracks = pool.Tracks.Where(track => EvaluateDailyAiPolicy(track.AiEvidence, aiMode) is null).ToList();
         var savedCount = pool.DailyTrackCount ?? MaxDailyRecommendations;
         var viewLimit = limit <= 0 ? savedCount : Math.Min(limit, savedCount);
+        var publishedIds = pool.Diagnostics?.PublishedTrackIds;
         var selected = pool.DailyAllocations is null
-            ? BuildVisibleDailySelection(eligibleTracks, excluded, savedCount, targetDay)
-            : BuildSavedDailySelection(eligibleTracks, pool.DailyAllocations, savedCount, targetDay, excluded, pool.Diagnostics?.PublishedTrackIds);
+            ? pool.Tracks
+            : publishedIds is { Count: > 0 } && publishedIds.Count == pool.Tracks.Count
+                ? pool.Tracks
+                : BuildSavedDailySelection(pool.Tracks, pool.DailyAllocations, savedCount, targetDay,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase), publishedIds);
         var complete = pool.DailyAllocations is null || HasCompleteDailyAllocation(selected, pool.DailyAllocations);
         var published = pool.Diagnostics?.InitialSelectionPublished ?? pool.Status == "ready";
         var finalized = published || pool.Status == "ready";
@@ -816,16 +856,15 @@ public sealed class LibraryRecommendationService
             p => Math.Max(0, p.Value - selected.Count(t => t.RecommendationOrigin == p.Key)));
         var exhausted = pool.Diagnostics?.ExhaustedSources?.Where(p => p.Value && (shortages?.GetValueOrDefault(p.Key) ?? 0) > 0).Select(p => p.Key).ToList() ?? [];
         var refreshFailed = state?.Status == "failed" && finalized;
-        var status = complete && finalized ? (refreshFailed ? "refresh_failed" : "ready") : late ? "waiting" : published ? "refilling"
+        var status = complete && finalized ? (refreshFailed ? "refresh_failed" : "ready") : published ? "refilling"
             : state?.Status == "failed" ? "failed" : exhausted.Count > 0 ? "unavailable" : "generating";
         var progress = pool.DailyAllocations is null ? "" : string.Join(", ", pool.DailyAllocations.Where(p => p.Value > 0)
             .Select(p => $"{p.Key}: {p.Value - shortages![p.Key]}/{p.Value}"));
-        var reserves = Math.Max(0, eligibleTracks.Count(t => !excluded.Contains(t.Id)) - selected.Count);
+        var reserves = Math.Max(0, (pool.ReserveTracks?.Count ?? 0) + pool.Tracks.Count - selected.Count);
         var message = !finalized && complete ? "Today's full selection has been collected and is being finalized. " + progress
             : !complete
-            ? (published ? "Replacement selection is incomplete. " : "Today's initial selection is not ready; no partial playlist is published. ")
+            ? (published ? "Replacement selection is incomplete. " : "Today's selection is being prepared and will be published as soon as it is complete; no partial playlist is shown. ")
                 + BuildDailyShortfallMessage(shortages ?? new Dictionary<string,int>()) + " " + progress + ". "
-                + (late ? "Automatic collection resumes at midnight (20:00 cutoff). " : "")
                 + (exhausted.Count > 0 ? "Eligible starting songs exhausted for " + string.Join(", ", exhausted) + ". " : "")
                 + $"{reserves} replacement suggestions available."
             : $"{selected.Count}/{savedCount} tracks. {progress}. {reserves} replacement suggestions available.";
@@ -892,6 +931,7 @@ public sealed class LibraryRecommendationService
     private const string UnknownArtist = "Unknown Artist";
     private const string UnknownAlbum = "Unknown Album";
     private const string DailyPoolCacheSource = "recommendations-daily-pool";
+    private const string PreparedDailyPoolCacheSource = LibraryRepository.PreparedDailyPoolSource;
     private const string ExposureHistoryCacheSource = "recommendations-exposure-history";
     private const string DailyPoolSnapshotVersion = "v1";
     private const string ExposureHistorySnapshotVersion = "v1";
@@ -991,7 +1031,8 @@ public sealed class LibraryRecommendationService
         DailyRecommendationDiagnosticsDto? Diagnostics = null,
         string Status = "ready",
         IReadOnlyList<string>? ReasonCodes = null,
-        string? SeedScopeKey = null);
+        string? SeedScopeKey = null,
+        IReadOnlyList<RecommendationTrackDto>? ReserveTracks = null);
     private sealed record RecommendationExposureHistoryDto(
         IReadOnlyList<RecommendationExposureEntryDto> Entries);
     private sealed record RecommendationExposureEntryDto(string TrackId, string Day);
@@ -1588,15 +1629,218 @@ public sealed class LibraryRecommendationService
         return true;
     }
 
+    /// <summary>
+    ///     True when a folder's daily schedule still has work for this local date: the current day
+    ///     is unpublished without valid prepared data, or a prepared selection is waiting for its
+    ///     publication, or preparation for the next date is due from 20:00.
+    /// </summary>
+    public async Task<bool> IsDailyPreparationDueAsync(DateTimeOffset nowLocal, CancellationToken cancellationToken)
+    {
+        if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true || !_repository.IsConfigured) return false;
+        var operationDay = DateOnly.FromDateTime(nowLocal.DateTime);
+        foreach (var folder in await GetRecommendationEligibleFoldersAsync(cancellationToken))
+        {
+            var scope = BuildScope(folder.LibraryId!.Value, folder);
+            try
+            {
+                if (await ResolveDailyPreparationTargetAsync(scope, operationDay, nowLocal, cancellationToken) is not null) return true;
+                if (!await IsDailySelectionPublishedAsync(scope, operationDay, cancellationToken)
+                    && await HasValidPreparedDailySnapshotAsync(scope, operationDay, cancellationToken)) return true;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                _logger.LogWarning(ex, "Daily preparation due check failed for folder {FolderId}.", folder.Id);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    ///     Heavy advance preparation. Chooses each folder's pending target date when it actually
+    ///     runs, resumes persisted progress, and stages only complete selections privately.
+    ///     A folder that fails never blocks another folder's readiness.
+    /// </summary>
+    public async Task PreparePendingDailyRecommendationsAsync(CancellationToken cancellationToken)
+    {
+        if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true || !_repository.IsConfigured) return;
+        var nowLocal = _timeProvider.GetLocalNow();
+        var operationDay = DateOnly.FromDateTime(nowLocal.DateTime);
+        var allRecommendationFolders = await GetRecommendationEligibleFoldersAsync(cancellationToken);
+        foreach (var folder in OrderRefreshRecommendationFolders(allRecommendationFolders))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var scope = BuildScope(folder.LibraryId!.Value, folder);
+            try
+            {
+                var target = await ResolveDailyPreparationTargetAsync(scope, operationDay, nowLocal, cancellationToken);
+                if (target is null) continue;
+                var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders,
+                    new DateTimeOffset(target.Value.ToDateTime(new TimeOnly(12, 0)), nowLocal.Offset));
+                await RefreshDailyRecommendationScopeAsync(scope, target.Value, artworkAssignments,
+                    GenerationReasonPreparation, cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Daily preparation paused for folder {FolderId}.", scope.FolderId);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                _logger.LogWarning(ex, "Daily preparation failed for folder {FolderId}; progress will be retried.", folder.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Lightweight publication. Activates complete prepared snapshots whose target date is the
+    ///     current local date. Makes no provider requests and never waits for the heavy work gate.
+    /// </summary>
+    public async Task ActivateReadyDailyRecommendationsAsync(CancellationToken cancellationToken)
+    {
+        if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true || !_repository.IsConfigured) return;
+        var today = DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+        foreach (var folder in await GetRecommendationEligibleFoldersAsync(cancellationToken))
+        {
+            var scope = BuildScope(folder.LibraryId!.Value, folder);
+            try
+            {
+                await ActivatePreparedDailyRecommendationScopeAsync(scope, today, cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex)
+                && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Daily publication failed for folder {FolderId}; prepared data remains staged.", folder.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Tomorrow's selection once the current day is published, today's unpublished selection
+    ///     otherwise. Null means this folder needs no preparation work right now.
+    /// </summary>
+    private async Task<DateOnly?> ResolveDailyPreparationTargetAsync(
+        RecommendationScope scope, DateOnly operationDay, DateTimeOffset nowLocal, CancellationToken cancellationToken)
+    {
+        if (await IsDailySelectionPublishedAsync(scope, operationDay, cancellationToken))
+        {
+            if (TimeOnly.FromDateTime(nowLocal.DateTime) < AutomaticPreparationStart) return null;
+            var tomorrow = operationDay.AddDays(1);
+            return await HasValidPreparedDailySnapshotAsync(scope, tomorrow, cancellationToken) ? null : tomorrow;
+        }
+        return await HasValidPreparedDailySnapshotAsync(scope, operationDay, cancellationToken) ? null : operationDay;
+    }
+
+    private async Task<bool> IsDailySelectionPublishedAsync(
+        RecommendationScope scope, DateOnly day, CancellationToken cancellationToken)
+    {
+        var state = await _repository.GetRecommendationGenerationStateAsync(
+            scope.LibraryId, scope.FolderId, scope.StationId, day, cancellationToken);
+        if (state?.Status != "completed") return false;
+        var published = await _repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource, scope.ScopeKey, cancellationToken);
+        return NormalizeDailyPoolSnapshotId(published?.SnapshotId) == BuildDailyPoolSnapshotId(day);
+    }
+
+    /// <summary>
+    ///     Validates the private prepared selection for a target date: complete, scoped to this
+    ///     folder and still matching the current daily configuration fingerprint.
+    /// </summary>
+    private async Task<bool> HasValidPreparedDailySnapshotAsync(
+        RecommendationScope scope, DateOnly day, CancellationToken cancellationToken)
+    {
+        var prepared = await _repository.GetPlaylistTrackCandidateCacheAsync(PreparedDailyPoolCacheSource, scope.ScopeKey, cancellationToken);
+        if (prepared is null
+            || NormalizeDailyPoolSnapshotId(prepared.SnapshotId) != BuildDailyPoolSnapshotId(day))
+        {
+            return false;
+        }
+        try
+        {
+            var payload = JsonSerializer.Deserialize<PersistedDailyPoolDto>(prepared.CandidatesJson);
+            if (payload?.Status != "ready" || payload.SeedScopeKey != scope.ScopeKey
+                || payload.Allocations is null || payload.Diagnostics?.PublishedTrackIds is not { Count: > 0 }
+                || payload.Diagnostics.InitialSelectionPublished != true)
+            {
+                return false;
+            }
+            if (!HasCompleteDailyAllocation(payload.Tracks, payload.Allocations)) return false;
+            var configuration = _settings?.LoadSettings().DailyRecommendations ?? new();
+            return FingerprintFromPersistedDailyPool(payload) == BuildDailyConfigurationFingerprint(configuration);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     Freezes a generated selection for its target date and stages it privately. The stored
+    ///     track order is the published order; nothing reselects it later.
+    /// </summary>
+    private async Task<bool> StagePreparedDailyPoolAsync(
+        RecommendationScope scope, DateOnly day, RecommendationDetailDto detail, CancellationToken cancellationToken)
+    {
+        if (detail.SeedScopeKey != scope.ScopeKey || detail.DailyAllocations is null)
+        {
+            return false;
+        }
+        var allocations = detail.DailyAllocations!;
+        var savedCount = detail.DailyTrackCount ?? MaxDailyRecommendations;
+        var frozen = BuildSavedDailySelection(detail.Tracks, allocations, savedCount, day,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), detail.Diagnostics?.PublishedTrackIds);
+        if (!HasCompleteDailyAllocation(frozen, allocations)) return false;
+        var frozenIds = frozen.Select(track => track.Id).ToHashSet(StringComparer.Ordinal);
+        // Reserves stay private: they only ever serve an explicit manual replacement, never a read.
+        var reserves = detail.Tracks.Where(track => !string.IsNullOrWhiteSpace(track.Id)
+            && !frozenIds.Contains(NormalizeId(track.Id))).ToList();
+        var diagnostics = detail.Diagnostics is null ? null : detail.Diagnostics with
+        {
+            PublishedTrackIds = frozen.Select(track => track.Id).ToArray(),
+            InitialSelectionPublished = true,
+            DestinationCount = frozen.Count,
+            OverflowCount = reserves.Count,
+            MissingSourceCounts = allocations.ToDictionary(pair => pair.Key, pair => 0)
+        };
+        var payload = new PersistedDailyPoolDto(detail.GeneratedAtUtc, frozen, detail.Station.ImageUrl,
+            detail.DailyTrackCount, allocations, detail.DailyAiFilterMode, diagnostics, "ready",
+            detail.ReasonCodes, SeedScopeKey: scope.ScopeKey, ReserveTracks: reserves);
+        return await _repository.StagePreparedDailyRecommendationSnapshotAsync(
+            BuildGenerationStateKey(scope, day), BuildDailyPoolSnapshotId(day), JsonSerializer.Serialize(payload), cancellationToken);
+    }
+
+    /// <summary>
+    ///     Publishes one folder's valid prepared selection for today. Returns false when nothing
+    ///     needed publishing; the repository call is transactional and idempotent.
+    /// </summary>
+    private async Task<bool> ActivatePreparedDailyRecommendationScopeAsync(
+        RecommendationScope scope, DateOnly today, CancellationToken cancellationToken)
+    {
+        if (await IsDailySelectionPublishedAsync(scope, today, cancellationToken)) return false;
+        if (!await HasValidPreparedDailySnapshotAsync(scope, today, cancellationToken)) return false;
+        // The repository reads the staged payload inside its own transaction, so what was
+        // validated here is exactly what gets published.
+        var activated = await _repository.ActivatePreparedDailyRecommendationSnapshotsAsync(
+            BuildGenerationStateKey(scope, today), BuildDailyPoolSnapshotId(today), today, cancellationToken);
+        if (!activated) return false;
+        _dailyPoolCache.TryRemove(BuildDailyCacheKey(scope.ScopeKey, today), out _);
+        if (await TryLoadPersistedDailyPoolAsync(scope, today, null, cancellationToken) is { } published)
+            _dailyPoolCache[BuildDailyCacheKey(scope.ScopeKey, today)] = published;
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Prepared daily selection published for scope {ScopeKey} ({DayLocal}).", scope.ScopeKey, today);
+        return true;
+    }
+
     public async Task ReconcileRecommendationGenerationAsync(DateTimeOffset nowLocal, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured) return;
         var today = DateOnly.FromDateTime(nowLocal.DateTime);
         var monday = GetRecommendationWeekStart(today);
-        // Current charts and first-use weekly lists must not wait for historical catch-up.
+        // Current charts and first-use weekly lists must not wait for historical catch-up. Daily
+        // selections are prepared in advance and published on their own schedule; today's
+        // unpublished day is prepared by the hosted service's late-ready path instead.
         if (today != monday)
         {
-            await RefreshDailyRecommendationsForDateAsync(today, "scheduled", cancellationToken);
             await InitializeMissingWeeklyRecommendationsAsync(today, monday, cancellationToken);
         }
         await RunRecommendationSequenceAsync(
@@ -1604,7 +1848,7 @@ public sealed class LibraryRecommendationService
             token => AreDailyRecommendationsCompleteAsync(monday, token),
             token => RefreshWeeklyRecommendationsForWeekAsync(monday, "scheduled", token), cancellationToken);
         if (today == monday) await InitializeMissingWeeklyRecommendationsAsync(today, monday, cancellationToken);
-        await MaintainSavedRecommendationsAsync(today, monday, cancellationToken);
+        await MaintainSavedRecommendationsAsync(monday, cancellationToken);
     }
 
     private async Task InitializeMissingWeeklyRecommendationsAsync(
@@ -1637,64 +1881,9 @@ public sealed class LibraryRecommendationService
         }
     }
 
-    private async Task MaintainSavedRecommendationsAsync(DateOnly today, DateOnly week, CancellationToken cancellationToken)
+    private async Task MaintainSavedRecommendationsAsync(DateOnly week, CancellationToken cancellationToken)
     {
         var folders = await GetRecommendationEligibleFoldersAsync(cancellationToken);
-        foreach (var scope in folders.Select(folder => BuildScope(folder.LibraryId!.Value, folder)))
-        {
-            if (!AutomaticDailyAllowed(_timeProvider.GetLocalNow())) continue;
-            var state = await _repository.GetRecommendationGenerationStateAsync(
-                scope.LibraryId, scope.FolderId, scope.StationId, today, cancellationToken);
-            if (state?.Status != "completed") continue;
-            try
-            {
-            await RunRecommendationMaintenanceAsync($"recommendation-maintenance:{scope.StationId}:{today:yyyyMMdd}", async () =>
-            {
-                if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true || !AutomaticDailyAllowed(_timeProvider.GetLocalNow())) return;
-                var remaining=DailyBoundaryUtc(today,AutomaticDailyCutoff,_timeProvider.LocalTimeZone)-_timeProvider.GetUtcNow();
-                using var cutoff = new CancellationTokenSource(remaining>TimeSpan.Zero ? remaining : TimeSpan.Zero,_timeProvider);
-                using var work = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,cutoff.Token);
-                var maintenanceToken = work.Token;
-                var pool = await TryLoadPersistedDailyPoolAsync(scope, today, null, maintenanceToken);
-                if (pool is null) return;
-                var publishedTrackIds = pool.Diagnostics?.PublishedTrackIds;
-                var excluded = BuildNormalizedRecommendationIdSet(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, maintenanceToken));
-                excluded.UnionWith(await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, maintenanceToken));
-                var eligible = await FilterRecommendationCandidatesThroughDedupeAsync(scope, pool.Tracks.ToList(), maintenanceToken);
-                eligible = await FilterDailyRecommendationEligibilityAsync(eligible,
-                    _settings?.LoadSettings().DailyRecommendations.AiFilterMode ?? pool.DailyAiFilterMode ?? DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated,
-                    maintenanceToken);
-                if (pool.DailyAllocations is not null && !HasCompleteDailyAllocation(
-                    BuildSavedDailySelection(eligible,pool.DailyAllocations.ToDictionary(p=>p.Key,p=>p.Value*RecommendationPoolMultiplier),
-                        (pool.DailyTrackCount ?? MaxDailyRecommendations)*RecommendationPoolMultiplier,today,excluded,null,
-                        DailyRecommendationsPerSeed * RecommendationPoolMultiplier),
-                    pool.DailyAllocations.ToDictionary(p=>p.Key,p=>p.Value*RecommendationPoolMultiplier)))
-                {
-                    var refill = await BuildDailyPoolAsync(scope, today, pool.Station.ImageUrl, maintenanceToken,
-                        ConfigurationFromSavedDailyPool(pool));
-                    if (refill.Detail is not null) { pool = refill.Detail; eligible = refill.Detail.Tracks.Where(t=>!excluded.Contains(t.Id)).ToList(); }
-                }
-                maintenanceToken.ThrowIfCancellationRequested();
-                if (DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime) != today) return;
-                var enriched = await EnrichRecommendationMetadataAsync(eligible, maintenanceToken);
-                maintenanceToken.ThrowIfCancellationRequested();
-                if (DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime) != today) return;
-                var selection = pool.DailyAllocations is null ? enriched : BuildSavedDailySelection(enriched, pool.DailyAllocations, pool.DailyTrackCount ?? MaxDailyRecommendations, today, excluded, publishedTrackIds);
-                var complete = pool.DailyAllocations is null || HasCompleteDailyAllocation(selection, pool.DailyAllocations);
-                var missing = pool.DailyAllocations?.ToDictionary(p => p.Key, p => Math.Max(0, p.Value - selection.Count(t => t.RecommendationOrigin == p.Key)));
-                var diagnostics = pool.Diagnostics is null ? null : pool.Diagnostics with { MissingSourceCounts = missing ?? new Dictionary<string, int>(), DestinationCount = selection.Count, OverflowCount = Math.Max(0, enriched.Count - selection.Count), PublishedTrackIds = complete ? selection.Select(t=>t.Id).ToArray() : publishedTrackIds };
-                var payload = JsonSerializer.Serialize(new PersistedDailyPoolDto(pool.GeneratedAtUtc, enriched, pool.Station.ImageUrl,
-                    pool.DailyTrackCount, pool.DailyAllocations, pool.DailyAiFilterMode, diagnostics, complete ? "ready" : "partial", pool.ReasonCodes, SeedScopeKey: scope.ScopeKey));
-                await _repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource, scope.ScopeKey + $":day:{today:yyyyMMdd}",
-                    BuildDailyPoolSnapshotId(today), payload, 0, null, null, true, maintenanceToken);
-                await _repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource, scope.ScopeKey,
-                    BuildDailyPoolSnapshotId(today), payload, 0, null, null, true, maintenanceToken);
-                _dailyPoolCache.TryRemove(BuildDailyCacheKey(scope.ScopeKey, today), out _);
-            }, cancellationToken);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && !AutomaticDailyAllowed(_timeProvider.GetLocalNow()))
-            { /* Daily cutoff must leave weekly maintenance eligible. */ }
-        }
         if (!await AreDailyRecommendationsCompleteAsync(week, cancellationToken)) return;
         foreach (var folder in folders)
         {
@@ -1808,9 +1997,28 @@ public sealed class LibraryRecommendationService
     {
         var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
         var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+        var prepared = reasonCode == GenerationReasonPreparation;
         var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
         if (existingPool?.Status == "ready")
         {
+            if (prepared)
+            {
+                // A complete selection for a future date is staged privately, never published.
+                if (await HasValidPreparedDailySnapshotAsync(scope, dayLocal, cancellationToken)) return;
+                var currentConfiguration = _settings?.LoadSettings().DailyRecommendations ?? new();
+                if (FingerprintFromSavedDailyPool(existingPool) == BuildDailyConfigurationFingerprint(currentConfiguration)
+                    && await StagePreparedDailyPoolAsync(scope, dayLocal, existingPool, cancellationToken)) return;
+                if (dayLocal != DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime))
+                {
+                    // Never stage a ready pool whose configuration no longer matches the current
+                    // preferences: reprepare it with the latest configuration instead.
+                    await RunDailyRecommendationGenerationAsync(scope, dayLocal, stationImageUrl, reasonCode,
+                        forceReset: false, cancellationToken);
+                    return;
+                }
+                // Legacy completed pool for the current day that cannot be frozen: recover it
+                // publicly exactly as the pre-preparation restart path did.
+            }
             _dailyPoolCache[cacheKey] = existingPool;
             var key = BuildGenerationStateKey(scope, dayLocal);
             var state = await _repository.GetRecommendationGenerationStateAsync(scope.LibraryId, scope.FolderId, scope.StationId, dayLocal, cancellationToken);
@@ -1845,11 +2053,16 @@ public sealed class LibraryRecommendationService
         if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true) return false;
         var operationDay = DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
         var historical = reasonCode == "weekly-prerequisite" && dayLocal < operationDay;
-        var automatic = reasonCode != GenerationReasonManualRebuild && reasonCode != GenerationReasonManualReplacement;
-        if (!historical && (dayLocal != operationDay || (automatic && !AutomaticDailyAllowed(_timeProvider.GetLocalNow())))) return false;
+        var manual = reasonCode is GenerationReasonManualRebuild or GenerationReasonManualReplacement;
+        var automatic = !manual;
+        var prepared = reasonCode == GenerationReasonPreparation;
+        if (!prepared && !historical && (dayLocal != operationDay || (automatic && !AutomaticDailyAllowed(_timeProvider.GetLocalNow())))) return false;
+        if (prepared && dayLocal != operationDay && dayLocal != operationDay.AddDays(1)) return false;
         var callerToken = cancellationToken;
-        var deadline = historical ? (DateTimeOffset?)null : DailyBoundaryUtc(automatic ? dayLocal : dayLocal.AddDays(1),
-            automatic ? AutomaticDailyCutoff : TimeOnly.MinValue, _timeProvider.LocalTimeZone);
+        var deadline = historical ? (DateTimeOffset?)null
+            : prepared ? DailyBoundaryUtc(dayLocal.AddDays(1), TimeOnly.MinValue, _timeProvider.LocalTimeZone)
+            : DailyBoundaryUtc(automatic ? dayLocal : dayLocal.AddDays(1),
+                automatic ? AutomaticDailyCutoff : TimeOnly.MinValue, _timeProvider.LocalTimeZone);
         using var dayEnded = deadline.HasValue ? new CancellationTokenSource(
             deadline.Value > _timeProvider.GetUtcNow() ? deadline.Value - _timeProvider.GetUtcNow() : TimeSpan.Zero, _timeProvider) : null;
         using var dailyWork = dayEnded is null ? null : CancellationTokenSource.CreateLinkedTokenSource(callerToken,dayEnded.Token);
@@ -1870,6 +2083,7 @@ public sealed class LibraryRecommendationService
             await _repository.RequestRecommendationGenerationAsync(stateKey, reasonCode, forceReset: true, cancellationToken);
             prior = await _repository.GetRecommendationGenerationStateAsync(scope.LibraryId, scope.FolderId, scope.StationId, dayLocal, cancellationToken);
         }
+        if (!forceReset && prepared && await HasValidPreparedDailySnapshotAsync(scope, dayLocal, cancellationToken)) return true;
         if (!forceReset && !ShouldQueueWeeklyGeneration(prior, _timeProvider.GetUtcNow())) return false;
         var runningExpiresBeforeUtc = _timeProvider.GetUtcNow() - RecommendationGenerationLease;
         if (!await _repository.TryStartRecommendationGenerationAsync(
@@ -1885,9 +2099,28 @@ public sealed class LibraryRecommendationService
         var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
         if (existingPool?.Status == "ready" && !forceReset)
         {
-            _dailyPoolCache[cacheKey] = existingPool;
-            await _repository.CompleteRecommendationGenerationAsync(stateKey, cancellationToken);
-            return true;
+            if (prepared)
+            {
+                if (await HasValidPreparedDailySnapshotAsync(scope, dayLocal, cancellationToken))
+                {
+                    _dailyPoolCache[cacheKey] = existingPool;
+                    return true;
+                }
+                var currentConfiguration = _settings?.LoadSettings().DailyRecommendations ?? new();
+                if (FingerprintFromSavedDailyPool(existingPool) == BuildDailyConfigurationFingerprint(currentConfiguration)
+                    && await StagePreparedDailyPoolAsync(scope, dayLocal, existingPool, cancellationToken))
+                {
+                    return true;
+                }
+                // A ready pool whose configuration no longer matches the current preferences is
+                // never staged: fall through and reprepare from the latest configuration.
+            }
+            else
+            {
+                _dailyPoolCache[cacheKey] = existingPool;
+                await _repository.CompleteRecommendationGenerationAsync(stateKey, cancellationToken);
+                return true;
+            }
         }
 
         try
@@ -1898,9 +2131,16 @@ public sealed class LibraryRecommendationService
             }
 
             cancellationToken = dailyWork?.Token ?? callerToken;
-            var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken, resetProgress: forceReset && !preserveProgress);
+            var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken,
+                resetProgress: forceReset && !preserveProgress, prepared: prepared);
             cancellationToken.ThrowIfCancellationRequested();
-            if (!historical && DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime) != dayLocal)
+            var operationDayNow = DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+            var dateDrifted = prepared
+                // Advance preparation legitimately runs for tomorrow and may still be running for
+                // it after midnight; only drift past the target day aborts.
+                ? dayLocal != operationDayNow && dayLocal != operationDayNow.AddDays(1)
+                : !historical && operationDayNow != dayLocal;
+            if (dateDrifted)
                 return false;
             if (dailyPool.Detail is null)
             {
@@ -1914,7 +2154,7 @@ public sealed class LibraryRecommendationService
                 await FailRecommendationGenerationAsync(stateKey, dailyPool.ReasonCodes, callerToken);
                 return false;
             }
-            var persistResult = await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken, historical);
+            var persistResult = await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken, historical, prepared);
             if (!persistResult.Success)
             {
                 await FailRecommendationGenerationAsync(
@@ -2199,10 +2439,15 @@ public sealed class LibraryRecommendationService
         {
             var excluded = await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, cancellationToken);
             excluded.UnionWith(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, cancellationToken));
-            var replacement = BuildSavedDailySelection(pool.Tracks, pool.DailyAllocations, pool.DailyTrackCount ?? MaxDailyRecommendations, day, excluded, pool.Diagnostics?.PublishedTrackIds);
+            // The frozen selection plus its private reserves are the replacement supply.
+            var supply = pool.ReserveTracks is { Count: > 0 } ? pool.Tracks.Concat(pool.ReserveTracks).ToList() : pool.Tracks;
+            var replacement = BuildSavedDailySelection(supply, pool.DailyAllocations, pool.DailyTrackCount ?? MaxDailyRecommendations, day, excluded, pool.Diagnostics?.PublishedTrackIds);
+            var complete = HasCompleteDailyAllocation(replacement, pool.DailyAllocations);
+            // A manual rejection deliberately alters the day's frozen selection. Freeze the
+            // recomputed order immediately so the rejected track never reappears in a later read.
+            await SaveFrozenDailyPublicationAsync(scope, day, replacement, supply, excluded, pool, complete, cancellationToken);
             // A saved reserve is immediate. Only a real shortfall needs an explicit provider refill.
-            if (!HasCompleteDailyAllocation(replacement, pool.DailyAllocations)
-                && (await GetOrderedRecommendationSeedsAsync(scope, day, cancellationToken)).Count > 0)
+            if (!complete && (await GetOrderedRecommendationSeedsAsync(scope, day, cancellationToken)).Count > 0)
                 await RunDailyRecommendationGenerationAsync(scope, day, pool.Station.ImageUrl,
                     GenerationReasonManualReplacement, forceReset: true, cancellationToken, preserveProgress: true);
         }
@@ -2210,11 +2455,64 @@ public sealed class LibraryRecommendationService
             limit <= 0 ? 0 : Math.Clamp(limit, 1, MaximumConfiguredDailyTracks), cancellationToken);
     }
 
+    /// <summary>
+    ///     Manual-only rewrite of an already published daily selection (user rebuild, reject or
+    ///     replacement). Automatic runs never use this pathway.
+    /// </summary>
+    private async Task SaveFrozenDailyPublicationAsync(
+        RecommendationScope scope, DateOnly day, IReadOnlyList<RecommendationTrackDto> selection,
+        IReadOnlyList<RecommendationTrackDto> supply, IReadOnlySet<string> excluded,
+        RecommendationDetailDto pool, bool complete, CancellationToken cancellationToken)
+    {
+        var allocations = pool.DailyAllocations!;
+        var missing = allocations.ToDictionary(p => p.Key,
+            p => Math.Max(0, p.Value - selection.Count(t => t.RecommendationOrigin == p.Key)));
+        var diagnostics = (pool.Diagnostics ?? new DailyRecommendationDiagnosticsDto(0,
+            new Dictionary<string, int>(), new Dictionary<string, int>(), new Dictionary<string, int>(),
+            new Dictionary<string, string>(), missing, selection.Count, 0)) with
+        {
+            PublishedTrackIds = selection.Select(track => track.Id).ToArray(),
+            InitialSelectionPublished = true,
+            MissingSourceCounts = missing,
+            DestinationCount = selection.Count,
+            OverflowCount = 0
+        };
+        var selectedIds = selection.Select(track => NormalizeId(track.Id)).ToHashSet(StringComparer.Ordinal);
+        // Remaining usable supply stays private for the next deliberate replacement.
+        var reserves = supply.Where(track => !string.IsNullOrWhiteSpace(track.Id)
+            && !excluded.Contains(NormalizeId(track.Id)) && !selectedIds.Contains(NormalizeId(track.Id))).ToList();
+        var payload = new PersistedDailyPoolDto(pool.GeneratedAtUtc, selection, pool.Station.ImageUrl,
+            pool.DailyTrackCount, allocations, pool.DailyAiFilterMode, diagnostics, complete ? "ready" : "partial",
+            pool.ReasonCodes, SeedScopeKey: scope.ScopeKey, ReserveTracks: reserves);
+        var json = JsonSerializer.Serialize(payload);
+        try
+        {
+            await _repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource,
+                scope.ScopeKey + $":day:{day:yyyyMMdd}", BuildDailyPoolSnapshotId(day), json, 0, null, null, true, cancellationToken);
+            await _repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource,
+                scope.ScopeKey, BuildDailyPoolSnapshotId(day), json, 0, null, null, true, cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Manual daily replacement could not be frozen for {ScopeKey}.", scope.ScopeKey);
+        }
+        _dailyPoolCache.TryRemove(BuildDailyCacheKey(scope.ScopeKey, day), out _);
+    }
+
     private async Task<RecommendationBuildResult> BuildDailyPoolAsync(
         RecommendationScope scope, DateOnly dayUtc, string? stationImageUrl,
-        CancellationToken cancellationToken, DailyRecommendationSettings? configuration = null, bool resetProgress = false)
+        CancellationToken cancellationToken, DailyRecommendationSettings? configuration = null, bool resetProgress = false,
+        bool prepared = false)
     {
         var saved = resetProgress ? null : await TryLoadPersistedDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+        if (prepared && saved is not null
+            && FingerprintFromSavedDailyPool(saved) != BuildDailyConfigurationFingerprint(
+                _settings?.LoadSettings().DailyRecommendations ?? new()))
+        {
+            // Preferences changed since this preparation began: the private progress is stale.
+            // Discard it entirely and reprepare with the latest configuration.
+            saved = null;
+        }
         configuration ??= saved?.DailyAllocations is not null ? ConfigurationFromSavedDailyPool(saved)
             : _settings?.LoadSettings().DailyRecommendations ?? new();
         if (_settings is not null) configuration.AiFilterMode = _settings.LoadSettings().DailyRecommendations.AiFilterMode;
@@ -3454,7 +3752,8 @@ public sealed class LibraryRecommendationService
                 station,
                 normalizedTracks,
                 payload.GeneratedAtUtc, Status: payload.Status, ReasonCodes: payload.ReasonCodes, DailyTrackCount: payload.TrackCount, DailyAllocations: payload.Allocations,
-                        DailyAiFilterMode: payload.AiFilterMode, Diagnostics: payload.Diagnostics, SeedScopeKey: payload.SeedScopeKey);
+                        DailyAiFilterMode: payload.AiFilterMode, Diagnostics: payload.Diagnostics, SeedScopeKey: payload.SeedScopeKey,
+                ReserveTracks: payload.ReserveTracks);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3484,11 +3783,16 @@ public sealed class LibraryRecommendationService
         DateOnly dayUtc,
         RecommendationDetailDto detail,
         CancellationToken cancellationToken,
-        bool allowHistorical = false)
+        bool allowHistorical = false,
+        bool prepared = false)
     {
         if (detail.Station.Id != scope.StationId || detail.SeedScopeKey != scope.ScopeKey)
             return PersistDailyPoolResult.Failed("recommendation_seed_scope_mismatch");
-        if (!allowHistorical && DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime) != dayUtc)
+        var operationDay = DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+        var expired = prepared
+            ? dayUtc != operationDay && dayUtc != operationDay.AddDays(1)
+            : !allowHistorical && operationDay != dayUtc;
+        if (expired)
             return PersistDailyPoolResult.Failed("daily_selection_expired");
         if (detail.Tracks.Count == 0)
         {
@@ -3497,6 +3801,15 @@ public sealed class LibraryRecommendationService
 
         try
         {
+            if (prepared)
+            {
+                // Advance preparation stages the frozen selection privately; publication happens
+                // transactionally at the local midnight boundary or on late readiness.
+                if (!await StagePreparedDailyPoolAsync(scope, dayUtc, detail, cancellationToken))
+                    return PersistDailyPoolResult.Failed(PersistFailedReason);
+                _dailyPoolCache.TryRemove(BuildDailyCacheKey(scope.ScopeKey, dayUtc), out _);
+                return PersistDailyPoolResult.Ok;
+            }
             var payload = new PersistedDailyPoolDto(
                 detail.GeneratedAtUtc,
                 detail.Tracks

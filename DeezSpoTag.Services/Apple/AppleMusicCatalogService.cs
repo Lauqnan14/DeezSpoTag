@@ -892,8 +892,12 @@ public sealed class AppleMusicCatalogService
         return JsonDocument.Parse(stream);
     }
 
-    private async Task<string> GetTokenAsync(CancellationToken cancellationToken)
+    private async Task<string> GetTokenAsync(CancellationToken cancellationToken, TimeSpan? budget = null)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(budget ?? TimeSpan.FromSeconds(15));
+        cancellationToken = deadline.Token;
+        cancellationToken.ThrowIfCancellationRequested();
         var cachedToken = GetCachedToken(requireFresh: true);
         if (!string.IsNullOrWhiteSpace(cachedToken))
         {
@@ -1060,10 +1064,12 @@ public sealed class AppleMusicCatalogService
         }
     }
 
-    private void InvalidateToken()
+    private void InvalidateToken(string failedToken)
     {
         lock (_tokenLock)
         {
+            // A response using an older token cannot invalidate a concurrent refresh.
+            if (!string.Equals(_cachedToken, failedToken, StringComparison.Ordinal)) return;
             _cachedToken = null;
             _cachedTokenExpiresAt = DateTimeOffset.MinValue;
         }
@@ -1441,7 +1447,7 @@ public sealed class AppleMusicCatalogService
                 using var request = BuildCatalogRequest(method, url, token, configure);
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (preserveProviderErrors) response.EnsureSuccessStatusCode();
-                var retryAction = await EvaluateRetryAsync(response, attempt, maxAttempts, url, cancellationToken);
+                var retryAction = await EvaluateRetryAsync(response, attempt, maxAttempts, url, token, request.Headers.Contains(MediaUserTokenHeader), cancellationToken);
                 if (retryAction == RetryAction.Retry)
                 {
                     continue;
@@ -1455,7 +1461,8 @@ public sealed class AppleMusicCatalogService
 
                 return payload;
             }
-            catch (HttpRequestException ex) when (!preserveProviderErrors && attempt < maxAttempts - 1)
+            catch (HttpRequestException ex) when (!preserveProviderErrors && attempt < maxAttempts - 1
+                && ex.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
             {
                 if (ex.StatusCode == HttpStatusCode.NotFound)
                 {
@@ -1493,11 +1500,17 @@ public sealed class AppleMusicCatalogService
         int attempt,
         int maxAttempts,
         string url,
+        string failedToken,
+        bool hasMediaUserToken,
         CancellationToken cancellationToken)
     {
-        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        // Account/media-user rejection does not establish developer-token expiry.
+        var explicitBearerRejection = response.Headers.WwwAuthenticate.Any(challenge =>
+            challenge.Scheme.Equals("Bearer", StringComparison.OrdinalIgnoreCase)
+            && challenge.Parameter?.Contains("error=\"invalid_token\"", StringComparison.OrdinalIgnoreCase) == true);
+        if (response.StatusCode == HttpStatusCode.Unauthorized && (!hasMediaUserToken || explicitBearerRejection))
         {
-            InvalidateToken();
+            InvalidateToken(failedToken);
             if (attempt < maxAttempts - 1)
             {
                 return RetryAction.Retry;
@@ -1538,7 +1551,6 @@ public sealed class AppleMusicCatalogService
         }
 
         _logger.LogWarning("Apple catalog request returned non-JSON payload from {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
-        InvalidateToken();
         if (attempt < maxAttempts - 1)
         {
             await Task.Delay(GetBackoffDelay(attempt), cancellationToken);

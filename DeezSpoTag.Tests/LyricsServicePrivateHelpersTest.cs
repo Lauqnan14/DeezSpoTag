@@ -2709,7 +2709,7 @@ public sealed class LyricsServicePrivateHelpersTest
         var track = CreateLyricsTestTrack();
         track.Urls["apple_track_id"] = "1443677225";
         var result = await (Task<LyricsBase?>)typeof(LyricsService).GetMethod("ResolveAppleProviderLyricsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(service, [track, AppleProbeSettings(), CancellationToken.None])!;
+            .Invoke(service, [track, AppleProbeSettings(), CancellationToken.None, null])!;
         Assert.Contains("subscription is inactive", result!.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line timing", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.False(result.IsLoaded());

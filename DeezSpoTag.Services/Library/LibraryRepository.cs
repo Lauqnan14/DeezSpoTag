@@ -12567,6 +12567,160 @@ WHERE source=@source AND substr(source_id,1,length(@prefix))=@prefix
         return true;
     }
 
+    /// <summary>
+    ///     Stages a complete future daily selection in the private prepared cache. Staging never
+    ///     touches either public alias, so prepared data stays invisible to reads until activation.
+    /// </summary>
+    public async Task<bool> StagePreparedDailyRecommendationSnapshotAsync(
+        RecommendationGenerationStateKey key, string snapshotId, string candidatesJson,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key)
+            || !key.StationId.StartsWith("daily-rotation:l", StringComparison.Ordinal)
+            || snapshotId != $"v1:{key.TargetDay:yyyyMMdd}") return false;
+        try { using var payload = System.Text.Json.JsonDocument.Parse(candidatesJson); }
+        catch (System.Text.Json.JsonException) { return false; }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var stage = new SqliteCommand(@"
+INSERT INTO playlist_track_candidate_cache(source,source_id,snapshot_id,candidates_json,is_complete)
+VALUES(@source,@sourceId,@snapshot,@json,1)
+ON CONFLICT(source,source_id) DO UPDATE SET
+ snapshot_id=excluded.snapshot_id, candidates_json=excluded.candidates_json,
+ is_complete=1, updated_at=CURRENT_TIMESTAMP
+WHERE COALESCE(playlist_track_candidate_cache.snapshot_id,'')<=excluded.snapshot_id;", connection);
+        stage.Parameters.AddWithValue("source", PreparedDailyPoolSource);
+        stage.Parameters.AddWithValue("sourceId", key.StationId.Trim());
+        stage.Parameters.AddWithValue("snapshot", snapshotId);
+        stage.Parameters.AddWithValue("json", candidatesJson);
+        return await stage.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    /// <summary>
+    ///     Transactionally promotes one complete prepared daily snapshot to the public dated row,
+    ///     the public alias and the completed generation state. The staged payload is read inside
+    ///     the same transaction and is the only content ever published, so a stale preparation can
+    ///     never overwrite newer preparation. The prepared row is consumed in the same transaction,
+    ///     so a timer, a late readiness signal and a restart can never publish twice. Stale target
+    ///     dates are rejected and an already published day is a no-op success.
+    /// </summary>
+    public async Task<bool> ActivatePreparedDailyRecommendationSnapshotsAsync(
+        RecommendationGenerationStateKey key, string snapshotId,
+        DateOnly currentLocalDay, CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key)
+            || !key.StationId.StartsWith("daily-rotation:l", StringComparison.Ordinal)
+            || snapshotId != $"v1:{key.TargetDay:yyyyMMdd}"
+            || key.TargetDay != currentLocalDay) return false;
+
+        var sourceId = key.StationId.Trim();
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        var alias = new SqliteCommand(@"
+SELECT snapshot_id FROM playlist_track_candidate_cache
+WHERE source=@source AND source_id=@sourceId LIMIT 1;", connection, transaction);
+        alias.Parameters.AddWithValue("source", "recommendations-daily-pool");
+        alias.Parameters.AddWithValue("sourceId", sourceId);
+        var aliasSnapshot = await alias.ExecuteScalarAsync(cancellationToken) as string;
+
+        var state = new SqliteCommand(@"
+SELECT status FROM recommendation_generation_state
+WHERE library_id=@libraryId AND folder_id=@folderId AND target_day=@targetDay AND station_id=@stationId
+LIMIT 1;", connection, transaction);
+        AddRecommendationGenerationKeyParameters(state, key);
+        var stateStatus = await state.ExecuteScalarAsync(cancellationToken) as string;
+
+        if (string.Equals(aliasSnapshot, snapshotId, StringComparison.Ordinal)
+            && string.Equals(stateStatus, "completed", StringComparison.Ordinal))
+        {
+            // Already published: a repeated activation must not rewrite the frozen selection.
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+
+        var prepared = new SqliteCommand(@"
+SELECT snapshot_id, candidates_json FROM playlist_track_candidate_cache
+WHERE source=@source AND source_id=@sourceId LIMIT 1;", connection, transaction);
+        prepared.Parameters.AddWithValue("source", PreparedDailyPoolSource);
+        prepared.Parameters.AddWithValue("sourceId", sourceId);
+        await using var preparedReader = await prepared.ExecuteReaderAsync(cancellationToken);
+        if (!await preparedReader.ReadAsync(cancellationToken))
+        {
+            // The prepared selection was consumed elsewhere; nothing to publish.
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        var preparedSnapshot = preparedReader.GetString(0);
+        var stagedJson = preparedReader.GetString(1);
+        await preparedReader.DisposeAsync();
+        if (!string.Equals(preparedSnapshot, snapshotId, StringComparison.Ordinal))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        try { using var payload = System.Text.Json.JsonDocument.Parse(stagedJson); }
+        catch (System.Text.Json.JsonException)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        var complete = new SqliteCommand(@"
+INSERT INTO recommendation_generation_state (
+    library_id, folder_id, station_id, target_day, status, reason_code,
+    started_at_utc, completed_at_utc, last_error, attempt_count, updated_at_utc)
+VALUES (@libraryId, @folderId, @stationId, @targetDay, 'completed', NULL,
+    @now, @now, NULL, 1, @now)
+ON CONFLICT(library_id, folder_id, target_day, station_id) DO UPDATE SET
+    station_id=excluded.station_id,
+    status='completed', completed_at_utc=@now, updated_at_utc=@now,
+    reason_code=NULL, last_error=NULL
+WHERE recommendation_generation_state.status<>'completed';", connection, transaction);
+        AddRecommendationGenerationKeyParameters(complete, key);
+        complete.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await complete.ExecuteNonQueryAsync(cancellationToken);
+
+        async Task SaveAsync(string id, bool newestOnly)
+        {
+            await using var save = new SqliteCommand(@"
+INSERT INTO playlist_track_candidate_cache(source,source_id,snapshot_id,candidates_json,is_complete)
+VALUES(@source,@id,@snapshot,@json,1)
+ON CONFLICT(source,source_id) DO UPDATE SET
+ snapshot_id=excluded.snapshot_id, candidates_json=excluded.candidates_json,
+ is_complete=1, updated_at=CURRENT_TIMESTAMP
+WHERE @newestOnly=0 OR COALESCE(playlist_track_candidate_cache.snapshot_id,'')<=excluded.snapshot_id;", connection, transaction);
+            save.Parameters.AddWithValue("source", "recommendations-daily-pool");
+            save.Parameters.AddWithValue("id", id);
+            save.Parameters.AddWithValue("snapshot", snapshotId);
+            save.Parameters.AddWithValue("json", stagedJson);
+            save.Parameters.AddWithValue("newestOnly", newestOnly ? 1 : 0);
+            await save.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await SaveAsync(sourceId + $":day:{key.TargetDay:yyyyMMdd}", false);
+        await SaveAsync(sourceId, true);
+        // Keep this week's prerequisite and all later daily snapshots, as daily publication does.
+        var monday = key.TargetDay.AddDays(-(((int)key.TargetDay.DayOfWeek + 6) % 7));
+        await using var prune = new SqliteCommand(@"
+DELETE FROM playlist_track_candidate_cache
+WHERE source=@source AND substr(source_id,1,length(@prefix))=@prefix
+ AND source_id<@oldest;", connection, transaction);
+        prune.Parameters.AddWithValue("source", "recommendations-daily-pool");
+        prune.Parameters.AddWithValue("prefix", sourceId + ":day:");
+        prune.Parameters.AddWithValue("oldest", sourceId + $":day:{monday:yyyyMMdd}");
+        await prune.ExecuteNonQueryAsync(cancellationToken);
+        await using var consume = new SqliteCommand(@"
+DELETE FROM playlist_track_candidate_cache
+WHERE source=@source AND source_id=@sourceId;", connection, transaction);
+        consume.Parameters.AddWithValue("source", PreparedDailyPoolSource);
+        consume.Parameters.AddWithValue("sourceId", sourceId);
+        await consume.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public const string PreparedDailyPoolSource = "recommendations-daily-prepared";
+
     public async Task RequestRecommendationGenerationAsync(
         RecommendationGenerationStateKey key,
         string reasonCode,

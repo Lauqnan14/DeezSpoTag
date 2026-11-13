@@ -54,10 +54,6 @@ public sealed class AppleLyricsService
     private readonly AppleMusicCatalogService _catalogService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<AppleLyricsService> _logger;
-    private static readonly HttpClient WrapperAccountClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(8)
-    };
     private static readonly XmlSchemaSet TtmlSchemas = CreateTtmlSchemas();
 
     public AppleLyricsService(
@@ -73,67 +69,107 @@ public sealed class AppleLyricsService
     public async Task<LyricsBase> ResolveLyricsAsync(
         string appleId,
         DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken? callerCancellationToken = null)
     {
-        if (string.IsNullOrWhiteSpace(appleId))
-        {
-            return AppleLyrics.CreateError("Apple Music ID is required for lyrics.");
-        }
+        return await ResolveLyricsCoreAsync(appleId, settings, cancellationToken,
+            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3), callerCancellationToken);
+    }
 
-        var mediaUserToken = NormalizeMediaUserToken(settings.AppleMusic?.MediaUserToken);
-        var storefront = await _catalogService.ResolveStorefrontAsync(
-            settings.AppleMusic?.Storefront,
-            mediaUserToken,
-            cancellationToken);
-        if (!string.IsNullOrWhiteSpace(mediaUserToken))
+    private async Task<LyricsBase> ResolveLyricsCoreAsync(
+        string appleId, DeezSpoTagSettings settings, CancellationToken cancellationToken,
+        TimeSpan lookupBudget, TimeSpan accountBudget, CancellationToken? callerCancellationToken = null)
+    {
+        // A provider's deadline may return partial content; a real user cancellation must propagate.
+        var callerToken = callerCancellationToken ?? cancellationToken;
+        using var lookup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lookup.CancelAfter(lookupBudget);
+        cancellationToken = lookup.Token;
+        using var account = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        account.CancelAfter(accountBudget);
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
         {
-            try
+            if (string.IsNullOrWhiteSpace(appleId))
             {
-                if (await _catalogService.GetAccountSubscriptionActiveAsync(mediaUserToken, cancellationToken) == false)
-                    return AppleLyrics.CreateError("Apple authentication unavailable: Apple Music subscription is inactive.");
+                return AppleLyrics.CreateError("Apple Music ID is required for lyrics.");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug("Apple subscription activity could not be checked; attempting lyrics lookup.");
-            }
-        }
-        var language = string.IsNullOrWhiteSpace(settings.DeezerLanguage) ? DefaultLanguage : settings.DeezerLanguage;
-        var lrcType = string.IsNullOrWhiteSpace(settings.LrcType) ? SyncedLyricsType : settings.LrcType;
 
-        var candidates = await FetchLyricsTtmlAsync(
-            appleId,
-            storefront,
-            language,
-            lrcType,
-            mediaUserToken,
-            settings.SynthesizeLrcFromTtml,
-            cancellationToken);
-        if (!HasUsableCandidate(candidates) && string.IsNullOrWhiteSpace(mediaUserToken))
-        {
-            mediaUserToken = NormalizeMediaUserToken(await TryResolveWrapperMusicTokenAsync(cancellationToken));
+            var mediaUserToken = NormalizeMediaUserToken(settings.AppleMusic?.MediaUserToken);
+            var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic.Storefront;
             if (!string.IsNullOrWhiteSpace(mediaUserToken))
             {
-                storefront = await _catalogService.ResolveStorefrontAsync(
-                    settings.AppleMusic?.Storefront,
-                    mediaUserToken,
-                    cancellationToken);
-                candidates = await FetchLyricsTtmlAsync(
-                    appleId,
-                    storefront,
-                    language,
-                    lrcType,
-                    mediaUserToken,
-                    settings.SynthesizeLrcFromTtml,
-                    cancellationToken);
+                try
+                {
+                    storefront = await _catalogService.GetAccountStorefrontAsync(mediaUserToken, account.Token) ?? storefront;
+                    if (await _catalogService.GetAccountSubscriptionActiveAsync(mediaUserToken, account.Token) == false)
+                        return AppleLyrics.CreateError("Apple authentication unavailable: Apple Music subscription is inactive.");
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug("Apple lyrics account checks exceeded their combined budget.");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogDebug("Apple subscription activity could not be checked; attempting lyrics lookup.");
+                }
             }
-        }
+            var language = string.IsNullOrWhiteSpace(settings.DeezerLanguage) ? DefaultLanguage : settings.DeezerLanguage;
+            var lrcType = string.IsNullOrWhiteSpace(settings.LrcType) ? SyncedLyricsType : settings.LrcType;
 
-        if (!HasUsableCandidate(candidates))
+            var candidates = await FetchLyricsTtmlAsync(
+                appleId,
+                storefront,
+                language,
+                lrcType,
+                mediaUserToken,
+                settings.SynthesizeLrcFromTtml,
+                cancellationToken);
+            if (!HasUsableCandidate(candidates) && string.IsNullOrWhiteSpace(mediaUserToken))
+            {
+                mediaUserToken = NormalizeMediaUserToken(await TryResolveWrapperMusicTokenAsync(cancellationToken));
+                if (!string.IsNullOrWhiteSpace(mediaUserToken))
+                {
+                    try
+                    {
+                        storefront = await _catalogService.GetAccountStorefrontAsync(mediaUserToken, account.Token) ?? storefront;
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        _logger.LogDebug("Apple wrapper account lookup exceeded the combined account budget.");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogDebug("Apple wrapper account storefront could not be checked.");
+                    }
+                    candidates = await FetchLyricsTtmlAsync(
+                        appleId,
+                        storefront,
+                        language,
+                        lrcType,
+                        mediaUserToken,
+                        settings.SynthesizeLrcFromTtml,
+                        cancellationToken);
+                }
+            }
+
+            callerToken.ThrowIfCancellationRequested();
+            if (!HasUsableCandidate(candidates))
+            {
+                return AppleLyrics.CreateError(candidates?.Error ?? "Apple Music lyrics not available.");
+            }
+
+            return AppleLyrics.FromCandidates(candidates!, settings.SynthesizeLrcFromTtml);
+        }
+        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested && lookup.IsCancellationRequested)
         {
-            return AppleLyrics.CreateError(candidates?.Error ?? "Apple Music lyrics not available.");
+            return AppleLyrics.CreateError("Apple lyrics lookup deadline exceeded.");
         }
-
-        return AppleLyrics.FromCandidates(candidates!, settings.SynthesizeLrcFromTtml);
+        finally
+        {
+            _logger.LogInformation("Apple lyrics lookup finished in {ElapsedMs} ms (budget {BudgetMs} ms).",
+                (long)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds, (long)lookupBudget.TotalMilliseconds);
+        }
     }
 
     private static bool HasUsableCandidate(AppleLyricsCandidates? candidates)
@@ -158,7 +194,11 @@ public sealed class AppleLyricsService
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, accountUri);
-            using var response = await WrapperAccountClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var client = _httpClientFactory.CreateClient("AppleWrapperAccount");
+            using var wrapperDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            wrapperDeadline.CancelAfter(TimeSpan.FromSeconds(8));
+            cancellationToken = wrapperDeadline.Token;
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -248,72 +288,79 @@ public sealed class AppleLyricsService
         string? wordTtml = null;
         string? lineTtml = null;
         string? plainTextTtml = null;
-        foreach (var type in typeCandidates)
+        try
         {
-            foreach (var lang in languageCandidates)
+            foreach (var type in typeCandidates)
             {
-                // Word-timed TTML is the highest quality result, so stop fanning out across the
-                // remaining type/language combinations once it is in hand.
-                if (wordTtml != null)
+                foreach (var lang in languageCandidates)
                 {
-                    return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml);
-                }
-
-                var url = BuildLyricsTypeUrl(context.Storefront, context.AppleId, type, lang);
-
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.TryAddWithoutValidation("Origin", BuildAppleMusicOrigin());
-                request.Headers.TryAddWithoutValidation("Referer", BuildAppleMusicReferer());
-                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {context.Token}");
-                request.Headers.TryAddWithoutValidation(MediaUserTokenHeader, context.MediaUserToken);
-                request.Headers.TryAddWithoutValidation("Cookie", BuildMediaUserCookie(context.MediaUserToken, context.Storefront));
-                request.Headers.TryAddWithoutValidation(UserAgentHeader, AppleUserAgentPool.GetAuthenticatedUserAgent());
-                request.Headers.TryAddWithoutValidation("Accept", "application/json");
-                request.Headers.TryAddWithoutValidation("Accept-Language", lang);
-
-                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                if (!response.IsSuccessStatusCode)
-                {
-                    // 401/403 means the media user token is inactive or rejected. Stop immediately
-                    // so the caller can fall back to the public API instead of burning the rest of
-                    // the type/language matrix on requests that cannot succeed.
-                    if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                    // Word-timed TTML is the highest quality result, so stop fanning out across the
+                    // remaining type/language combinations once it is in hand.
+                    if (wordTtml != null)
                     {
-                        if (_logger.IsEnabled(LogLevel.Debug))
-                        {
-                            _logger.LogDebug(
-                                "Apple lyrics media user token was rejected with {StatusCode}; falling back to the public lyrics API.",
-                                response.StatusCode);
-                        }
-
-                        return new AppleLyricsCandidates(null, lineTtml, plainTextTtml,
-                            $"Apple authentication failed: media user token rejected with HTTP {(int)response.StatusCode}.");
+                        return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml);
                     }
 
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug("Apple lyrics request failed: status={StatusCode} type={Type} lang={Lang}", response.StatusCode, type, lang);                    }
-                    continue;
-                }
+                    var url = BuildLyricsTypeUrl(context.Storefront, context.AppleId, type, lang);
 
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-                var ttml = TryExtractLyricsTtml(doc.RootElement, lang);
-                switch (ClassifyTtml(ttml))
-                {
-                    case AppleTtmlTimingKind.Word when wordTtml == null:
-                        wordTtml = ttml;
-                        break;
-                    case AppleTtmlTimingKind.Line when lineTtml == null:
-                        lineTtml = ttml;
-                        break;
-                    case AppleTtmlTimingKind.Untimed when plainTextTtml == null:
-                        plainTextTtml = ttml;
-                        break;
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.TryAddWithoutValidation("Origin", BuildAppleMusicOrigin());
+                    request.Headers.TryAddWithoutValidation("Referer", BuildAppleMusicReferer());
+                    request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {context.Token}");
+                    request.Headers.TryAddWithoutValidation(MediaUserTokenHeader, context.MediaUserToken);
+                    request.Headers.TryAddWithoutValidation("Cookie", BuildMediaUserCookie(context.MediaUserToken, context.Storefront));
+                    request.Headers.TryAddWithoutValidation(UserAgentHeader, AppleUserAgentPool.GetAuthenticatedUserAgent());
+                    request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                    request.Headers.TryAddWithoutValidation("Accept-Language", lang);
+
+                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // 401/403 means the media user token is inactive or rejected. Stop immediately
+                        // so the caller can fall back to the public API instead of burning the rest of
+                        // the type/language matrix on requests that cannot succeed.
+                        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                        {
+                            if (_logger.IsEnabled(LogLevel.Debug))
+                            {
+                                _logger.LogDebug(
+                                    "Apple lyrics media user token was rejected with {StatusCode}; falling back to the public lyrics API.",
+                                    response.StatusCode);
+                            }
+
+                            return new AppleLyricsCandidates(null, lineTtml, plainTextTtml,
+                                $"Apple authentication failed: media user token rejected with HTTP {(int)response.StatusCode}.");
+                        }
+
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("Apple lyrics request failed: status={StatusCode} type={Type} lang={Lang}", response.StatusCode, type, lang);                    }
+                        continue;
+                    }
+
+                    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                    var ttml = TryExtractLyricsTtml(doc.RootElement, lang);
+                    switch (ClassifyTtml(ttml))
+                    {
+                        case AppleTtmlTimingKind.Word when wordTtml == null:
+                            wordTtml = ttml;
+                            break;
+                        case AppleTtmlTimingKind.Line when lineTtml == null:
+                            lineTtml = ttml;
+                            break;
+                        case AppleTtmlTimingKind.Untimed when plainTextTtml == null:
+                            plainTextTtml = ttml;
+                            break;
+                    }
                 }
             }
-        }
 
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml, "Apple lyrics lookup deadline exceeded.");
+        }
         return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml);
     }
 
@@ -1070,6 +1117,7 @@ public sealed class AppleLyricsService
                 lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
             }
 
+            if (!string.IsNullOrWhiteSpace(candidates.Error)) lyrics.SetErrorMessage(candidates.Error);
             return lyrics.IsLoaded()
                 ? lyrics
                 : CreateError("Apple Music returned unusable lyrics timing.");

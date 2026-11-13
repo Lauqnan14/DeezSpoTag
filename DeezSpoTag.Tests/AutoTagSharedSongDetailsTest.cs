@@ -202,10 +202,14 @@ public sealed class AutoTagSharedSongDetailsTest
         finally { Directory.Delete((string)create[1]!, true); }
     }
 
-    [Fact]
-    public async Task ActualProviderPassSharesVerifiedDetailsAndReportsPersistedFields()
+    [Theory]
+    [InlineData("itunes", "flac")]
+    [InlineData("shazam", "flac")]
+    [InlineData("shazam", "m4a")]
+    [InlineData("shazam", "mp3")]
+    public async Task ActualProviderPassSharesVerifiedDetailsAndReportsPersistedFields(string platform, string extension)
     {
-        object?[] create = ["flac", null];
+        object?[] create = [extension, null];
         var file = (string)typeof(AutoTagCreditRoleFileRoundTripTest).GetMethod("NewTrack", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, create)!;
         var directory = (string)create[1]!;
         try
@@ -226,30 +230,80 @@ public sealed class AutoTagSharedSongDetailsTest
             var plan = Activator.CreateInstance(type.GetNestedType("AutoTagRunPlan", BindingFlags.NonPublic)!, true)!;
             var context = Activator.CreateInstance(type.GetNestedType("AutoTagFileRunContext", BindingFlags.NonPublic)!, true)!;
             void Set(object target, string key, object value) => target.GetType().GetProperty(key)!.SetValue(target, value);
-            var config = new LocalAutoTagRunner.AutoTagRunnerConfig { Platforms = ["itunes"], Tags = ["energy", "melodicness"],
+            var config = new LocalAutoTagRunner.AutoTagRunnerConfig { Platforms = [platform], Tags = ["bpm", "energy", "melodicness", "acousticness", "danceability", "valence", "trackId"],
                 SaveArtwork = false, SaveArtworkArtist = false, MaterializeToTemplatePath = false };
-            var recognized = (ShazamRecognitionInfo)typeof(ShazamRecognitionService).GetMethod("BuildInfo", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [card])!;
+            // Start with the actual subprocess summary contract, not an already enriched discovery card.
+            var start = new System.Diagnostics.ProcessStartInfo("python3") {
+                RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add("-c");
+            start.ArgumentList.Add("""
+                import importlib.util,json,sys
+                spec=importlib.util.spec_from_file_location('recognize',sys.argv[1])
+                module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+                print(json.dumps({'summary':module.summarize_response(json.loads(sys.argv[2]))}))
+                """);
+            var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."));
+            start.ArgumentList.Add(Path.Join(root, "DeezSpoTag.Web", "Tools", "shazam_port", "recognize.py"));
+            start.ArgumentList.Add(System.Text.Json.JsonSerializer.Serialize(new {
+                track = new { key = card.Id, title = card.Title, subtitle = card.Artist, url = card.Url,
+                    hub = new { options = new[] { new { actions = new[] { new { uri = card.AppleMusicUrl } } } } } } }));
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            Assert.Equal(0, process.ExitCode);
+            Assert.Empty(await error);
+            using var summary = System.Text.Json.JsonDocument.Parse(await output);
+            var flags = BindingFlags.NonPublic | BindingFlags.Static;
+            var parsed = typeof(ShazamRecognitionService).GetMethod("ParseRecognitionResult", flags)!.Invoke(null, [summary.RootElement]);
+            var recognized = (ShazamRecognitionInfo)typeof(ShazamRecognitionService).GetMethod("BuildFallbackPortedInfo", flags)!.Invoke(null, [parsed])!;
             Set(plan, "Config", config); Set(plan, "JobId", "shared-detail-test"); Set(plan, "ConfigPath", Path.Join(directory, "config.json"));
             Set(plan, "TargetPath", directory); Set(plan, "MatchingConfig", new AutoTagMatchingConfig());
-            Set(plan, "Settings", new DeezSpoTagSettings()); Set(plan, "TagSettings", new TagSettings { Energy = true, Melodicness = true, Cover = false });
-            Set(plan, "Files", new List<string> { file }); Set(plan, "EffectivePlatforms", new List<string> { "itunes" });
-            Set(plan, "PlatformSupportedTags", new Dictionary<string, HashSet<SupportedTag>> { ["itunes"] = [SupportedTag.Title] });
+            Set(plan, "Settings", new DeezSpoTagSettings()); Set(plan, "TagSettings", new TagSettings { Bpm = true, Energy = true, Melodicness = true, Acousticness = true, Danceability = true, Valence = true, Cover = false });
+            Set(plan, "Files", new List<string> { file }); Set(plan, "EffectivePlatforms", new List<string> { platform });
+            Set(plan, "PlatformSupportedTags", new Dictionary<string, HashSet<SupportedTag>> { [platform] = [SupportedTag.Title, SupportedTag.TrackId] });
             Set(plan, "ShazamCache", new Dictionary<string, ShazamRecognitionInfo?> { [file] = recognized });
             ((HashSet<int>)plan.GetType().GetProperty("PreparedExternalFiles")!.GetValue(plan)!).Add(0);
             var matches = (Dictionary<(int, string), AutoTagMatchResult?>)plan.GetType().GetProperty("ExternalMatchResults")!.GetValue(plan)!;
-            matches[(0, "itunes")] = new AutoTagMatchResult { Accuracy = 1, Track = new AutoTagTrack {
+            matches[(0, platform)] = new AutoTagMatchResult { Accuracy = 1, Track = new AutoTagTrack {
                 Title = card.Title, Artists = [card.Artist], Album = card.Album, TrackId = "1544491233", Energy = .8 } };
+            if (platform == "shazam")
+            {
+                // The ID-first resolver supplied another provider's metadata, with no original Shazam tag.
+                var prepared = matches[(0, platform)]!;
+                prepared.Track.Other["SHAZAM_MATCH_STRATEGY"] = ["ID_FIRST"];
+                prepared.Track.Other["SHAZAM_MATCH_PROVIDER"] = ["DEEZER"];
+                prepared.Track.TrackId = null;
+                prepared.MatchStrategy = "id_first";
+            }
             var statuses = new List<TaggingStatusWrap>();
-            Set(context, "Plan", plan); Set(context, "File", file); Set(context, "FileIndex", 0); Set(context, "Platform", "itunes");
+            Set(context, "Plan", plan); Set(context, "File", file); Set(context, "FileIndex", 0); Set(context, "Platform", platform);
             Set(context, "PlatformIndex", 0); Set(context, "Token", CancellationToken.None);
             Set(context, "StatusCallback", (Action<TaggingStatusWrap>)statuses.Add); Set(context, "LogCallback", (Action<string>)(_ => {}));
             await (Task)Method("ProcessPlatformFileAsync").Invoke(runner, [context])!;
             Assert.Contains(statuses, status => status.Status.Status == "tagged" && status.Status.WrittenTags.Contains("melodicness"));
             Assert.DoesNotContain(statuses, status => status.Status.Status is "review" or "error");
             using var saved = TagLib.File.Create(file);
-            var xiph = (TagLib.Ogg.XiphComment)saved.GetTag(TagLib.TagTypes.Xiph, false);
-            Assert.Equal("0.8", Assert.Single(xiph.GetField("ENERGY")));
-            Assert.Equal("0.98", Assert.Single(xiph.GetField("MELODICNESS")));
+            string? Read(string key) => (string?)typeof(AutoTagCreditRoleFileRoundTripTest)
+                .GetMethod("ReadOne", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [saved, extension, key]);
+            Assert.Equal("0.8", Read("ENERGY")); // Native provider keeps priority.
+            Assert.Equal("0.98", Read("MELODICNESS"));
+            Assert.Equal("0.3", Read("ACOUSTICNESS"));
+            Assert.Equal("0.6", Read("DANCEABILITY"));
+            Assert.Equal("0.7", Read("VALENCE"));
+            Assert.Equal((uint)104, saved.Tag.BeatsPerMinute);
+            if (platform == "shazam")
+                Assert.Equal(card.Id, LocalAutoTagRunner.ReadRawIdentityValue(file, "SHAZAM_TRACK_ID"));
+            else
+                Assert.Null(LocalAutoTagRunner.ReadRawIdentityValue(file, "SHAZAM_TRACK_ID"));
+            // AutoTag's diff snapshot uses this same disk dump without a library-path gate.
+            var dump = new QuickTagService(NullLogger<QuickTagService>.Instance, null!, null!, null!)
+                .Dump(file, includeArtworkData: false, enforceLibraryPathCheck: false);
+            Assert.Contains(dump.Tags, pair => pair.Key.EndsWith("MELODICNESS", StringComparison.OrdinalIgnoreCase)
+                && pair.Value.Contains("0.98"));
+            if (platform == "shazam")
+                Assert.Contains(dump.Tags, pair => pair.Key.EndsWith("SHAZAM_TRACK_ID", StringComparison.OrdinalIgnoreCase)
+                    && pair.Value.Contains(card.Id));
             await (Task)Method("ProcessPlatformFileAsync").Invoke(runner, [context])!;
             Assert.Equal(1, handler.Calls);
         }
@@ -263,7 +317,7 @@ public sealed class AutoTagSharedSongDetailsTest
         {
             Calls++;
             return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                { Content = new System.Net.Http.StringContent(ShazamSongDetailsTest.SongPage(nestedCreditBody: true)) });
+                { Content = new System.Net.Http.StringContent(ShazamSongDetailsTest.SongPage(nestedCreditBody: true, analysis: "{\"bpm\":104,\"melodicness\":0.98,\"energy\":0.69,\"acousticness\":0.3,\"danceability\":0.6,\"valence\":0.7}")) });
         }
     }
 

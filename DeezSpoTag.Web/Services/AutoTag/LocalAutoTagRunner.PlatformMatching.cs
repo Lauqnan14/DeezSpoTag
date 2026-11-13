@@ -357,6 +357,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         bool usedShazamForStatus,
         ProviderTagPlan tagPlan)
     {
+        if (string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
+            && context.Plan.ShazamCache.TryGetValue(context.File, out var recognized) && recognized is not null)
+            RestoreRecognizedShazamIdentity(match, recognized);
+
         // Capture the provider-native identity before anything below can mutate the
         // matched track (release-id authority, frozen releases, title/edition/folder
         // preservation, consensus, lyrics, artwork, or custom tags).

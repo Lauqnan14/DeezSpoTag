@@ -16,6 +16,40 @@ namespace DeezSpoTag.Tests;
 public sealed class ShazamRecognitionReliabilityTest
 {
     [Fact]
+    public async Task PythonRecognitionKeepsOnlyTheReturnedAppleSongAssociation()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."));
+        var start = new ProcessStartInfo("python3") { RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add("""
+            import importlib.util,sys
+            spec=importlib.util.spec_from_file_location('recognize',sys.argv[1])
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+            song='https://music.apple.com/us/album/song/99?i=42'
+            track={'title':'http://[', 'artist':'Artist', 'links':[
+                'https://music.apple.com/us/artist/artist/1',
+                'https://music.apple.com.evil.example/song/99',
+                {'actions':[{'uri':song}]}]}
+            assert module.summarize_response({'track':track})['appleMusicUrl']==song
+            for value in ['http://music.apple.com/us/song/42',
+                          'https://music.apple.com/us/album/99',
+                          'https://music.apple.com/us/album/99?i=invalid',
+                          'https://music.apple.com.evil.example/us/song/42']:
+                assert module.apple_music_url(value) is None
+            assert module.apple_music_url('https://music.apple.com/us/song/42')=='https://music.apple.com/us/song/42'
+            print('ok')
+            """);
+        start.ArgumentList.Add(Path.Combine(root, "DeezSpoTag.Web", "Tools", "shazam_port", "recognize.py"));
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.Equal(0, process.ExitCode);
+        Assert.Equal("ok", (await output).Trim());
+        Assert.Empty(await error);
+    }
+
+    [Fact]
     public void RuntimeTimeout_PreservesSuccessAndSchedulesPromptRecheck()
     {
         using var env = new EnvironmentFixture();
@@ -137,7 +171,7 @@ public sealed class ShazamRecognitionReliabilityTest
                 async def send_recognize_request_v2(self,sig):
                     assert sig=='verified-signature'
                     if scenario=='request': await asyncio.sleep(1)
-                    return {'matches':[{}],'track':{'key':'123','title':'Song','subtitle':'Artist'}}
+                    return {'matches':[{}],'track':{'key':'123','title':'Song','subtitle':'Artist','hub':{'options':[{'actions':[{'uri':'https://music.apple.com/us/album/song/99?i=42'}]}]}}}
             fake.Shazam=Shazam
             sys.modules['shazamio']=None if scenario=='startup' else fake
             spec=importlib.util.spec_from_file_location('recognize',sys.argv[1])
@@ -161,7 +195,11 @@ public sealed class ShazamRecognitionReliabilityTest
         Assert.True(json.RootElement.GetProperty("timings").GetProperty("startup").GetDouble() >= 0);
         if (scenario != "startup") Assert.Contains("\"stage\": \"fingerprint\"", stderr);
         if (scenario is "success" or "request") Assert.Contains("\"stage\": \"request\"", stderr);
-        if (ok) Assert.Equal("123", json.RootElement.GetProperty("summary").GetProperty("trackId").GetString());
+        if (ok)
+        {
+            Assert.Equal("123", json.RootElement.GetProperty("summary").GetProperty("trackId").GetString());
+            Assert.Equal("https://music.apple.com/us/album/song/99?i=42", json.RootElement.GetProperty("summary").GetProperty("appleMusicUrl").GetString());
+        }
     }
 
     [Fact]

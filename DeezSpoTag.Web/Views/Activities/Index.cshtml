@@ -6909,6 +6909,9 @@ function mapQueueItem(item) {
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         lyricsRevision,
         lyricsActivity: getLyricsArtifactActivity(lyricsArtifacts),
+        audioAcquired: Boolean(item.audioAcquired ?? item.AudioAcquired),
+        finalizationStage: String(item.finalizationStage ?? item.FinalizationStage ?? ''),
+        finalizationElapsedMs: Number(item.finalizationElapsedMs) || Math.max(0, Date.now() - (Date.parse(item.acquisitionStageUpdatedUtc ?? item.AcquisitionStageUpdatedUtc) || Date.now())),
         lyricsIncompleteReason: String(lyricsArtifacts?.incompleteReason ?? lyricsArtifacts?.IncompleteReason ?? '').trim(),
         status: mappedStatus,
         rawStatus: item.rawStatus || item.RawStatus || item.status,
@@ -7385,6 +7388,9 @@ function getTaskActivityText(task) {
         return '';
     }
 
+    const finalization = getDownloadFinalizationActivity(task);
+    if (finalization) return finalization;
+
     const realtime = queueActivityByTask[task.taskId];
     if (typeof realtime === 'string' && realtime.trim()) {
         return realtime.trim();
@@ -7405,6 +7411,20 @@ function getTaskActivityText(task) {
     }
 
     return 'Finalizing items...';
+}
+
+function getDownloadFinalizationActivity(task) {
+    if (task.status !== 'running' || !task.audioAcquired) return '';
+    const labels = {
+        'artwork-prefetch': 'Waiting for artwork',
+        'lyrics-prefetch': task.lyricsActivity || 'Waiting for lyrics',
+        'tag-writing': 'Writing tags',
+        'sidecar-prefetch': 'Waiting for sidecars'
+    };
+    const label = labels[String(task.finalizationStage || '').replace(/_/g, '-')];
+    if (!label) return '';
+    const seconds = Math.floor(Math.max(0, Number(task.finalizationElapsedMs) || 0) / 1000);
+    return `${label} (${seconds}s)`;
 }
 
 function getLyricsArtifactActivity(artifacts) {
@@ -7762,6 +7782,12 @@ function applyQueueRealtimeUpdate(payload) {
     } else if ((status === 'running' || status === 'queued') && task.error) {
         task.error = null;
         taskChanged = true;
+    }
+    for (const field of ['finalizationStage', 'finalizationElapsedMs', 'audioAcquired']) {
+        if (update?.[field] !== undefined && task[field] !== update[field]) {
+            task[field] = update[field];
+            taskChanged = true;
+        }
     }
     const incomingLyricsArtifacts = update?.lyricsArtifacts ?? update?.LyricsArtifacts;
     const incomingLyricsRevision = getLyricsArtifactRevision(incomingLyricsArtifacts);

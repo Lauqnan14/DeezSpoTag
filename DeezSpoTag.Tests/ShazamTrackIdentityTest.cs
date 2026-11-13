@@ -21,6 +21,28 @@ public sealed class ShazamTrackIdentityTest
     private const string ShazamUrl = "https://www.shazam.com/track/shazam-track-id";
     private const string SpotifyTrackId = "0VjIjW4GlUZAMYd2vXMi3b";
 
+    [Theory]
+    [InlineData("title")]
+    [InlineData("artist")]
+    [InlineData("isrc")]
+    [InlineData("duration")]
+    public void FreshFingerprintCannotAttachItsIdentityToAConflictingResolverRecording(string conflict)
+    {
+        var match = new AutoTagMatchResult { Track = new AutoTagTrack {
+            Title = "Song", Artists = ["Artist"], Isrc = "GBBKS1000335", Duration = TimeSpan.FromSeconds(228) } };
+        match.Track.Other["SHAZAM_MATCH_PROVIDER"] = ["DEEZER"];
+        var recognized = new DeezSpoTag.Web.Services.ShazamRecognitionInfo {
+            TrackId = "53080365", Url = "https://www.shazam.com/track/53080365",
+            Title = conflict == "title" ? "Another Song" : "Song",
+            Artist = conflict == "artist" ? "Another Artist" : "Artist",
+            Isrc = conflict == "isrc" ? "USUG11904206" : "GBBKS1000335",
+            DurationMs = conflict == "duration" ? 260000 : 228000 };
+        Invoke("RestoreRecognizedShazamIdentity", [match, recognized]);
+        Assert.Null(match.Track.TrackId);
+        Assert.DoesNotContain("SHAZAM_TRACK_ID", match.Track.Other.Keys);
+        Assert.Null(Capture(match).TrackId);
+    }
+
     [Fact]
     public void IdFirstMatch_KeepsTheShazamTrackIdAndDropsTheResolverIdentity()
     {

@@ -1241,6 +1241,7 @@ public sealed class ShazamRecognitionService : IDisposable
         result.Artist = ReadString(summary, AutoTagLiterals.ArtistTag);
         result.Isrc = ReadString(summary, "isrc");
         result.Url = ReadString(summary, "url");
+        result.AppleMusicUrl = ReadString(summary, "appleMusicUrl");
     }
 
     private static void PopulateFromResponseTrack(JsonElement root, PortedRecognitionResult result)
@@ -1396,7 +1397,8 @@ public sealed class ShazamRecognitionService : IDisposable
             Artists = SplitArtists(artist),
             Isrc = FirstNonEmpty(ported.Isrc),
             TrackId = FirstNonEmpty(ported.TrackId),
-            Url = FirstNonEmpty(ported.Url)
+            Url = FirstNonEmpty(ported.Url),
+            AppleMusicUrl = FirstNonEmpty(ported.AppleMusicUrl)
         };
 
         if (infoFallback.Artists.Count == 0)
@@ -1663,6 +1665,7 @@ public sealed class ShazamRecognitionService : IDisposable
 
     private sealed class PortedRecognitionResult
     {
+        public string? AppleMusicUrl { get; set; }
         public string? TrackId { get; set; }
         public string? Title { get; set; }
         public string? Artist { get; set; }

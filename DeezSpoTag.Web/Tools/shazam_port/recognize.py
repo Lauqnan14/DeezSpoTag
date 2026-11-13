@@ -9,6 +9,7 @@ import json
 import sys
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, urlsplit
 
 _stage = "startup"
 _stage_started = time.monotonic()
@@ -33,6 +34,35 @@ def first_non_empty(*values: Optional[str]) -> Optional[str]:
     return None
 
 
+def apple_music_url(value: Any) -> Optional[str]:
+    # Preserve the association supplied by Shazam; never substitute the Shazam key
+    # for Apple's separate numeric song namespace.
+    if isinstance(value, str):
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme == "https" and parsed.hostname == "music.apple.com":
+                song_id = parse_qs(parsed.query).get("i", [""])[0]
+                parts = parsed.path.strip("/").split("/")
+                direct_song = any(part == "song" and index + 1 < len(parts)
+                                  and parts[index + 1].isascii() and parts[index + 1].isdigit()
+                                  for index, part in enumerate(parts))
+                if (song_id.isascii() and song_id.isdigit()) or direct_song:
+                    return value
+        except ValueError:
+            return None
+    elif isinstance(value, dict):
+        for child in value.values():
+            found = apple_music_url(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = apple_music_url(child)
+            if found:
+                return found
+    return None
+
+
 def summarize_response(response: Dict[str, Any]) -> Dict[str, Any]:
     track = response.get("track") if isinstance(response, dict) else None
     if not isinstance(track, dict):
@@ -50,6 +80,7 @@ def summarize_response(response: Dict[str, Any]) -> Dict[str, Any]:
         "title": first_non_empty(track.get("title"), track.get("name")),
         "artist": first_non_empty(track.get("subtitle"), track.get("artist")),
         "isrc": first_non_empty(track.get("isrc")),
+        "appleMusicUrl": apple_music_url(track),
         "url": first_non_empty(track.get("url"), share.get("href") if isinstance(share, dict) else None),
     }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
@@ -37,7 +38,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
         var scope = typeof(LibraryRecommendationService).GetMethod("BuildScope", flags)!.Invoke(null, new object[] { Folder.LibraryId!.Value, Folder });
         var build = typeof(LibraryRecommendationService).GetMethod("BuildDailyPoolAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        await (Task)build.Invoke(Service(clock), new object?[] { scope, day, null, System.Threading.CancellationToken.None, null, false })!;
+        await (Task)build.Invoke(Service(clock), new object?[] { scope, day, null, System.Threading.CancellationToken.None, null, false, false })!;
         var saved = await Repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id + $":day:{day:yyyyMMdd}");
         using var document = JsonDocument.Parse(saved!.CandidatesJson);
         Assert.Equal(published, document.RootElement.GetProperty("Diagnostics").GetProperty("PublishedTrackIds").EnumerateArray().Select(value => value.GetString()));
@@ -69,12 +70,25 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         await SaveAsync(rows.Reverse());
         var reloaded = await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id, Folder.Id);
         Assert.Equal(published, reloaded!.Tracks.Select(track => track.Id));
+        // Published selections are frozen: a rejection written behind the service's back never
+        // rewrites them during daytime reads.
         await Repository.AddRecommendationRejectionAsync(new(Folder.LibraryId.Value, Folder.Id, id, published[7], null, null, null));
-        var replaced = await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id, Folder.Id);
+        var frozen = await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id, Folder.Id);
+        Assert.Equal(published, frozen!.Tracks.Select(track => track.Id));
+        Assert.Equal(60, frozen.Tracks.Count);
+        // Only an explicit manual rejection deliberately alters the day's selection. This legacy
+        // pool still holds replacement rows, so the frozen rewrite keeps all 60 tracks complete.
+        var replaced = await Service(clock).RejectRecommendationTrackAsync(
+            new(Folder.LibraryId.Value, Folder.Id, id, published[7], null, "Song " + published[7], "Artist " + published[7]))!;
+        Assert.Equal("ready", replaced.Status);
         Assert.Equal(60, replaced!.Tracks.Count);
         Assert.DoesNotContain(replaced.Tracks, track => track.Id == published[7]);
         for (var index = 0; index < 60; index++)
             if (index != 7) Assert.Equal(published[index], replaced.Tracks[index].Id);
+        var stored = await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id);
+        using var document = JsonDocument.Parse(stored!.CandidatesJson);
+        Assert.DoesNotContain(document.RootElement.GetProperty("Tracks").EnumerateArray(),
+            track => track.GetProperty("Id").GetString() == published[7]);
     }
 
     [Theory]
@@ -84,7 +98,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
     [InlineData(DailyRecommendationAiFilterMode.Allow, 20, true)]
     [InlineData(DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated, 20, true)]
     [InlineData(DailyRecommendationAiFilterMode.Strict, 20, true)]
-    public async Task DailyPreparationChecksLibraryProviderIdentitiesAndSavedDisplayHonoursCurrentAiPreference(DailyRecommendationAiFilterMode mode, int expected, bool sameIsrc)
+    public async Task DailyPreparationChecksLibraryProviderIdentitiesAndSavedDisplayServesTheFrozenSelection(DailyRecommendationAiFilterMode mode, int expected, bool sameIsrc)
     {
         using var configScope = new TestConfigRootScope(_root);
         var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
@@ -138,11 +152,10 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         Assert.DoesNotContain(result.Tracks, t => t.Title == "Groovin My Girl");
         Assert.Equal(mode, result.DailyAiFilterMode);
         Assert.Equal(20, result.Tracks.Count(t => t.RecommendationOrigin == "tidal"));
-        if (mode == DailyRecommendationAiFilterMode.Allow) Assert.Contains(result.Tracks,t => t.Id == "10002");
-        else Assert.DoesNotContain(result.Tracks,t => t.Id == "10002");
-        if (mode == DailyRecommendationAiFilterMode.Strict) Assert.DoesNotContain(result.Tracks,t => t.Id == "10003");
-        else Assert.Contains(result.Tracks,t => t.Id == "10003");
-        Assert.All(result.Tracks, t => Assert.Null(LibraryRecommendationService.EvaluateDailyAiPolicy(t.AiEvidence, mode)));
+        // Published selections are frozen: AI evidence was applied during preparation, and a later
+        // preference change only affects the next selection, never the published track list.
+        Assert.Contains(result.Tracks, t => t.Id == "10002");
+        Assert.Contains(result.Tracks, t => t.Id == "10003");
     }
 
     [Theory]
@@ -265,6 +278,410 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         Assert.Equal(180,saved.RootElement.GetProperty("Tracks").GetArrayLength());
     }
 
+    private const string DailyPoolSource = "recommendations-daily-pool";
+
+    private static IReadOnlyList<RecommendationTrackDto> DailyRows(int count)
+        => Enumerable.Range(1, count).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+            new("a" + n, "Artist " + n), new("b" + n, "Album", ""),
+            RecommendationOrigin: n <= 15 ? "shazam" : n <= 30 ? "deezer" : n <= 45 ? "spotify" : "tidal")).ToArray();
+
+    private static Dictionary<string, int> DefaultAllocations()
+        => new() { ["shazam"] = 15, ["deezer"] = 15, ["spotify"] = 15, ["tidal"] = 15 };
+
+    /// <summary>A complete frozen selection payload in the default 60/15x4 configuration.</summary>
+    private static string FrozenPayload(string id, DateTimeOffset generated, int count = 60,
+        IReadOnlyList<RecommendationTrackDto>? tracks = null, IReadOnlyList<RecommendationTrackDto>? reserves = null)
+    {
+        var rows = (IReadOnlyList<RecommendationTrackDto>)(tracks ?? DailyRows(count));
+        return System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SeedScopeKey = id,
+            GeneratedAtUtc = generated,
+            Tracks = rows,
+            ReserveTracks = reserves ?? Array.Empty<RecommendationTrackDto>(),
+            TrackCount = count,
+            Allocations = DefaultAllocations(),
+            AiFilterMode = DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated,
+            Status = "ready",
+            Diagnostics = new DailyRecommendationDiagnosticsDto(rows.Count, new Dictionary<string, int>(), new Dictionary<string, int>(),
+                new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), count, reserves?.Count ?? 0,
+                InitialSelectionPublished: true, PublishedTrackIds: rows.Select(track => track.Id).ToArray())
+        });
+    }
+
+    private async Task<(string Payload, RecommendationGenerationStateKey Key)> PublishFrozenSelectionAsync(
+        TimeProvider clock, DateOnly? day = null, int count = 60)
+    {
+        var resolvedDay = day ?? DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, resolvedDay);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        var payload = FrozenPayload(id, clock.GetUtcNow(), count);
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, DailyPoolSource, id,
+            $"v1:{resolvedDay:yyyyMMdd}", payload));
+        return (payload, key);
+    }
+
+    [Fact]
+    public async Task RepeatedDaytimeWorkLeavesThePublishedSelectionByteEquivalent()
+    {
+        var clock = new ArtworkClock(12);
+        var (payload, key) = await PublishFrozenSelectionAsync(clock);
+        var service = Service(clock);
+        var id = key.StationId;
+        var day = key.TargetDay;
+        for (var reload = 0; reload < 3; reload++)
+        {
+            var detail = (await service.GetRecommendationsAsync(Folder.LibraryId!.Value, id))!;
+            Assert.Equal(60, detail.Tracks.Count);
+            Assert.Equal("ready", detail.Status);
+        }
+        // A limited view is a prefix of the saved order.
+        Assert.Equal(10, (await service.GetRecommendationsAsync(Folder.LibraryId.Value, id, limit: 10))!.Tracks.Count);
+        Assert.Equal(60, Assert.Single((await service.GetStationsAsync(Folder.LibraryId.Value))
+            .Where(station => station.Id == id)).TrackCount);
+        // The old five-minute maintenance equivalents and the daily schedule must not rewrite the day.
+        await service.ReconcileRecommendationGenerationAsync(clock.GetLocalNow(), CancellationToken.None);
+        Assert.False(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+        await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+        await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+        var alias = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+        var dated = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{day:yyyyMMdd}"))!;
+        Assert.Equal(payload, alias.CandidatesJson);
+        Assert.Equal(payload, dated.CandidatesJson);
+        var state = (await Repository.GetRecommendationGenerationStateAsync(Folder.LibraryId!.Value, Folder.Id, id, day))!;
+        Assert.Equal("completed", state.Status);
+        Assert.Equal(1, state.AttemptCount);
+        Assert.Null(await Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+    }
+
+    [Fact]
+    public async Task FrozenDailyReadsIgnoreRepositoryRejectionsUntilAManualRejectionReplacesThem()
+    {
+        var clock = new ArtworkClock(12);
+        var (payload, key) = await PublishFrozenSelectionAsync(clock);
+        var service = Service(clock);
+        var id = key.StationId;
+        // A library-scoped rejection written behind the service's back must not rewrite the day.
+        await Repository.AddRecommendationRejectionAsync(new(Folder.LibraryId!.Value, Folder.Id, id, "1", null, "Song 1", "Artist 1"));
+        var frozen = (await service.GetRecommendationsAsync(Folder.LibraryId!.Value, id))!;
+        Assert.Equal(60, frozen.Tracks.Count);
+        Assert.Contains(frozen.Tracks, track => track.Id == "1");
+        Assert.Equal(payload, (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+        // An explicit manual rejection is the deliberate exception: it rewrites the frozen selection.
+        var rejected = (await service.RejectRecommendationTrackAsync(new(Folder.LibraryId!.Value, Folder.Id, id, "1", null, "Song 1", "Artist 1")))!;
+        Assert.Empty(rejected.Tracks); // No reserves and no seeds: the shortfall stays honest.
+        Assert.Equal("refilling", rejected.Status);
+        var stored = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+        Assert.NotEqual(payload, stored.CandidatesJson);
+        using var document = System.Text.Json.JsonDocument.Parse(stored.CandidatesJson);
+        Assert.Equal(59, document.RootElement.GetProperty("Tracks").GetArrayLength());
+        Assert.DoesNotContain(document.RootElement.GetProperty("Tracks").EnumerateArray(),
+            track => track.GetProperty("Id").GetString() == "1");
+        var after = (await service.GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Empty(after.Tracks);
+        Assert.Equal(1, after.Diagnostics!.MissingSourceCounts["shazam"]);
+    }
+
+    [Fact]
+    public async Task ManualRejectionWithReservesReplacesTheFrozenTrack()
+    {
+        var clock = new ArtworkClock(12);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var rows = DailyRows(60);
+        var reserve = new RecommendationTrackDto("500", "Reserve song", 180, "", 90, new("a500", "Artist 500"), new("b", "Album", ""),
+            RecommendationOrigin: "shazam");
+        var payload = FrozenPayload(id, clock.GetUtcNow(), tracks: rows, reserves: new[] { reserve });
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, DailyPoolSource, id, $"v1:{day:yyyyMMdd}", payload));
+        var replaced = (await Service(clock).RejectRecommendationTrackAsync(new(Folder.LibraryId.Value, Folder.Id, id, "1", null, "Song 1", "Artist 1")))!;
+        Assert.Equal(60, replaced.Tracks.Count);
+        Assert.DoesNotContain(replaced.Tracks, track => track.Id == "1");
+        Assert.Contains(replaced.Tracks, track => track.Id == "500");
+        var order = rows.Select(track => track.Id).ToList();
+        for (var index = 0; index < 60; index++)
+        {
+            var expected = index == 0 ? "500" : order[index];
+            Assert.Equal(expected, replaced.Tracks[index].Id);
+        }
+    }
+
+    [Fact]
+    public async Task PreparedSnapshotActivationRejectsInvalidStaleOrForeignPayloads()
+    {
+        var clock = new ArtworkClock(12);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        var weeklyKey = new RecommendationGenerationStateKey(Folder.LibraryId.Value, Folder.Id,
+            $"weekly-rotation:l{Folder.LibraryId}:f{Folder.Id}:weekly-missing-favourites", day);
+        // Invalid JSON payload.
+        Assert.False(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:{day:yyyyMMdd}", "not-json"));
+        // Foreign (weekly) scope cannot stage or activate a daily prepared snapshot.
+        Assert.False(await Repository.StagePreparedDailyRecommendationSnapshotAsync(weeklyKey, $"v1:{day:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow())));
+        // Snapshot id must match the target day.
+        Assert.False(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:19990101", FrozenPayload(id, clock.GetUtcNow())));
+        Assert.True(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:{day:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow())));
+        // Future date: current local day is behind the target.
+        Assert.False(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day.AddDays(1)));
+        // Expired date: the target is older than the current local day.
+        var expiredKey = new RecommendationGenerationStateKey(Folder.LibraryId.Value, Folder.Id, id, day.AddDays(-1));
+        Assert.False(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(expiredKey, $"v1:{day.AddDays(-1):yyyyMMdd}", day));
+        // Wrong snapshot id is rejected.
+        Assert.False(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, "v1:19990101", day));
+        Assert.Null(await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id));
+    }
+
+    [Fact]
+    public async Task ActivationPublishesExactlyTheStagedPayloadAndNeverALaterReplacement()
+    {
+        var clock = new ArtworkClock(12);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        var first = FrozenPayload(id, clock.GetUtcNow());
+        Assert.True(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:{day:yyyyMMdd}", first));
+        Assert.True(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day));
+        Assert.Equal(first, (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+        // A newer preparation staged after publication must never overwrite the frozen day.
+        var second = FrozenPayload(id, clock.GetUtcNow(), tracks: DailyRows(60).Reverse().ToArray());
+        Assert.NotEqual(first, second);
+        Assert.True(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:{day:yyyyMMdd}", second));
+        Assert.True(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day));
+        Assert.Equal(first, (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+    }
+
+    [Fact]
+    public async Task DuplicateAndConcurrentActivationPublishExactlyOnce()
+    {
+        var clock = new ArtworkClock(12);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var id2 = await SeedWeekly(day);
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        var payload = FrozenPayload(id, clock.GetUtcNow());
+        Assert.True(await Repository.StagePreparedDailyRecommendationSnapshotAsync(key, $"v1:{day:yyyyMMdd}", payload));
+        var concurrent = await Task.WhenAll(
+            Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day),
+            Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day));
+        Assert.All(concurrent, Assert.True);
+        var published = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+        Assert.Equal(payload, published.CandidatesJson);
+        // A repeated activation after publication is a no-op success.
+        Assert.True(await Repository.ActivatePreparedDailyRecommendationSnapshotsAsync(key, $"v1:{day:yyyyMMdd}", day));
+        Assert.Equal(payload, (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+        Assert.Null(await Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+        Assert.Equal("completed", (await Repository.GetRecommendationGenerationStateAsync(Folder.LibraryId!.Value, Folder.Id, id, day))!.Status);
+    }
+
+    [Fact]
+    public async Task FoldersWithDifferentReadinessActivateIndependently()
+    {
+        var clock = new ArtworkClock(12);
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var second = await Repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            RootPath: Folder.RootPath + "-second", DisplayName: "Second", Enabled: true, LibraryName: "Music", DesiredQuality: "flac",
+            ConvertEnabled: false, ConvertFormat: null, ConvertBitrate: null, AutoTagProfileId: "test-profile"));
+        var firstId = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var secondId = $"daily-rotation:l{second.LibraryId}:f{second.Id}";
+        var firstKey = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, firstId, day);
+        Assert.True(await Repository.StagePreparedDailyRecommendationSnapshotAsync(firstKey, $"v1:{day:yyyyMMdd}", FrozenPayload(firstId, clock.GetUtcNow())));
+        var service = Service(clock);
+        await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+        var published = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, firstId))!;
+        Assert.Equal($"v1:{day:yyyyMMdd}", published.SnapshotId);
+        Assert.Null(await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, secondId));
+        var stations = await service.GetStationsAsync(Folder.LibraryId!.Value);
+        Assert.Equal(60, Assert.Single(stations, station => station.Id == firstId).TrackCount);
+        Assert.Equal(0, Assert.Single(stations, station => station.Id == secondId).TrackCount);
+        Assert.Equal("generating", Assert.Single(stations, station => station.Id == secondId).Status);
+    }
+
+    [Fact]
+    public async Task ChangedPreferencesInvalidatePreparedDataUntilItIsReprepared()
+    {
+        using var configScope = new TestConfigRootScope(_root);
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var value = settings.LoadSettings();
+        value.DailyRecommendations = new() { TrackCount = 20, ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerEnabled = true, DeezerTrackCount = 20, SpotifyEnabled = false, SpotifyTrackCount = 0,
+            TidalEnabled = false, TidalTrackCount = 0, AiFilterMode = DailyRecommendationAiFilterMode.Allow };
+        settings.SaveSettings(value);
+        var clock = new FrozenClock(new DateTimeOffset(2026, 10, 9, 21, 0, 0, TimeSpan.Zero)); // 21:00: preparation for tomorrow is due.
+        var day = new DateOnly(2026, 10, 9);
+        var tomorrow = day.AddDays(1);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var (_, todayKey) = await PublishFrozenSelectionAsync(clock, day, count: 20);
+        var service = Service(clock, settings);
+        // A complete generation result for tomorrow in configuration A.
+        var configurationA = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SeedScopeKey = id, GeneratedAtUtc = clock.GetUtcNow(),
+            Tracks = Enumerable.Range(1, 20).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+                new("a" + n, "Artist " + n), new("b" + n, "Album", ""), RecommendationOrigin: "deezer")).ToArray(),
+            TrackCount = 20, Allocations = new Dictionary<string, int> { ["shazam"] = 0, ["deezer"] = 20, ["spotify"] = 0, ["tidal"] = 0 },
+            AiFilterMode = DailyRecommendationAiFilterMode.Allow, Status = "ready",
+            Diagnostics = new DailyRecommendationDiagnosticsDto(20, new Dictionary<string, int>(), new Dictionary<string, int>(),
+                new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), 20, 0,
+                InitialSelectionPublished: true, PublishedTrackIds: Enumerable.Range(1, 20).Select(n => n.ToString()).ToArray())
+        });
+        await Repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}",
+            $"v1:{tomorrow:yyyyMMdd}", configurationA, 0, null, null, true);
+        Assert.True(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+        await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+        Assert.NotNull(await Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+        // Preferences change before activation: the prepared selection is no longer publishable.
+        value.DailyRecommendations = new() { TrackCount = 30, ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerEnabled = true, DeezerTrackCount = 30, SpotifyEnabled = false, SpotifyTrackCount = 0,
+            TidalEnabled = false, TidalTrackCount = 0, AiFilterMode = DailyRecommendationAiFilterMode.Allow };
+        settings.SaveSettings(value);
+        await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+        var alias = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+        Assert.Equal($"v1:{day:yyyyMMdd}", alias.SnapshotId);
+        // Repreparation with the new configuration publishes on the next activation.
+        var configurationB = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SeedScopeKey = id, GeneratedAtUtc = clock.GetUtcNow(),
+            Tracks = Enumerable.Range(1, 30).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+                new("a" + n, "Artist " + n), new("b" + n, "Album", ""), RecommendationOrigin: "deezer")).ToArray(),
+            TrackCount = 30, Allocations = new Dictionary<string, int> { ["shazam"] = 0, ["deezer"] = 30, ["spotify"] = 0, ["tidal"] = 0 },
+            AiFilterMode = DailyRecommendationAiFilterMode.Allow, Status = "ready",
+            Diagnostics = new DailyRecommendationDiagnosticsDto(30, new Dictionary<string, int>(), new Dictionary<string, int>(),
+                new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), 30, 0,
+                InitialSelectionPublished: true, PublishedTrackIds: Enumerable.Range(1, 30).Select(n => n.ToString()).ToArray())
+        });
+        await Repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}",
+            $"v1:{tomorrow:yyyyMMdd}", configurationB, 0, null, null, true);
+        await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+        // The local date changes to 2026-10-10: the prepared selection may now be activated.
+        var midnight = new FrozenClock(new DateTimeOffset(2026, 10, 10, 0, 30, 0, TimeSpan.Zero));
+        var nightService = Service(midnight, settings);
+        await nightService.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+        var published = (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}"))!;
+        Assert.Equal($"v1:{tomorrow:yyyyMMdd}", published.SnapshotId);
+        Assert.Equal(30, (await nightService.GetRecommendationsAsync(Folder.LibraryId!.Value, id))!.Tracks.Count);
+    }
+
+    [Fact]
+    public async Task AdvancePreparationGeneratesRepreparesOnPreferenceChangeAndPublishesAtMidnight()
+    {
+        using var configScope = new TestConfigRootScope(_root);
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var value = settings.LoadSettings();
+        value.DailyRecommendations = new() { TrackCount = 60, ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerEnabled = true, DeezerTrackCount = 60, SpotifyEnabled = false, SpotifyTrackCount = 0,
+            TidalEnabled = false, TidalTrackCount = 0 };
+        settings.SaveSettings(value);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + DatabasePath);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<80)
+            INSERT INTO artist(id,name) SELECT n,'Local artist '||n FROM numbers;
+            INSERT INTO album(id,artist_id,title) SELECT id,id,'Owned album' FROM artist;
+            INSERT INTO track(id,album_id,title,deezer_id,duration_ms) SELECT id,id,'Owned song '||id,CAST(id AS TEXT),180000 FROM artist;
+            INSERT INTO audio_file(id,path,folder_id) SELECT id,'/fixture/'||id||'.flac',@folder FROM artist;
+            INSERT INTO track_local(track_id,audio_file_id) SELECT id,id FROM artist;
+            """;
+        command.Parameters.AddWithValue("folder", Folder.Id);
+        await command.ExecuteNonQueryAsync();
+        var httpState = new DailyHttpState();
+        using var session = new DeezSpoTag.Integrations.Deezer.DeezerSessionManager(
+            NullLogger<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>.Instance, () => value, () => new DailyHandler(httpState)) { ApiToken = "test" };
+        using var gateway = new DeezSpoTag.Integrations.Deezer.DeezerGatewayService(NullLogger<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>.Instance);
+        gateway.SetSessionManager(session);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            { ["ConnectionStrings:Queue"] = "Data Source=" + Path.Combine(_root, "queue.db") }).Build();
+        var queue = new DeezSpoTag.Services.Download.Queue.DownloadQueueRepository(config, NullLogger<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>.Instance);
+        typeof(DeezSpoTag.Services.Download.Queue.DownloadQueueRepository).GetField("_connectionString",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(queue, "Data Source=" + Path.Combine(_root, "queue.db"));
+        var dedupe = new DeezSpoTag.Services.Download.DownloadDedupeService(queue, Repository,
+            NullLogger<DeezSpoTag.Services.Download.DownloadDedupeService>.Instance, new DailyAmbiguityResolver());
+        using var client = new DeezSpoTag.Integrations.Deezer.DeezerClient(NullLogger<DeezSpoTag.Integrations.Deezer.DeezerClient>.Instance, session);
+        var day = new DateOnly(2026, 10, 9);
+        var tomorrow = day.AddDays(1);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        // Configuration A is published for today, so preparation targets tomorrow.
+        var deezerOnly = (int count) => new DailyRecommendationDiagnosticsDto(count, new Dictionary<string, int>(), new Dictionary<string, int>(),
+            new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), count, 0,
+            InitialSelectionPublished: true, PublishedTrackIds: Enumerable.Range(1, count).Select(n => n.ToString()).ToArray());
+        var todayPayload = JsonSerializer.Serialize(new
+        {
+            SeedScopeKey = id, GeneratedAtUtc = DateTimeOffset.UtcNow,
+            Tracks = Enumerable.Range(1, 60).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+                new("a" + n, "Artist " + n), new("b", "Album", ""), RecommendationOrigin: "deezer")).ToArray(),
+            TrackCount = 60, Allocations = new Dictionary<string, int> { ["shazam"] = 0, ["deezer"] = 60, ["spotify"] = 0, ["tidal"] = 0 },
+            AiFilterMode = DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated, Status = "ready",
+            Diagnostics = deezerOnly(60)
+        });
+        var todayKey = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(todayKey, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(todayKey, DailyPoolSource, id, $"v1:{day:yyyyMMdd}", todayPayload));
+        var clock = new FrozenClock(new DateTimeOffset(2026, 10, 9, 21, 0, 0, TimeSpan.Zero));
+        LibraryRecommendationService BuildService(TimeProvider serviceClock) => new(
+            new LibraryRecommendationService.LibraryRecommendationCollaborators
+                { Repository = Repository, Settings = settings, DeezerClient = client, DeezerGatewayService = gateway, DedupeService = dedupe },
+            new EnvironmentFixture(), NullLogger<LibraryRecommendationService>.Instance, timeProvider: serviceClock);
+        var service = BuildService(clock);
+        // 1) Real advance preparation runs the providers and stages tomorrow privately.
+        await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(90));
+        var prepared = (await Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id))!;
+        Assert.Equal($"v1:{tomorrow:yyyyMMdd}", prepared.SnapshotId);
+        using (var document = JsonDocument.Parse(prepared.CandidatesJson))
+        {
+            Assert.Equal(60, document.RootElement.GetProperty("TrackCount").GetInt32());
+            Assert.Equal(60, document.RootElement.GetProperty("Tracks").GetArrayLength());
+        }
+        Assert.True(httpState.MixRequests > 0, "Advance preparation must run the real provider path.");
+        // Preparation must not publish tomorrow: the public alias still serves today and the
+        // tomorrow row, if present, is still a private draft.
+        Assert.Equal($"v1:{day:yyyyMMdd}", (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.SnapshotId);
+        var draft = await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}");
+        if (draft is not null)
+        {
+            using var draftDocument = JsonDocument.Parse(draft.CandidatesJson);
+            Assert.Equal("draft", draftDocument.RootElement.GetProperty("Status").GetString());
+        }
+        // 2) Preferences change from 60 to 30: the stale progress is discarded and reprepared.
+        value.DailyRecommendations = new() { TrackCount = 30, ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerEnabled = true, DeezerTrackCount = 30, SpotifyEnabled = false, SpotifyTrackCount = 0,
+            TidalEnabled = false, TidalTrackCount = 0 };
+        settings.SaveSettings(value);
+        // The generation lease runs on the real clock; expire it so repreparation can start now.
+        await using (var lease = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + DatabasePath))
+        {
+            await lease.OpenAsync();
+            await using var leaseCommand = lease.CreateCommand();
+            leaseCommand.CommandText = "UPDATE recommendation_generation_state SET started_at_utc='1990-01-01T00:00:00Z' WHERE station_id=@station AND target_day=@day";
+            leaseCommand.Parameters.AddWithValue("station", id);
+            leaseCommand.Parameters.AddWithValue("day", tomorrow.ToString("yyyy-MM-dd"));
+            Assert.Equal(1, await leaseCommand.ExecuteNonQueryAsync());
+        }
+        var requestsAfterFirstPass = httpState.MixRequests;
+        await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(90));
+        var reprepared = (await Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id))!;
+        using (var document = JsonDocument.Parse(reprepared.CandidatesJson))
+        {
+            Assert.Equal(30, document.RootElement.GetProperty("TrackCount").GetInt32());
+            Assert.Equal(30, document.RootElement.GetProperty("Tracks").GetArrayLength());
+        }
+        Assert.True(httpState.MixRequests > requestsAfterFirstPass,
+            "Repreparation must regenerate with the latest configuration instead of restaging stale progress.");
+        // 3) Midnight: activation publishes the staged selection without any provider access.
+        var requestsBeforeActivation = httpState.MixRequests;
+        var nightService = BuildService(new FrozenClock(new DateTimeOffset(2026, 10, 10, 0, 30, 0, TimeSpan.Zero)));
+        await nightService.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+        Assert.Equal(requestsBeforeActivation, httpState.MixRequests);
+        Assert.Equal($"v1:{tomorrow:yyyyMMdd}", (await Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.SnapshotId);
+        var published = (await nightService.GetRecommendationsAsync(Folder.LibraryId!.Value, id))!;
+        Assert.Equal("ready", published.Status);
+        Assert.Equal(30, published.Tracks.Count);
+        Assert.Equal(30, published.Tracks.Count(track => track.RecommendationOrigin == "deezer"));
+    }
+
     private sealed class DailyAmbiguityResolver : ILocalTrackAmbiguityResolver
     {
         public Task<LibraryRepository.LocalTrackIdentityResult> ResolveAsync(LibraryRepository.LibraryExistenceInput input,
@@ -331,7 +748,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         var detail=new RecommendationDetailDto(new(id,"Music","","daily","Music",1),
             [new("1","Expired",180,"",1,new("a","Artist"),new("b","Album",""))],DateTimeOffset.UtcNow, SeedScopeKey: id);
         var task=(Task)type.GetMethod("PersistDailyPoolAsync",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!
-            .Invoke(service,[scope,day,detail,System.Threading.CancellationToken.None,false])!;
+            .Invoke(service,[scope,day,detail,System.Threading.CancellationToken.None,false,false])!;
         await task;
         var result=task.GetType().GetProperty("Result")!.GetValue(task)!;
         Assert.False((bool)result.GetType().GetProperty("Success")!.GetValue(result)!);
@@ -463,8 +880,8 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
 
     [Theory]
     [InlineData(12, "refilling")]
-    [InlineData(20, "waiting")]
-    [InlineData(23, "waiting")]
+    [InlineData(20, "refilling")]
+    [InlineData(23, "refilling")]
     public async Task DailyShortfallStaysPrivateAndPreservesSavedAiPolicy(int hour, string expectedStatus)
     {
         var clock = new ArtworkClock(hour);
@@ -529,8 +946,8 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
 
     [Theory]
     [InlineData(12, "generating")]
-    [InlineData(20, "waiting")]
-    [InlineData(23, "waiting")]
+    [InlineData(20, "generating")]
+    [InlineData(23, "generating")]
     public async Task InitialPartialSavedDailySelectionRemainsPrivateAfterRestart(int hour, string expectedStatus)
     {
         var clock = new ArtworkClock(hour);
@@ -670,6 +1087,12 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
     private sealed class ArtworkClock(int hour = 12) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(2026, 10, 9, hour, 0, 0, TimeSpan.Zero);
+        public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
+    }
+
+    private sealed class FrozenClock(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
         public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
     }
 

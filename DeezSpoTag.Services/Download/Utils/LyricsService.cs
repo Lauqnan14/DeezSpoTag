@@ -304,6 +304,17 @@ public class LyricsService
         Func<LyricsResolutionProgress, CancellationToken, ValueTask>? progress,
         CancellationToken cancellationToken = default)
     {
+        return await ResolveLyricsCoreAsync(track, settings, providerOptions, progress, cancellationToken,
+            TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(30));
+    }
+
+    private async Task<LyricsResolutionResult> ResolveLyricsCoreAsync(
+        Track track, DeezSpoTagSettings settings, LyricsProviderOptions? providerOptions,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? progress,
+        CancellationToken cancellationToken, TimeSpan totalBudget, TimeSpan providerBudget)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(totalBudget);
         var plan = DescribeResolutionPlan(settings);
         if (track == null)
         {
@@ -339,9 +350,11 @@ public class LyricsService
 
             foreach (var provider in FilterRoundProviders(round, state.ProvidersAttempted))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (deadline.IsCancellationRequested) break;
                 state.ProvidersAttempted.Add(provider);
                 await ReportProgressAsync(progress, "provider-started", provider, null, outputRequirements, state, null, false, cancellationToken);
-                var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
+                var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, deadline.Token, cancellationToken, providerBudget);
                 var providerOutcome = state.ProviderOutcomes.LastOrDefault(outcome =>
                     string.Equals(outcome.Provider, provider, StringComparison.OrdinalIgnoreCase));
                 if (providerLyrics == null || !providerLyrics.IsLoaded())
@@ -363,6 +376,14 @@ public class LyricsService
                     break;
                 }
             }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (deadline.IsCancellationRequested)
+        {
+            foreach (var unattempted in providers.Except(state.ProvidersAttempted, StringComparer.OrdinalIgnoreCase))
+                state.ProviderOutcomes.Add(new LyricsProviderOutcome(unattempted, "transient-failure",
+                    "Lyrics resolution deadline exceeded before this provider could be attempted."));
         }
 
         if (state.ResolvedLyrics?.IsLoaded() == true)
@@ -589,8 +610,14 @@ public class LyricsService
         DeezSpoTagSettings settings,
         LyricsProviderOptions? providerOptions,
         LyricsResolutionState state,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken callerToken,
+        TimeSpan providerBudget)
     {
+        using var providerDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        providerDeadline.CancelAfter(providerBudget);
+        cancellationToken = providerDeadline.Token;
+        var started = Stopwatch.GetTimestamp();
         try
         {
             var lyrics = await TryResolveProviderLyricsAsync(
@@ -599,7 +626,8 @@ public class LyricsService
                 settings,
                 providerOptions,
                 state,
-                cancellationToken);
+                cancellationToken, callerToken);
+            callerToken.ThrowIfCancellationRequested();
             if (lyrics != null)
             {
                 lyrics.ProviderId = provider;
@@ -611,7 +639,7 @@ public class LyricsService
                 lyrics?.ErrorMessage));
             return lyrics;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
             throw;
         }
@@ -641,6 +669,11 @@ public class LyricsService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
             return null;
         }
+        finally
+        {
+            _logger.LogInformation("Lyrics provider {Provider} finished in {ElapsedMs} ms (budget {BudgetMs} ms).",
+                provider, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, (long)providerBudget.TotalMilliseconds);
+        }
     }
 
     private static string ClassifyProviderOutcome(
@@ -648,12 +681,13 @@ public class LyricsService
         LyricsBase? lyrics,
         LyricsResolutionState state)
     {
+        var error = lyrics?.ErrorMessage ?? string.Empty;
+        if (error.Contains("deadline", StringComparison.OrdinalIgnoreCase)) return "transient-failure";
         if (lyrics?.IsLoaded() == true)
         {
             return "resolved";
         }
 
-        var error = lyrics?.ErrorMessage ?? string.Empty;
         if (error.Contains("identity rejected", StringComparison.OrdinalIgnoreCase))
         {
             return "identity-rejected";
@@ -880,7 +914,7 @@ public class LyricsService
         DeezSpoTagSettings settings,
         LyricsProviderOptions? providerOptions,
         LyricsResolutionState state,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, CancellationToken? callerToken = null)
     {
         return provider switch
         {
@@ -888,7 +922,7 @@ public class LyricsService
                 AppleProvider,
                 track,
                 settings,
-                () => ResolveAppleProviderLyricsAsync(track, settings, cancellationToken)),
+                () => ResolveAppleProviderLyricsAsync(track, settings, cancellationToken, callerToken)),
             DeezerProvider => await ResolveCachedProviderLyricsAsync(
                 DeezerProvider,
                 track,
@@ -1321,7 +1355,7 @@ public class LyricsService
     private async Task<LyricsBase?> ResolveAppleProviderLyricsAsync(
         Track track,
         DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, CancellationToken? callerToken = null)
     {
         var appleId = ResolveAppleLyricsTrackId(track);
         if (string.IsNullOrWhiteSpace(appleId))
@@ -1332,7 +1366,7 @@ public class LyricsService
         LyricsBase? appleLyrics = null;
         try
         {
-            appleLyrics = await _appleLyricsService.ResolveLyricsAsync(appleId, settings, cancellationToken);
+            appleLyrics = await _appleLyricsService.ResolveLyricsAsync(appleId, settings, cancellationToken, callerToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1354,7 +1388,16 @@ public class LyricsService
             return appleLyrics;
         }
 
-        var fallbackLyrics = await ResolvePaxsenixAppleLyricsByIdAsync(track, settings, cancellationToken);
+        LyricsBase? fallbackLyrics;
+        try
+        {
+            fallbackLyrics = await ResolvePaxsenixAppleLyricsByIdAsync(track, settings, cancellationToken);
+        }
+        catch (OperationCanceledException) when (appleLyrics?.IsLoaded() == true && !(callerToken ?? cancellationToken).IsCancellationRequested)
+        {
+            appleLyrics.SetErrorMessage("Apple lyrics lookup deadline exceeded; partial lyrics retained.");
+            return appleLyrics;
+        }
         if (fallbackLyrics?.IsLoaded() == true)
         {
             if (appleLyrics?.IsLoaded() == true)
@@ -1830,6 +1873,9 @@ public class LyricsService
         }
 
         var lyrics = await resolver();
+        // Retain partial content for this run, but do not cache an operational failure as
+        // verified success (or negative availability) for subsequent downloads.
+        if (lyrics?.ErrorMessage?.Contains("deadline", StringComparison.OrdinalIgnoreCase) == true) return lyrics;
         if (lyrics?.IsLoaded() == true)
         {
             var expiresAt = DateTimeOffset.UtcNow.Add(ProviderResultCacheLifetime);

@@ -8,6 +8,36 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LyricsSidecarTimingBadgesTest
 {
+    [Fact]
+    public async System.Threading.Tasks.Task QueueFinalizationDisplaysTheActualStageAndElapsedTime()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root != null && !File.Exists(Path.Join(root.FullName, "DeezSpoTag.Web/Views/Activities/Index.cshtml"))) root = root.Parent;
+        Assert.NotNull(root);
+        var source = File.ReadAllText(Path.Join(root!.FullName, "DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        var start = source.IndexOf("function getDownloadFinalizationActivity(", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        var end = source.IndexOf("\nfunction ", start + 1, StringComparison.Ordinal);
+        var function = source[start..end];
+        var script = "const assert=require('node:assert/strict');" + function + """
+            const task={status:'running',audioAcquired:true,finalizationStage:'lyrics-prefetch',finalizationElapsedMs:65000};
+            assert.equal(getDownloadFinalizationActivity(task),'Waiting for lyrics (65s)');
+            assert.equal(getDownloadFinalizationActivity({...task,finalizationStage:'artwork-prefetch'}),'Waiting for artwork (65s)');
+            assert.equal(getDownloadFinalizationActivity({...task,finalizationStage:'artwork_prefetch'}),'Waiting for artwork (65s)');
+            assert.equal(getDownloadFinalizationActivity({...task,finalizationStage:'tag_writing'}),'Writing tags (65s)');
+            assert.equal(getDownloadFinalizationActivity({...task,finalizationStage:'tag-writing'}),'Writing tags (65s)');
+            assert.equal(getDownloadFinalizationActivity({...task,status:'complete'}),'');
+            assert.equal(getDownloadFinalizationActivity({...task,audioAcquired:false}),'');
+            assert.equal(getDownloadFinalizationActivity({...task,finalizationElapsedMs:-1}),'Waiting for lyrics (0s)');
+            """;
+        var startInfo = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        startInfo.ArgumentList.Add("-e"); startInfo.ArgumentList.Add(script);
+        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
     [Theory]
     [InlineData("[ti:Title]", LrcTimingKind.None)]
     [InlineData("[00:01.20]Hello", LrcTimingKind.Line)]

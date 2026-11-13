@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -7,6 +8,7 @@ using DeezSpoTag.Services.Runtime;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -38,11 +40,11 @@ public sealed class RecommendationSchedulingTest
             DateOnly.Parse(day).AddDays(1),TimeOnly.MinValue,TimeZoneInfo.FindSystemTimeZoneById(zone)));
 
     [Theory]
-    [InlineData(19,59,true)]
-    [InlineData(20,0,false)]
-    [InlineData(21,0,false)]
-    [InlineData(23,0,false)]
-    [InlineData(0,0,true)]
+    [InlineData(19, 59, true)]
+    [InlineData(20, 0, false)]
+    [InlineData(21, 0, false)]
+    [InlineData(23, 0, false)]
+    [InlineData(0, 0, true)]
     public async Task AutomaticServiceSkipsLateGenerationButManualRebuildRemainsAvailable(int hour,int minute,bool automatic)
     {
         var fixture=new RecommendationCacheServingTest();await fixture.InitializeAsync();
@@ -57,7 +59,8 @@ public sealed class RecommendationSchedulingTest
             if (!automatic)
             {
                 var response=(await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value,station))!;
-                Assert.Equal("waiting",response.Status);Assert.Empty(response.Tracks);Assert.Contains("20:00",response.Message!);
+                Assert.Equal("generating",response.Status);Assert.Empty(response.Tracks);
+                Assert.Contains("being prepared and will be published",response.Message!);
                 await service.RebuildRecommendationsAsync(fixture.Folder.LibraryId.Value,station);
                 Assert.NotNull(await fixture.Repository.GetRecommendationGenerationStateAsync(fixture.Folder.LibraryId.Value,fixture.Folder.Id,station,day));
             }
@@ -238,15 +241,23 @@ public sealed class RecommendationSchedulingTest
     }
 
     [Theory]
-    [InlineData("2026-10-04T23:59:00+03:00", 60)]
-    [InlineData("2026-10-05T00:00:00+03:00", 300)]
-    [InlineData("2026-10-06T23:58:00+03:00", 120)]
-    public void WakeupHonoursLocalMidnight(string now, int seconds)
+    [InlineData("2026-10-24T16:59:00Z", "2026-10-24T20:00:00Z")]
+    [InlineData("2026-10-24T20:00:00Z", "2026-10-25T00:00:00Z")]
+    [InlineData("2026-10-24T20:59:00Z", "2026-10-25T00:00:00Z")]
+    public void ScheduleBoundaryTargetsPreparationStartOrLocalMidnight(string now, string expected)
     {
-        var method = typeof(LibraryRecommendationAutomationHostedService).GetMethod("GetReconciliationDelay", BindingFlags.NonPublic | BindingFlags.Static);
+        var method = typeof(LibraryRecommendationAutomationHostedService).GetMethod("NextScheduleBoundaryUtc", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
-        Assert.Equal(TimeSpan.FromSeconds(seconds), method.Invoke(null, [DateTimeOffset.Parse(now)]));
+        Assert.Equal(DateTimeOffset.Parse(expected), method.Invoke(null, [DateTimeOffset.Parse(now)])!);
     }
+
+    [Theory]
+    [InlineData("America/New_York", "2026-03-08", "2026-03-09T00:00:00Z")]
+    [InlineData("America/New_York", "2026-11-01", "2026-11-02T01:00:00Z")]
+    [InlineData("Africa/Nairobi", "2026-10-24", "2026-10-24T17:00:00Z")]
+    public void PreparationBoundaryUsesLocalTwentyOclockAcrossDaylightSavingChanges(string zone, string day, string expected)
+        => Assert.Equal(DateTimeOffset.Parse(expected), LibraryRecommendationService.DailyPreparationBoundaryUtc(
+            DateOnly.Parse(day), TimeZoneInfo.FindSystemTimeZoneById(zone)));
 
     [Fact]
     public async Task DailyBarrierIsPersistedAndSurvivesServiceRestart()
@@ -322,6 +333,13 @@ public sealed class RecommendationSchedulingTest
             else await fixture.Repository.CompleteRecommendationGenerationAsync(first);
             var service = fixture.Service(clock);
             await service.ReconcileRecommendationGenerationAsync(clock.GetLocalNow(), CancellationToken.None);
+            // Daily publication runs on its own schedule: an unpublished day is recovered once.
+            if (!await service.AreDailyRecommendationsCompleteAsync(today, CancellationToken.None))
+            {
+                Assert.True(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+                await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+                await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            }
             Assert.True(await service.AreDailyRecommendationsCompleteAsync(monday, CancellationToken.None));
             var firstState = (await fixture.Repository.GetRecommendationGenerationStateAsync(first.LibraryId, first.FolderId, firstId, monday))!;
             var secondState = (await fixture.Repository.GetRecommendationGenerationStateAsync(first.LibraryId, first.FolderId, secondId, monday))!;
@@ -393,6 +411,221 @@ public sealed class RecommendationSchedulingTest
             Assert.True(await fixture.Service().AreDailyRecommendationsCompleteAsync(RecommendationCacheServingTest.Monday, CancellationToken.None));
             await fixture.Service().RefreshWeeklyRecommendationsForWeekAsync(RecommendationCacheServingTest.Monday, "scheduled", CancellationToken.None);
             Assert.Null(await fixture.Repository.GetRecommendationGenerationStateAsync(fixture.Folder.LibraryId!.Value, fixture.Folder.Id, $"weekly-rotation:l{fixture.Folder.LibraryId}:f{fixture.Folder.Id}:{LibraryRecommendationService.WeeklyMissingType}", RecommendationCacheServingTest.Monday));
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    private const string DailyPoolSource = "recommendations-daily-pool";
+
+    private static IReadOnlyList<RecommendationTrackDto> DailyRows(int count)
+        => Enumerable.Range(1, count).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+            new("a" + n, "Artist " + n), new("b" + n, "Album", ""),
+            RecommendationOrigin: n <= 15 ? "shazam" : n <= 30 ? "deezer" : n <= 45 ? "spotify" : "tidal")).ToArray();
+
+    /// <summary>
+    ///     A complete frozen selection payload in the default 60/15x4 configuration, so the
+    ///     prepared-data fingerprint matches the fixture's default settings.
+    /// </summary>
+    private static string FrozenPayload(string id, DateTimeOffset generated, int count = 60)
+    {
+        var rows = DailyRows(count);
+        return System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SeedScopeKey = id,
+            GeneratedAtUtc = generated,
+            Tracks = rows,
+            TrackCount = count,
+            Allocations = new Dictionary<string, int> { ["shazam"] = 15, ["deezer"] = 15, ["spotify"] = 15, ["tidal"] = 15 },
+            AiFilterMode = DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated,
+            Status = "ready",
+            Diagnostics = new DailyRecommendationDiagnosticsDto(count, new Dictionary<string, int>(), new Dictionary<string, int>(),
+                new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), count, 0,
+                InitialSelectionPublished: true, PublishedTrackIds: rows.Select(track => track.Id).ToArray())
+        });
+    }
+
+    private static string StationId(RecommendationCacheServingTest fixture)
+        => $"daily-rotation:l{fixture.Folder.LibraryId}:f{fixture.Folder.Id}";
+
+    [Fact]
+    public async Task PreparationStagesTomorrowPrivatelyAndMidnightPublishesItWithoutProviderCalls()
+    {
+        var fixture = new RecommendationCacheServingTest(); await fixture.InitializeAsync();
+        try
+        {
+            var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-24T16:59:00Z")); // 19:59 in Nairobi
+            var service = fixture.Service(clock);
+            var day = new DateOnly(2026, 10, 24);
+            var tomorrow = day.AddDays(1);
+            var id = StationId(fixture);
+            var key = new RecommendationGenerationStateKey(fixture.Folder.LibraryId!.Value, fixture.Folder.Id, id, day);
+            Assert.True(await fixture.Repository.TryStartRecommendationGenerationAsync(key, "test"));
+            Assert.True(await fixture.Repository.PublishRecommendationSnapshotAsync(key, DailyPoolSource, id,
+                $"v1:{day:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow())));
+            var aliasBefore = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+            // 19:59: nothing is due and no preparation runs.
+            Assert.False(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+            await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            Assert.Null(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            // A complete generation result for tomorrow exists (persisted preparation progress).
+            await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}",
+                $"v1:{tomorrow:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow()), 0, null, null, true);
+            // 20:00: preparation is due and stages tomorrow privately.
+            clock.Advance(TimeSpan.FromMinutes(1));
+            Assert.True(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+            await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            var prepared = await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id);
+            Assert.NotNull(prepared);
+            Assert.Equal($"v1:{tomorrow:yyyyMMdd}", prepared!.SnapshotId);
+            Assert.Equal(aliasBefore.CandidatesJson, (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+            // 23:59: prepared data is still invisible; today's frozen list is served unchanged.
+            clock.Advance(TimeSpan.FromHours(3) + TimeSpan.FromMinutes(59));
+            var evening = (await service.GetRecommendationsAsync(fixture.Folder.LibraryId!.Value, id))!;
+            Assert.Equal("ready", evening.Status);
+            Assert.Equal(60, evening.Tracks.Count);
+            Assert.Equal(aliasBefore.CandidatesJson, (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+            // Midnight: the lightweight publication activates the prepared selection. The fixture
+            // wires no provider clients, so any provider access would fail this test.
+            clock.Advance(TimeSpan.FromMinutes(1));
+            Assert.Equal(DateOnly.Parse("2026-10-25"), DateOnly.FromDateTime(clock.GetLocalNow().DateTime));
+            await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            var published = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+            Assert.Equal($"v1:{tomorrow:yyyyMMdd}", published.SnapshotId);
+            Assert.Null(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            var next = (await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value, id))!;
+            Assert.Equal("ready", next.Status);
+            Assert.Equal(60, next.Tracks.Count);
+            using (var preparedDocument = System.Text.Json.JsonDocument.Parse(prepared.CandidatesJson))
+            {
+                var preparedIds = preparedDocument.RootElement.GetProperty("Diagnostics").GetProperty("PublishedTrackIds")
+                    .EnumerateArray().Select(value => value.GetString()!).ToArray();
+                Assert.Equal(preparedIds, next.Tracks.Select(track => track.Id));
+            }
+            Assert.Equal("completed", (await fixture.Repository.GetRecommendationGenerationStateAsync(
+                fixture.Folder.LibraryId.Value, fixture.Folder.Id, id, tomorrow))!.Status);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task IncompletePreparationPublishesExactlyOnceWhenReadyAndStaysFrozenAllDay()
+    {
+        var fixture = new RecommendationCacheServingTest(); await fixture.InitializeAsync();
+        try
+        {
+            var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-24T21:15:00Z")); // 00:15 in Nairobi on 2026-10-25
+            var service = fixture.Service(clock);
+            var today = new DateOnly(2026, 10, 25);
+            var id = StationId(fixture);
+            // Nothing was published for today: the late-ready schedule must prepare today itself.
+            Assert.True(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+            await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            Assert.Null(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            // Preparation completes during the day; the complete result becomes ready.
+            await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{today:yyyyMMdd}",
+                $"v1:{today:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow()), 0, null, null, true);
+            Assert.True(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+            await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            Assert.NotNull(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            var published = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+            var dated = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{today:yyyyMMdd}"))!;
+            Assert.Equal($"v1:{today:yyyyMMdd}", published.SnapshotId);
+            Assert.Equal("completed", (await fixture.Repository.GetRecommendationGenerationStateAsync(
+                fixture.Folder.LibraryId!.Value, fixture.Folder.Id, id, today))!.Status);
+            Assert.Equal(1, (await fixture.Repository.GetRecommendationGenerationStateAsync(
+                fixture.Folder.LibraryId.Value, fixture.Folder.Id, id, today))!.AttemptCount);
+            // The publication is idempotent: repeated signals never publish or rewrite again.
+            await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            Assert.Equal(published.CandidatesJson, (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+            Assert.Null(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            // Noon: the old five-minute maintenance equivalents must not mutate the published day.
+            clock.Advance(TimeSpan.FromHours(11) + TimeSpan.FromMinutes(45));
+            await service.ReconcileRecommendationGenerationAsync(clock.GetLocalNow(), CancellationToken.None);
+            Assert.False(await service.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+            await service.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            await service.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            Assert.Equal(published.CandidatesJson, (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!.CandidatesJson);
+            Assert.Equal(dated.CandidatesJson, (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{today:yyyyMMdd}"))!.CandidatesJson);
+            var noon = (await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value, id))!;
+            Assert.Equal("ready", noon.Status);
+            Assert.Equal(60, noon.Tracks.Count);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task RestartedServicePublishesStagedPreparedSelectionAfterMidnight()
+    {
+        var fixture = new RecommendationCacheServingTest(); await fixture.InitializeAsync();
+        try
+        {
+            var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-24T17:00:00Z")); // 20:00 in Nairobi
+            var first = fixture.Service(clock);
+            var day = new DateOnly(2026, 10, 24);
+            var tomorrow = day.AddDays(1);
+            var id = StationId(fixture);
+            var key = new RecommendationGenerationStateKey(fixture.Folder.LibraryId!.Value, fixture.Folder.Id, id, day);
+            Assert.True(await fixture.Repository.TryStartRecommendationGenerationAsync(key, "test"));
+            Assert.True(await fixture.Repository.PublishRecommendationSnapshotAsync(key, DailyPoolSource, id,
+                $"v1:{day:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow())));
+            await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolSource, id + $":day:{tomorrow:yyyyMMdd}",
+                $"v1:{tomorrow:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow()), 0, null, null, true);
+            await first.PreparePendingDailyRecommendationsAsync(CancellationToken.None);
+            Assert.NotNull(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            // The process restarts before midnight; a fresh service instance sees the same persisted state.
+            clock.Advance(TimeSpan.FromHours(7)); // 00:00 on 2026-10-25
+            var restarted = fixture.Service(clock);
+            await restarted.ActivateReadyDailyRecommendationsAsync(CancellationToken.None);
+            var published = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+            Assert.Equal($"v1:{tomorrow:yyyyMMdd}", published.SnapshotId);
+            Assert.Null(await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id));
+            Assert.Equal("completed", (await fixture.Repository.GetRecommendationGenerationStateAsync(
+                fixture.Folder.LibraryId!.Value, fixture.Folder.Id, id, tomorrow))!.Status);
+            Assert.False(await restarted.IsDailyPreparationDueAsync(clock.GetLocalNow(), CancellationToken.None));
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task MidnightPublicationExecutesWhileTheHeavyWorkGateIsHeld()
+    {
+        var fixture = new RecommendationCacheServingTest(); await fixture.InitializeAsync();
+        try
+        {
+            var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-24T21:00:00Z")); // 00:00 in Nairobi on 2026-10-25
+            var today = new DateOnly(2026, 10, 25);
+            var id = StationId(fixture);
+            // A prepared selection waits for its publication.
+            await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync(LibraryRepository.PreparedDailyPoolSource, id,
+                $"v1:{today:yyyyMMdd}", FrozenPayload(id, clock.GetUtcNow()), 0, null, null, true);
+            var coordinator = new BackgroundWorkCoordinator(clock);
+            var blocker = coordinator.RunHeavyWorkAsync(_ => new TaskCompletionSource().Task, CancellationToken.None);
+            var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["BackgroundAutomation:LibraryRecommendations:Enabled"] = "true" })
+                .Build();
+            var worker = new LibraryRecommendationAutomationHostedService(fixture.Service(clock), coordinator, configuration,
+                NullLogger<LibraryRecommendationAutomationHostedService>.Instance, clock);
+            using var stopping = new CancellationTokenSource();
+            await worker.StartAsync(stopping.Token);
+            try
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(15);
+                while (DateTime.UtcNow < deadline)
+                {
+                    var alias = await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id);
+                    if (alias?.SnapshotId == $"v1:{today:yyyyMMdd}") break;
+                    await Task.Delay(50);
+                }
+                var published = (await fixture.Repository.GetPlaylistTrackCandidateCacheAsync(DailyPoolSource, id))!;
+                Assert.Equal($"v1:{today:yyyyMMdd}", published.SnapshotId);
+                Assert.False(blocker.IsCompleted, "The heavy work gate must still be held while publication executed.");
+            }
+            finally
+            {
+                stopping.Cancel();
+                await worker.StopAsync(stopping.Token);
+            }
         }
         finally { await fixture.DisposeAsync(); }
     }

@@ -225,6 +225,12 @@ public static partial class EngineAudioPostDownloadHelper
 
         public TaskCompletionSource<PrefetchCompletionResult> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<PrefetchCompletionResult> ArtworkCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource LyricsCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private sealed record PrefetchExecutionContext(
@@ -1423,6 +1429,7 @@ public static partial class EngineAudioPostDownloadHelper
         PostDownloadSettingsRequest request,
         CancellationToken cancellationToken = default)
     {
+        await ReportFinalizationStageAsync(request, DownloadFinalizationStage.ArtworkPrefetch, cancellationToken);
         RequiredArtworkResult requiredArtwork;
         try
         {
@@ -1466,7 +1473,14 @@ public static partial class EngineAudioPostDownloadHelper
             ApplyRequiredEmbeddedArtworkPath(request, requiredArtwork.PrimaryArtworkPath);
         }
 
+        if (request.Settings.Tags is { } tags && (tags.Lyrics || tags.SyncedLyrics)
+            && PrefetchGates.TryGetValue(request.QueueUuid, out var lyricsGate))
+        {
+            await ReportFinalizationStageAsync(request, "lyrics-prefetch", cancellationToken);
+            await lyricsGate.LyricsCompletion.Task.WaitAsync(cancellationToken);
+        }
         EnsureLyricsForTagging(request);
+        await ReportFinalizationStageAsync(request, DownloadFinalizationStage.TagWriting, cancellationToken);
 
         try
         {
@@ -1504,8 +1518,27 @@ public static partial class EngineAudioPostDownloadHelper
                 ex);
         }
 
+        if (PrefetchGates.TryGetValue(request.QueueUuid, out var remainingGate) && !remainingGate.Completion.Task.IsCompleted)
+            await ReportFinalizationStageAsync(request, "sidecar-prefetch", cancellationToken);
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
         return request.OutputPath;
+    }
+
+    private static async Task ReportFinalizationStageAsync(
+        PostDownloadSettingsRequest request, string stage, CancellationToken cancellationToken)
+    {
+        request.Payload.FinalizationStage = stage;
+        var elapsed = request.Payload.AcquisitionStageUpdatedUtc is { } started
+            ? Math.Max(0, (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds) : 0;
+        request.Logger.LogInformation("Download {QueueUuid} finalization stage {Stage}, elapsed {ElapsedMs} ms.",
+            request.QueueUuid, stage, elapsed);
+        var repository = request.Scope.GetService<DownloadQueueRepository>();
+        if (repository != null)
+            await QueueHelperUtils.UpdatePayloadAsync(repository, request.QueueUuid, request.Payload, cancellationToken);
+        request.Scope.GetService<IDeezSpoTagListener>()?.Send("updateQueue", new
+        {
+            uuid = request.QueueUuid, audioAcquired = request.Payload.AudioAcquired, finalizationStage = stage, finalizationElapsedMs = elapsed
+        });
     }
 
     private static string ResolveArtworkProvider(string? artworkUrl)
@@ -1993,10 +2026,10 @@ public static partial class EngineAudioPostDownloadHelper
                     "{Engine} prefetch scheduler is saturated for {QueueUuid}; audio acquisition will continue and finalization will retry sidecars.",
                     request.Engine,
                     prefetchPaths.QueueUuid);
-                gateState.Completion.TrySetResult(new PrefetchCompletionResult(
-                    false,
-                    "Sidecar prefetch is waiting for scheduler capacity.",
-                    null));
+                var unavailable = new PrefetchCompletionResult(false, "Sidecar prefetch is waiting for scheduler capacity.", null);
+                gateState.ArtworkCompletion.TrySetResult(unavailable);
+                gateState.LyricsCompletion.TrySetResult();
+                gateState.Completion.TrySetResult(unavailable);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2036,10 +2069,10 @@ public static partial class EngineAudioPostDownloadHelper
                     CancellationToken.None);
                 QueueLyricsArtifactHelper.Send(request.Listener, prefetchPaths.QueueUuid, lyricsArtifacts);
             }
-            gateState.Completion.TrySetResult(new PrefetchCompletionResult(
-                false,
-                "Artwork prefetch could not be scheduled.",
-                null));
+            var unavailable = new PrefetchCompletionResult(false, "Artwork prefetch could not be scheduled.", null);
+            gateState.ArtworkCompletion.TrySetResult(unavailable);
+            gateState.LyricsCompletion.TrySetResult();
+            gateState.Completion.TrySetResult(unavailable);
             return;
         }
     }
@@ -2131,6 +2164,8 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
+            execution.GateState.ArtworkCompletion.TrySetResult(completionResult);
+            execution.GateState.LyricsCompletion.TrySetResult();
             execution.GateState.Completion.TrySetResult(completionResult);
         }
     }
@@ -2163,6 +2198,7 @@ public static partial class EngineAudioPostDownloadHelper
     {
         if (!execution.Requirements.ShouldFetchArtwork)
         {
+            execution.GateState.ArtworkCompletion.TrySetResult(new PrefetchCompletionResult(true, null, null));
             return Task.CompletedTask;
         }
 
@@ -2184,10 +2220,12 @@ public static partial class EngineAudioPostDownloadHelper
     {
         if (!execution.Requirements.ShouldFetchLyrics)
         {
+            execution.GateState.LyricsCompletion.TrySetResult();
             return Task.CompletedTask;
         }
         if (string.Equals(runState.LyricsArtifacts.Status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
+            execution.GateState.LyricsCompletion.TrySetResult();
             return Task.CompletedTask;
         }
 
@@ -2236,6 +2274,7 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
+            execution.GateState.ArtworkCompletion.TrySetResult(BuildPrefetchCompletionResult(runState));
             await PersistPrefetchProgressAsync(execution, runState, CancellationToken.None);
             ArtworkPrefetchStatusHelper.Send(
                 execution.Request.Listener,
@@ -2291,6 +2330,7 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
+            execution.GateState.LyricsCompletion.TrySetResult();
             await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
                 execution.Paths.QueueUuid,
                 runState.LyricsArtifacts,
@@ -3159,21 +3199,18 @@ public static partial class EngineAudioPostDownloadHelper
             return new RequiredArtworkResult(null, null);
         }
 
-        PrefetchCompletionResult result;
-        try
-        {
-            result = await gateState.Completion.Task.WaitAsync(cancellationToken);
-        }
-        finally
-        {
-            TryRemovePrefetchState(queueUuid, gateState);
-        }
+        // Keep the shared gate until all sidecars finish; readiness is not whole-item completion.
+        var result = await gateState.ArtworkCompletion.Task.WaitAsync(cancellationToken);
 
         if (result.ArtworkReady)
         {
             return new RequiredArtworkResult(null, result.PrimaryArtworkPath);
         }
 
+        // An unsuccessful gate must not be reused forever on finalization retries. Let
+        // any lyrics writes settle before releasing it so the next pass cannot race them.
+        try { await gateState.Completion.Task.WaitAsync(cancellationToken); }
+        finally { if (gateState.Completion.Task.IsCompleted) TryRemovePrefetchState(queueUuid, gateState); }
         return new RequiredArtworkResult(
             string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
                 ? "Artwork prefetch did not complete successfully."
@@ -3197,7 +3234,7 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
-            TryRemovePrefetchState(queueUuid, gateState);
+            if (gateState.Completion.Task.IsCompleted) TryRemovePrefetchState(queueUuid, gateState);
         }
     }
 
