@@ -61,6 +61,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.LrcType, (v) => settings.LrcType = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcFormat),
                 () => settings.LrcFormat, (v) => settings.LrcFormat = v);
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LyricsTypeOrder),
+                () => settings.LyricsTypeOrder, (v) => settings.LyricsTypeOrder = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcTimingPreference),
                 () => settings.LrcTimingPreference, (v) => settings.LrcTimingPreference = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertFormat),
@@ -573,6 +575,7 @@ public class DeezSpoTagSettingsValidator
             AuthorizationToken = "",
             LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
             LrcFormat = "richlyrics",
+            LyricsTypeOrder = "ttml-lyrics,syllable-lyrics,lyrics",
             LrcTimingPreference = LrcTimingModes.PreferEnhanced,
             SaveAnimatedArtwork = true,
             SaveSquareAnimatedArtwork = true,

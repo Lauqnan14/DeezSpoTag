@@ -1966,6 +1966,32 @@
                                         <label for="lyrics-type-unsynced">Unsynced lyrics</label>
                                     </div>
                                 </div>
+                                <div class="dropdown-select lyrics-order-dropdown lyrics-type-order-dropdown" id="lyricsTypeOrderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="lyricsTypeOrderTrigger">TTML lyrics → Enhanced lyrics (word-synced .lrc) → Synced lyrics (line-synced .lrc)</button>
+                                    <div class="dropdown-menu lyrics-order-menu" id="lyricsTypeOrderMenu">
+                                        <div class="lyrics-order-hint">Drag to reorder. Lookup tries the first type first.</div>
+                                        <ul class="lyrics-order-list" id="lyricsTypeOrderList">
+                                            <li class="lyrics-type-order-item lyrics-order-item" draggable="true" tabindex="0" data-value="ttml-lyrics">
+                                                <span>TTML lyrics</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-type-order-item lyrics-order-item" draggable="true" tabindex="0" data-value="syllable-lyrics">
+                                                <span>Enhanced lyrics (word-synced .lrc)</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-type-order-item lyrics-order-item" draggable="true" tabindex="0" data-value="lyrics">
+                                                <span>Synced lyrics (line-synced .lrc)</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-type-order-item lyrics-type-order-item-plain lyrics-order-item" draggable="false" data-value="unsynced-lyrics">
+                                                <span>Unsynced lyrics (always last)</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">block</span>
+                                            </li>
+                                        </ul>
+                                        <div class="lyrics-order-hint">Unsynced lyrics are looked up last, only when enabled and no usable requested rich lyrics were obtained. Disabled types are dimmed and never looked up, but keep their saved position and can still be arranged.</div>
+                                    </div>
+                                    <input type="hidden" id="lyricsTypeOrder" value="ttml-lyrics,syllable-lyrics,lyrics" />
+                                </div>
                                 <input type="hidden" id="lrcType" value="lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics" />
                             </div>
                             <div class="form-group" id="embedLyricsFormatGroup" style="display: none;">

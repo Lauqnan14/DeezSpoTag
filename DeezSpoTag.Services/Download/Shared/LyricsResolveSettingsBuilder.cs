@@ -23,6 +23,7 @@ internal static class LyricsResolveSettingsBuilder
                 allowsUnsyncedBySettings,
                 settings.LrcType),
             LrcFormat = settings.LrcFormat,
+            LyricsTypeOrder = LyricsSettingsPolicy.NormalizeLyricsTypeOrder(settings.LyricsTypeOrder),
             SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
             SynthesizeTtmlFromLrc = settings.SynthesizeTtmlFromLrc,
             PreferEnhancedLrc = settings.PreferEnhancedLrc,

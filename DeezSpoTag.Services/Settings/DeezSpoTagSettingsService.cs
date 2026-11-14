@@ -1277,6 +1277,13 @@ public class DeezSpoTagSettingsService : ISettingsService
             fixes,
             nameof(settings.LrcType));
 
+        NormalizeLyricsSetting(
+            settings.LyricsTypeOrder,
+            DeezSpoTag.Services.Download.Shared.LyricsSettingsPolicy.NormalizeLyricsTypeOrder,
+            normalized => settings.LyricsTypeOrder = normalized,
+            fixes,
+            nameof(settings.LyricsTypeOrder));
+
         if (settings.LyricsFormatSchemaVersion < 1)
         {
             var preferred = LyricsFormatSelectionImpliesEnhanced(settings.LrcFormat);

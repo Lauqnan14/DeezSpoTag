@@ -127,12 +127,28 @@ public sealed class LyricsResolutionBudgetTest
             AppleMusic = new AppleMusicSettings { PublicLyricsApiUrl = "https://apple.test/lyrics" }
         };
 
+    private static DeezSpoTagSettings CreateLineFirstSettings()
+        => new()
+        {
+            SyncedLyrics = true, SaveLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LrcFormat = "lrc",
+            LyricsTypeOrder = "lyrics,syllable-lyrics,ttml-lyrics",
+            LyricsFallbackEnabled = true,
+            LyricsFallbackOrder = "apple,lrclib",
+            AppleMusic = new AppleMusicSettings { PublicLyricsApiUrl = "https://apple.test/lyrics" }
+        };
+
     private static async Task<LyricsResolutionResult> ResolveAsync(LyricsService service, TimeSpan totalBudget, TimeSpan providerBudget)
+        => await ResolveAsync(service, CreateSettings(), totalBudget, providerBudget);
+
+    private static async Task<LyricsResolutionResult> ResolveAsync(
+        LyricsService service, DeezSpoTagSettings settings, TimeSpan totalBudget, TimeSpan providerBudget)
     {
         var method = typeof(LyricsService).GetMethod("ResolveLyricsCoreAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         return await ((Task<LyricsResolutionResult>)method.Invoke(service,
-            [CreateTrack(), CreateSettings(), (LyricsProviderOptions?)null,
+            [CreateTrack(), settings, (LyricsProviderOptions?)null,
                 (Func<LyricsResolutionProgress, CancellationToken, ValueTask>?)null,
                 CancellationToken.None, totalBudget, providerBudget])!);
     }
@@ -217,6 +233,38 @@ public sealed class LyricsResolutionBudgetTest
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ResolveLyricsWithDetailsAsync(
                 CreateTrack(), CreateSettings(), null, null, cts.Token));
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task ReorderedLineFirstRound_TimesOutStalledTtmlProviderAndRetainsLineResult()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("lyrics-budget-line-first-").FullName;
+        try
+        {
+            var (service, handler) = CreateService(directory);
+            handler.AppleDelay = TimeSpan.FromSeconds(30);
+            var lineFirstWithLrclibFirst = CreateLineFirstSettings();
+            lineFirstWithLrclibFirst.LyricsFallbackOrder = "lrclib,apple";
+
+            var started = DateTimeOffset.UtcNow;
+            var result = await ResolveAsync(service, lineFirstWithLrclibFirst, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(600));
+
+            Assert.True(DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(8),
+                "A stalled provider in a later round must not consume the whole resolution budget.");
+
+            // Line-first with lrclib configured first: the line round resolves at lrclib
+            // immediately, and the reordered TTML round then stalls apple on its own
+            // budget. The successful line result is retained as a usable partial.
+            Assert.Equal("lrclib", result.ProvidersAttempted[0]);
+            Assert.Equal("apple", result.ProvidersAttempted[^1]);
+            Assert.True(result.Lyrics?.CanSaveLrcSidecar() == true,
+                "The resolved line-synced lyrics must survive the stalled source.");
+            var appleOutcome = result.ProviderOutcomes?.FirstOrDefault(o =>
+                string.Equals(o.Provider, "apple", StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(appleOutcome);
+            Assert.True(appleOutcome!.IsOperationalFailure);
         }
         finally { System.IO.Directory.Delete(directory, true); }
     }

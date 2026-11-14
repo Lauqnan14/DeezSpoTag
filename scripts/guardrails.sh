@@ -141,6 +141,12 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(FeaturedTitleMoveMode|ArtistAliasService)Test$' ;;
       DeezSpoTag.Core/Models/Settings/DeezSpoTagSettings.cs|DeezSpoTag.Core/Models/Settings/MultiQualityDownloadSettings.cs|DeezSpoTag.Services/Settings/DeezSpoTagSettingsService.cs)
         add_tests_matching '^(DailyRecommendationSettings|DownloadEngineSettingsHelper|DeezSpoTagSettingsServiceLyricsFallbackOrder|LyricsSettingsPolicy)Test$' ;;
+      DeezSpoTag.Core/Models/Settings/TechnicalTagSettings.cs)
+        add_tests_matching '^(TechnicalLyricsSettingsApplier|DeezSpoTagSettingsServiceProfileOverlay|TaggingProfileLyricsMigration)Test$' ;;
+      DeezSpoTag.Services/Settings/TaggingProfileSettingsOverlay.cs)
+        add_tests_matching '^(DeezSpoTagSettingsServiceProfileOverlay|TaggingProfileLyricsMigration)Test$' ;;
+      DeezSpoTag.Web/Services/TagSettingsMigrationService.cs)
+        add_tests_matching '^(TaggingProfileLyricsMigration|DeezSpoTagSettingsServiceProfileOverlay)Test$' ;;
       DeezSpoTag.Integrations/Deezer/DeezerClient.cs|DeezSpoTag.Integrations/Deezer/DeezerSessionManager.cs)
         add_tests_matching '^(DeezerAuthenticationPathGuardrail|DeezerLoginStatusBehavior|ApiControllerDeezerRecovery)Test$' ;;
       DeezSpoTag.Web/Controllers/Api/AutoPlaylistsApiController.cs)

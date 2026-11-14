@@ -227,6 +227,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
                 ? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"
                 : baseSettings.LrcType,
+            LyricsTypeOrder = LyricsSettingsPolicy.NormalizeLyricsTypeOrder(baseSettings.LyricsTypeOrder),
             LrcTimingPreference = LrcTimingModes.Normalize(
                 baseSettings.LrcTimingPreference,
                 baseSettings.PreferEnhancedLrc),

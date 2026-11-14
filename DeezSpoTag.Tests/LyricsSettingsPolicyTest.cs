@@ -173,4 +173,50 @@ public sealed class LyricsSettingsPolicyTest
         Assert.True(LyricsSettingsPolicy.WantsEnhancedLrc(enhanced));
         Assert.False(LyricsSettingsPolicy.WantsLineSyncedLrc(enhanced));
     }
+
+    // ---- lyrics type priority --------------------------------------------------
+
+    [Theory]
+    [InlineData(null, "ttml-lyrics,syllable-lyrics,lyrics")]
+    [InlineData("", "ttml-lyrics,syllable-lyrics,lyrics")]
+    [InlineData("   ", "ttml-lyrics,syllable-lyrics,lyrics")]
+    [InlineData("lyrics,ttml-lyrics", "lyrics,ttml-lyrics,syllable-lyrics")]
+    [InlineData("unsynced-lyrics,lyrics", "lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics")]
+    [InlineData("ttml,synced-lyrics,time-synced-lyrics,unsynced", "ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics")]
+    [InlineData("ttml-lyrics,ttml,ttml-lyrics", "ttml-lyrics,syllable-lyrics,lyrics")]
+    [InlineData("ttml-lyrics,bogus-type,lyrics", "ttml-lyrics,lyrics,syllable-lyrics")]
+    [InlineData("lyrics,unsynced-lyrics,ttml-lyrics,syllable-lyrics", "lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics")]
+    public void NormalizeLyricsTypeOrder_PreservesSuppliedRichOrderAndPinsPlainLast(string? input, string expected)
+    {
+        Assert.Equal(expected, LyricsSettingsPolicy.NormalizeLyricsTypeOrder(input));
+    }
+
+    [Fact]
+    public void LyricsTypeOrder_DefaultMatchesLegacyRichPriority()
+    {
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", new DeezSpoTagSettings().LyricsTypeOrder);
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", new TechnicalTagSettings().LyricsTypeOrder);
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", LyricsSettingsPolicy.DefaultLyricsTypeOrder);
+    }
+
+    [Fact]
+    public void LyricsTypeOrder_NeverEnablesTypesOrChangesMembership()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LrcType = "unsynced-lyrics",
+            LrcFormat = "both",
+            LyricsTypeOrder = "ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics"
+        };
+
+        // The order is a pure preference string: the enabled-type membership gates keep
+        // coming exclusively from LrcType and the enable settings.
+        Assert.True(LyricsSettingsPolicy.CanFetchLyrics(settings));
+        Assert.False(LyricsSettingsPolicy.WantsTtmlOutput(settings));
+        Assert.False(LyricsSettingsPolicy.WantsEnhancedLrc(settings));
+        Assert.False(LyricsSettingsPolicy.WantsLineSyncedLrc(settings));
+        Assert.True(LyricsSettingsPolicy.WantsUnsyncedTextOutput(settings));
+    }
 }

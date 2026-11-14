@@ -37,6 +37,7 @@ public static class TaggingProfileSettingsOverlay
         settings.SaveLyrics = technical.SaveLyrics;
         settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
         settings.LrcFormat = technical.LrcFormat ?? "richlyrics";
+        settings.LyricsTypeOrder = DeezSpoTag.Services.Download.Shared.LyricsSettingsPolicy.NormalizeLyricsTypeOrder(technical.LyricsTypeOrder);
         settings.SynthesizeLrcFromTtml = technical.SynthesizeLrcFromTtml;
         settings.SynthesizeTtmlFromLrc = technical.SynthesizeTtmlFromLrc;
         settings.LrcTimingPreference = LrcTimingModes.Normalize(

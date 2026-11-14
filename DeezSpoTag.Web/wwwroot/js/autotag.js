@@ -408,6 +408,10 @@
         HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS.map((tag) => String(tag).toLowerCase())
     );
     const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
+    // Rich-type lookup priority default; plain lyrics stay pinned last.
+    const DEFAULT_LYRICS_TYPE_ORDER = "ttml-lyrics,syllable-lyrics,lyrics";
+    const LYRICS_TYPE_ORDER_RICH = ["ttml-lyrics", "syllable-lyrics", "lyrics"];
+    const LYRICS_TYPE_PLAIN = "unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const LYRICS_PROVIDER_REGISTRY = Object.freeze(
@@ -6152,6 +6156,210 @@
         return normalizeLyricsTypeSetting(value).split(",").filter(Boolean);
     }
 
+    // Mirrors LyricsSettingsPolicy.NormalizeLyricsTypeOrder: aliases map, duplicates and
+    // unknown tokens drop, the supplied rich order is preserved, missing rich types are
+    // appended in the legacy default order, and plain lyrics are pinned last when supplied.
+    // This is a pure preference string: it never enables a type.
+    function normalizeLyricsTypeOrderSetting(value) {
+        const seen = new Set();
+        const rich = [];
+        let plain = false;
+
+        String(value || "")
+            .split(",")
+            .map((token) => normalizeLyricsTypeToken(token))
+            .forEach((token) => {
+                if (!token || seen.has(token)) {
+                    return;
+                }
+                seen.add(token);
+                if (token === LYRICS_TYPE_PLAIN) {
+                    plain = true;
+                    return;
+                }
+                rich.push(token);
+            });
+
+        LYRICS_TYPE_ORDER_RICH.forEach((richType) => {
+            if (!seen.has(richType)) {
+                rich.push(richType);
+            }
+        });
+
+        if (plain) {
+            rich.push(LYRICS_TYPE_PLAIN);
+        }
+
+        return rich.join(",");
+    }
+
+    function setupLyricsTypeOrderDropdown() {
+        const dropdown = document.getElementById("lyricsTypeOrderDropdown");
+        const trigger = document.getElementById("lyricsTypeOrderTrigger");
+        const menu = document.getElementById("lyricsTypeOrderMenu");
+        const list = document.getElementById("lyricsTypeOrderList");
+        const input = document.getElementById("lyricsTypeOrder");
+        const typeContainer = document.getElementById("lyricsTypeOptions");
+        if (!dropdown || !trigger || !menu || !list || !input) {
+            return;
+        }
+
+        const plainSelector = '.lyrics-type-order-item-plain[data-value="' + LYRICS_TYPE_PLAIN + '"]';
+        const richRowSelector = ".lyrics-type-order-item:not(.lyrics-type-order-item-plain)";
+        trigger.addEventListener("click", (event) => {
+            event.stopPropagation();
+            menu.classList.toggle("show");
+        });
+        menu.addEventListener("click", (event) => event.stopPropagation());
+        document.addEventListener("click", () => menu.classList.remove("show"));
+
+        const getLabel = (value) => {
+            const option = LYRICS_TYPE_OPTIONS.find((candidate) => candidate.value === value);
+            return option ? option.label : value;
+        };
+        const getPlainRow = () => list.querySelector(plainSelector);
+        const richRows = () => Array.from(list.querySelectorAll(richRowSelector));
+        const enabledTypes = () => {
+            const lrcType = document.getElementById("lrcType");
+            return new Set(parseLyricsTypeSetting((lrcType && lrcType.value) || ""));
+        };
+
+        const updateValue = () => {
+            const enabled = enabledTypes();
+            const rows = richRows();
+            const order = [];
+            rows.forEach((row) => {
+                const value = normalizeLyricsTypeToken(row.dataset.value);
+                if (value && LYRICS_TYPE_ORDER_RICH.includes(value) && !order.includes(value)) {
+                    order.push(value);
+                }
+            });
+            // A row removed from the markup must not lose its saved position.
+            LYRICS_TYPE_ORDER_RICH.forEach((richType) => {
+                if (!order.includes(richType)) {
+                    order.push(richType);
+                }
+            });
+
+            input.value = normalizeLyricsTypeOrderSetting(
+                order.join(",") + (enabled.has(LYRICS_TYPE_PLAIN) ? "," + LYRICS_TYPE_PLAIN : ""));
+
+            rows.forEach((row) => {
+                const value = normalizeLyricsTypeToken(row.dataset.value);
+                const disabled = !enabled.has(value);
+                // Disabled types stay dimmed but remain reorderable preferences:
+                // they are never looked up while disabled, yet their saved position
+                // is kept and can still be arranged for the future.
+                row.classList.toggle("lyrics-type-order-item-disabled", disabled);
+                if (value && value !== LYRICS_TYPE_PLAIN) {
+                    row.draggable = true;
+                }
+            });
+            const plainIncluded = enabled.has(LYRICS_TYPE_PLAIN);
+            trigger.textContent = order.map(getLabel).join(" → ") + (plainIncluded ? " → Unsynced lyrics" : "");
+        };
+
+        let dragged = null;
+
+        list.addEventListener("dragstart", (event) => {
+            const target = event.target && event.target.closest
+                ? event.target.closest(".lyrics-type-order-item")
+                : event.target;
+            // Only the pinned plain row can never be moved.
+            if (!target || target.classList.contains("lyrics-type-order-item-plain")) {
+                return;
+            }
+            dragged = target;
+            if (event.dataTransfer) {
+                event.dataTransfer.setData("text/plain", target.dataset.value || "");
+                event.dataTransfer.setDragImage(target, 10, 10);
+            }
+            target.classList.add("dragging");
+        });
+
+        list.addEventListener("dragend", () => {
+            if (dragged) {
+                dragged.classList.remove("dragging");
+                dragged = null;
+            }
+            updateValue();
+        });
+
+        list.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            const target = event.target && event.target.closest
+                ? event.target.closest(richRowSelector)
+                : event.target;
+            if (!dragged || !target || dragged === target) {
+                return;
+            }
+
+            const plainRow = getPlainRow();
+            if (target === plainRow) {
+                return;
+            }
+            const rect = typeof target.getBoundingClientRect === "function"
+                ? target.getBoundingClientRect()
+                : null;
+            const before = !rect || event.clientY < rect.top + rect.height / 2;
+            list.insertBefore(dragged, before ? target : (target.nextSibling || plainRow));
+        });
+
+        // Keyboard reordering: rich rows move among rich rows only; the plain row
+        // stays pinned last. Disabled rows keep moving too — they are reordered
+        // preferences, just never looked up while disabled.
+        list.addEventListener("keydown", (event) => {
+            if (!event.target || event.target === getPlainRow()) {
+                return;
+            }
+            const row = event.target.closest ? event.target.closest(richRowSelector) : event.target;
+            if (!row) {
+                return;
+            }
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+                return;
+            }
+            event.preventDefault();
+            const rows = richRows();
+            const index = rows.indexOf(row);
+            const swapWith = event.key === "ArrowUp" ? rows[index - 1] : rows[index + 1];
+            if (!swapWith) {
+                return;
+            }
+            if (event.key === "ArrowUp") {
+                list.insertBefore(row, swapWith);
+            } else {
+                list.insertBefore(row, swapWith.nextSibling || getPlainRow());
+            }
+            updateValue();
+        });
+
+        // Membership (the lrcType checkboxes) gates which rows are draggable and
+        // whether plain lyrics are part of the saved order; the saved order itself
+        // is preserved when a type is disabled.
+        if (typeContainer) {
+            typeContainer.addEventListener("change", () => updateValue());
+        }
+
+        const syncFromInput = () => {
+            const order = normalizeLyricsTypeOrderSetting(input.value || "")
+                .split(",")
+                .filter((value) => LYRICS_TYPE_ORDER_RICH.includes(value));
+            const rowsByValue = new Map(richRows().map((row) => [normalizeLyricsTypeToken(row.dataset.value), row]));
+            const plainRow = getPlainRow();
+            order.forEach((value) => {
+                const row = rowsByValue.get(value);
+                if (row) {
+                    list.insertBefore(row, plainRow);
+                }
+            });
+            updateValue();
+        };
+
+        state.syncLyricsTypeOrder = syncFromInput;
+        syncFromInput();
+    }
+
     function setupLyricsTypeDropdown() {
         const container = document.getElementById("lyricsTypeOptions");
         const input = document.getElementById("lrcType");
@@ -6391,6 +6599,7 @@
 
     function setupDownloadTagsUi() {
         setupLyricsTypeDropdown();
+        setupLyricsTypeOrderDropdown();
         setupLyricsFormatOptions();
 
         const saveLyrics = document.getElementById("saveLyrics");
@@ -6532,6 +6741,7 @@
         applyFieldCheckedWhenBoolean("saveLyrics", technical.saveLyrics === true || technical.syncedLyrics === true);
         applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
+        applyFieldValueIfPresent("lyricsTypeOrder", normalizeLyricsTypeOrderSetting(technical.lyricsTypeOrder || DEFAULT_LYRICS_TYPE_ORDER));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
         applyFieldCheckedWhenBoolean("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
         applyFieldCheckedWhenBoolean("synthesizeTtmlFromLrc", technical.synthesizeTtmlFromLrc ?? true);
@@ -6551,6 +6761,9 @@
         syncDefaultSourceSelectFromOrder("lyricsDefaultSource", technical.lyricsFallbackOrder, LYRICS_SOURCE_ORDER);
         if (state.syncLyricsTypeSelection) {
             state.syncLyricsTypeSelection();
+        }
+        if (state.syncLyricsTypeOrder) {
+            state.syncLyricsTypeOrder();
         }
         if (state.syncLyricsFormatOptions) {
             state.syncLyricsFormatOptions();
@@ -6684,6 +6897,8 @@
         technical.artistCasing = getValue("artistCasing", technical.artistCasing ?? "nothing");
         const lyricsEnabled = getChecked("saveLyrics", technical.saveLyrics === true || technical.syncedLyrics === true);
         technical.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", technical.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
+        technical.lyricsTypeOrder = normalizeLyricsTypeOrderSetting(
+            getValue("lyricsTypeOrder", technical.lyricsTypeOrder ?? DEFAULT_LYRICS_TYPE_ORDER));
         const selectedLyricsTypes = new Set(parseLyricsTypeSetting(technical.lrcType));
         technical.syncedLyrics = lyricsEnabled && (
             selectedLyricsTypes.has("lyrics")

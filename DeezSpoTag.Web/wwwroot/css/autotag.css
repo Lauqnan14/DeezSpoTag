@@ -1074,6 +1074,15 @@ body.autotag-col-resizing * {
     opacity: 0.6;
 }
 
+.lyrics-type-order-item-plain {
+    cursor: default;
+    border-style: dashed;
+}
+
+.lyrics-type-order-item-disabled {
+    opacity: 0.5;
+}
+
 .lyrics-order-item .drag-handle,
 .artwork-order-item .drag-handle {
     justify-self: end;

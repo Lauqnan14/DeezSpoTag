@@ -196,6 +196,14 @@ public class DeezSpoTagSettings
     public string AuthorizationToken { get; set; } = "";
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
+
+    /// <summary>
+    /// Lookup priority for the enabled lyrics types, normalized canonical CSV.
+    /// Plain (unsynced) lyrics are always looked up last regardless of position.
+    /// Membership still comes exclusively from <see cref="LrcType"/> and the
+    /// enable settings; this string never enables a type.
+    /// </summary>
+    public string LyricsTypeOrder { get; set; } = "ttml-lyrics,syllable-lyrics,lyrics";
     // Legacy master switch, kept in sync by the UI as square OR tall.
     public bool SaveAnimatedArtwork { get; set; } = true;
     public bool SaveSquareAnimatedArtwork { get; set; } = true;

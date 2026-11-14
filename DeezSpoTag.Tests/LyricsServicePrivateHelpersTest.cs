@@ -2715,6 +2715,182 @@ public sealed class LyricsServicePrivateHelpersTest
         Assert.False(result.IsLoaded());
     }
 
+    // ---- lyrics type priority: resolver execution over the real pipeline ----
+
+    [Fact]
+    public async Task ResolveLyrics_TypeOrderLineFirst_QueriesLineProviderFirst()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "lyrics,syllable-lyrics,ttml-lyrics",
+            LyricsFallbackOrder = "musixmatch,apple"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            },
+            ["apple"] = LyricsNew.CreateError("No lyrics available")
+        });
+
+        var starts = progress.Where(tick => tick.Phase == "provider-started").Select(tick => tick.Provider).ToList();
+        Assert.Equal("musixmatch", starts[0]);
+        Assert.Equal("musixmatch", result.ProvidersAttempted[0]);
+        Assert.Contains("lrc", result.ResolvedFormats);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_TypeOrderTtmlFirst_QueriesTtmlProviderFirst()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "ttml",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "ttml-lyrics,lyrics,syllable-lyrics",
+            LyricsFallbackOrder = "musixmatch,apple"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["apple"] = CreateWordTimedTtmlLyrics(),
+            ["musixmatch"] = LyricsNew.CreateError("No lyrics available")
+        });
+
+        var starts = progress.Where(tick => tick.Phase == "provider-started").Select(tick => tick.Provider).ToList();
+        Assert.Equal("apple", starts[0]);
+        Assert.Equal("apple", result.ProvidersAttempted[0]);
+        Assert.Contains("ttml", result.ResolvedFormats);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_MultiTypeProvider_SatisfiesLaterRoundWithoutRepeatRequest()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "syllable-lyrics,lyrics,ttml-lyrics",
+            LyricsFallbackOrder = "musixmatch,apple"
+        };
+        var enhanced = CreateEnhancedTestLyrics();
+        enhanced.UnsyncedLyrics = null;
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = enhanced,
+            ["apple"] = LyricsNew.CreateError("No lyrics available")
+        });
+
+        // The word-timed success already supplies the line-synced output, so the
+        // line round is never entered and the provider is attempted exactly once.
+        Assert.Equal(["musixmatch"], result.ProvidersAttempted);
+        Assert.Equal(1, progress.Count(tick => tick.Phase == "provider-started" && tick.Provider == "musixmatch"));
+        Assert.Contains("lrc", result.ResolvedFormats);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_TypeOrderPlainFirst_PlainStillAttemptedLast()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "unsynced-lyrics,lyrics,ttml-lyrics,syllable-lyrics",
+            LyricsFallbackOrder = "musixmatch,lrclib"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = LyricsNew.CreateError("No lyrics available"),
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Plain fallback" }
+        });
+
+        var starts = progress.Where(tick => tick.Phase == "provider-started").Select(tick => tick.Provider).ToList();
+        Assert.Equal("musixmatch", starts[0]);
+        Assert.Equal("lrclib", starts[^1]);
+        Assert.Equal(["musixmatch", "lrclib"], result.ProvidersAttempted);
+        Assert.Contains("txt", result.ResolvedFormats);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_PlainDisabled_PlainDataIsNeverLookedUpOrSaved()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics",
+            LyricsTypeOrder = "lyrics,syllable-lyrics,ttml-lyrics",
+            LyricsFallbackOrder = "lrclib"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Plain text the user did not request" }
+        });
+
+        Assert.DoesNotContain("txt", result.ResolvedFormats);
+        Assert.All(progress, tick => Assert.DoesNotContain("plain-text", tick.RemainingOutputs));
+        Assert.False(DeezSpoTag.Services.Download.Shared.LyricsSettingsPolicy.WantsUnsyncedTextOutput(settings));
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_PartialRichSuccessSuppressesPlainDespiteMissingRichType()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "lyrics,ttml-lyrics,syllable-lyrics",
+            LyricsFallbackOrder = "musixmatch,apple,lrclib"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            },
+            ["apple"] = LyricsNew.CreateError("No lyrics available"),
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Plain fallback" }
+        });
+
+        // The line-synced round succeeded; the TTML round failed. That usable rich
+        // result must suppress the plain lookup entirely.
+        Assert.Equal(["lrc"], result.ResolvedFormats);
+        Assert.Equal(["musixmatch", "apple"], result.ProvidersAttempted);
+        Assert.All(progress, tick => Assert.DoesNotContain("plain-text", tick.RemainingOutputs));
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_StrictWordTiming_LineFirstOrder_NeverDowngradesToLine()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "lyrics,syllable-lyrics,ttml-lyrics",
+            LrcTimingPreference = LrcTimingModes.WordEnhanced,
+            LyricsFallbackOrder = "musixmatch,apple"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            },
+            ["apple"] = CreateWordTimedTtmlLyrics()
+        });
+
+        // The line round is planned first but strict word timing keeps it closed:
+        // only the word-timed round may resolve, via the word-capable source.
+        Assert.True(result.Lyrics?.HasEnhancedSynchronizedLyrics() != true || string.IsNullOrWhiteSpace(result.Lyrics?.TtmlLyrics) == false,
+            "A strict word profile must resolve word timing, not a line downgraded output.");
+        Assert.Equal(LrcTimingModes.WordEnhanced, settings.LrcTimingPreference);
+        Assert.Contains("apple", result.ProvidersAttempted);
+        Assert.Equal(1, progress.Count(tick => tick.Phase == "provider-started" && tick.Provider == "apple"));
+    }
+
     private static Task<string?> FetchAppleProbeAsync(AppleProbeFactory factory, TimeSpan timeout, CancellationToken token = default)
     {
         var service = new LyricsService(NullLogger<LyricsService>.Instance, factory, null!, null!, null!, null!, null!);

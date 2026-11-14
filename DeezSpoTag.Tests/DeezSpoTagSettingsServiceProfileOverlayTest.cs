@@ -47,6 +47,35 @@ public sealed class DeezSpoTagSettingsServiceProfileOverlayTest : IDisposable
     }
 
     [Fact]
+    public void LoadSettings_OverlaysNormalizedProfileTypeOrder()
+    {
+        var profile = BuildDefaultProfile();
+        profile.Technical = new TechnicalTagSettings
+        {
+            DateFormat = "Y-D-M",
+            TitleCasing = "upper",
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LyricsTypeOrder = "unsynced-lyrics,lyrics,ttml"
+        };
+        WriteProfilesFile("tagging-profiles.json", profile);
+
+        var settings = _settingsService.LoadSettings();
+
+        Assert.Equal("lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics", settings.LyricsTypeOrder);
+    }
+
+    [Fact]
+    public void LoadSettings_OldProfileWithoutTypeOrder_RetainsDefaultPriority()
+    {
+        WriteProfilesFile("tagging-profiles.json", BuildDefaultProfile());
+
+        var settings = _settingsService.LoadSettings();
+
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", settings.LyricsTypeOrder);
+    }
+
+    [Fact]
     public void SaveSettings_PreservesDefaultProfileAsSourceOfTruth_ForOverlayedFields()
     {
         WriteProfilesFile("tagging-profiles.json", BuildDefaultProfile());

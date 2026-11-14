@@ -5378,6 +5378,7 @@ function collectFormData() {
         },
         authorizationToken: getValue('authorizationToken'),
         lrcType: getValue('lrcType', baseSettings.lrcType ?? 'lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics'),
+        lyricsTypeOrder: getValue('lyricsTypeOrder', baseSettings.lyricsTypeOrder ?? 'ttml-lyrics,syllable-lyrics,lyrics'),
         lrcFormat: getValue('lrcFormat', baseSettings.lrcFormat ?? 'richlyrics'),
         synthesizeLrcFromTtml: getChecked('synthesizeLrcFromTtml', baseSettings.synthesizeLrcFromTtml ?? false),
         lyricsFallbackEnabled: getChecked('lyricsFallbackEnabled', baseSettings.lyricsFallbackEnabled ?? true),

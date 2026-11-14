@@ -25,6 +25,7 @@ public sealed class QueueSourceSettingsSnapshot
     public bool? SaveLyrics { get; set; }
     public string? LrcType { get; set; }
     public string? LrcFormat { get; set; }
+    public string? LyricsTypeOrder { get; set; }
     public bool? SynthesizeLrcFromTtml { get; set; }
     public bool? SynthesizeTtmlFromLrc { get; set; }
     public bool? PreferEnhancedLrc { get; set; }
@@ -48,6 +49,7 @@ public sealed class QueueSourceSettingsSnapshot
         || SaveLyrics.HasValue
         || !string.IsNullOrWhiteSpace(LrcType)
         || !string.IsNullOrWhiteSpace(LrcFormat)
+        || !string.IsNullOrWhiteSpace(LyricsTypeOrder)
         || SynthesizeLrcFromTtml.HasValue
         || SynthesizeTtmlFromLrc.HasValue
         || PreferEnhancedLrc.HasValue
@@ -75,6 +77,7 @@ public sealed class QueueSourceSettingsSnapshot
             SaveLyrics = settings.SaveLyrics,
             LrcType = NormalizeString(settings.LrcType),
             LrcFormat = NormalizeString(settings.LrcFormat),
+            LyricsTypeOrder = NormalizeString(settings.LyricsTypeOrder),
             SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
             SynthesizeTtmlFromLrc = settings.SynthesizeTtmlFromLrc,
             PreferEnhancedLrc = settings.PreferEnhancedLrc,
@@ -112,6 +115,11 @@ public sealed class QueueSourceSettingsSnapshot
         effective.SaveLyrics = SaveLyrics ?? effective.SaveLyrics;
         effective.LrcType = LrcType ?? effective.LrcType;
         effective.LrcFormat = LrcFormat ?? effective.LrcFormat;
+        // A legacy snapshot captured before the field existed must not inherit a
+        // later reordered global preference: it keeps the legacy default priority.
+        effective.LyricsTypeOrder = !string.IsNullOrWhiteSpace(LyricsTypeOrder)
+            ? LyricsSettingsPolicy.NormalizeLyricsTypeOrder(LyricsTypeOrder)
+            : LyricsSettingsPolicy.DefaultLyricsTypeOrder;
         effective.SynthesizeLrcFromTtml = SynthesizeLrcFromTtml ?? effective.SynthesizeLrcFromTtml;
         effective.SynthesizeTtmlFromLrc = SynthesizeTtmlFromLrc ?? effective.SynthesizeTtmlFromLrc;
         effective.PreferEnhancedLrc = PreferEnhancedLrc ?? effective.PreferEnhancedLrc;
@@ -162,6 +170,7 @@ public sealed class QueueSourceSettingsSnapshot
             SaveLyrics = ReadBool(snapshotObj, "SaveLyrics", "saveLyrics"),
             LrcType = ReadString(snapshotObj, "LrcType", "lrcType"),
             LrcFormat = ReadString(snapshotObj, "LrcFormat", "lrcFormat"),
+            LyricsTypeOrder = ReadString(snapshotObj, "LyricsTypeOrder", "lyricsTypeOrder"),
             SynthesizeLrcFromTtml = ReadBool(snapshotObj, "SynthesizeLrcFromTtml", "synthesizeLrcFromTtml"),
             SynthesizeTtmlFromLrc = ReadBool(snapshotObj, "SynthesizeTtmlFromLrc", "synthesizeTtmlFromLrc"),
             PreferEnhancedLrc = ReadBool(snapshotObj, "PreferEnhancedLrc", "preferEnhancedLrc"),

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -118,6 +119,7 @@ public sealed class TaggingProfileLyricsMigrationTest
         Assert.True(firstLoad.Technical.SyncedLyrics);
         Assert.Equal("lrc,ttml", firstLoad.Technical.LrcFormat);
         Assert.Contains("ttml-lyrics", firstLoad.Technical.LrcType, StringComparison.Ordinal);
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", firstLoad.Technical.LyricsTypeOrder);
         Assert.Equal(
             "musixmatch,apple,lrclib,deezer,spotify,youlyplus,betterlyrics",
             firstLoad.Technical.LyricsFallbackOrder);
@@ -135,6 +137,77 @@ public sealed class TaggingProfileLyricsMigrationTest
 
         Assert.Equal(persistedAfterFirstLoad, persistedAfterSecondLoad);
         Assert.Equal(firstLoad.Technical.LyricsFallbackOrder, secondLoad.Technical.LyricsFallbackOrder);
+    }
+
+    [Fact]
+    public async Task LoadAsync_RetainsCustomTypeOrderFromProfile()
+    {
+        using var environment = new TemporaryEnvironment();
+        var dataDirectory = Path.Join(environment.ContentRootPath, "Data", "autotag");
+        Directory.CreateDirectory(dataDirectory);
+        var profilePath = Path.Join(dataDirectory, "tagging-profiles.json");
+        await File.WriteAllTextAsync(profilePath,
+            """
+            [
+              {
+                "id": "default",
+                "name": "Default",
+                "isDefault": true,
+                "tagConfig": {},
+                "autoTag": {},
+                "technical": {
+                  "saveLyrics": true,
+                  "syncedLyrics": true,
+                  "lrcType": "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+                  "lrcFormat": "both",
+                  "lyricsTypeOrder": "lyrics,unsynced-lyrics,ttml-lyrics",
+                  "lyricsSchemaVersion": 4
+                },
+                "folderStructure": {},
+                "verification": {}
+              }
+            ]
+            """);
+        var service = new TaggingProfileService(
+            environment,
+            NullLogger<TaggingProfileService>.Instance);
+
+        var loaded = Assert.Single(await service.LoadAsync());
+
+        Assert.Equal("lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics", loaded.Technical.LyricsTypeOrder);
+    }
+
+    [Fact]
+    public void GlobalToProfileConversion_RetainsAndNormalizesCustomTypeOrder()
+    {
+        var globalSettings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "unsynced-lyrics,ttml,lyrics"
+        };
+
+        var migration = (TechnicalTagSettings)InvokeStaticOn(
+            typeof(DeezSpoTag.Web.Services.TagSettingsMigrationService),
+            "ConvertTechnicalSettings",
+            null, globalSettings);
+
+        Assert.Equal("ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics", migration.LyricsTypeOrder);
+    }
+
+    private static object InvokeStaticOn(Type type, string methodName, params object?[] arguments)
+    {
+        var method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException($"Method '{methodName}' was not found on '{type.Name}'.");
+        try
+        {
+            return method.Invoke(null, arguments)!;
+        }
+        catch (TargetInvocationException wrapper) when (wrapper.InnerException is not null)
+        {
+            throw wrapper.InnerException;
+        }
     }
 
     private sealed class TemporaryEnvironment : IWebHostEnvironment, IAppDataRootOverride, IDisposable

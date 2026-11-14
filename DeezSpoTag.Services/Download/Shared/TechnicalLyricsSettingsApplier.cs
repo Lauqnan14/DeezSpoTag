@@ -76,6 +76,11 @@ public static class TechnicalLyricsSettingsApplier
             settings.LrcFormat = technical.LrcFormat;
         }
 
+        if (!string.IsNullOrWhiteSpace(technical.LyricsTypeOrder))
+        {
+            settings.LyricsTypeOrder = LyricsSettingsPolicy.NormalizeLyricsTypeOrder(technical.LyricsTypeOrder);
+        }
+
         if (!string.IsNullOrWhiteSpace(technical.LyricsFallbackOrder))
         {
             settings.LyricsFallbackOrder = technical.LyricsFallbackOrder;

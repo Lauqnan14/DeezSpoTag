@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models;
@@ -99,6 +100,104 @@ public class LyricsCapabilityRoundTest
 
         // Plain text is a capability every registered provider has.
         Assert.Equal(LyricsCapabilityRound.PlainText, rounds[3].Round);
+    }
+
+    [Theory]
+    [InlineData("ttml-lyrics,syllable-lyrics,lyrics", LyricsCapabilityRound.NativeTtml, LyricsCapabilityRound.WordSynchronizedLrc, LyricsCapabilityRound.LineSynchronizedLrc)]
+    [InlineData("ttml-lyrics,lyrics,syllable-lyrics", LyricsCapabilityRound.NativeTtml, LyricsCapabilityRound.LineSynchronizedLrc, LyricsCapabilityRound.WordSynchronizedLrc)]
+    [InlineData("syllable-lyrics,ttml-lyrics,lyrics", LyricsCapabilityRound.WordSynchronizedLrc, LyricsCapabilityRound.NativeTtml, LyricsCapabilityRound.LineSynchronizedLrc)]
+    [InlineData("syllable-lyrics,lyrics,ttml-lyrics", LyricsCapabilityRound.WordSynchronizedLrc, LyricsCapabilityRound.LineSynchronizedLrc, LyricsCapabilityRound.NativeTtml)]
+    [InlineData("lyrics,ttml-lyrics,syllable-lyrics", LyricsCapabilityRound.LineSynchronizedLrc, LyricsCapabilityRound.NativeTtml, LyricsCapabilityRound.WordSynchronizedLrc)]
+    [InlineData("lyrics,syllable-lyrics,ttml-lyrics", LyricsCapabilityRound.LineSynchronizedLrc, LyricsCapabilityRound.WordSynchronizedLrc, LyricsCapabilityRound.NativeTtml)]
+    public void TypeOrder_ReordersRichRoundsWhilePlainStaysLast(string typeOrder,
+        LyricsCapabilityRound first, LyricsCapabilityRound second, LyricsCapabilityRound third)
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: true);
+
+        var rounds = BuildRounds(requirements, DefaultOrder, typeOrder);
+
+        Assert.Equal(
+            new[] { first, second, third, LyricsCapabilityRound.PlainText },
+            rounds.Select(round => round.Round).ToArray());
+    }
+
+    [Fact]
+    public void TypeOrder_PlainIsPinnedLast_EvenWhenSuppliedFirst()
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: true);
+
+        var rounds = BuildRounds(requirements, DefaultOrder, "unsynced-lyrics,lyrics,ttml-lyrics,syllable-lyrics");
+
+        Assert.Equal(
+            new[]
+            {
+                LyricsCapabilityRound.LineSynchronizedLrc,
+                LyricsCapabilityRound.NativeTtml,
+                LyricsCapabilityRound.WordSynchronizedLrc,
+                LyricsCapabilityRound.PlainText
+            },
+            rounds.Select(round => round.Round).ToArray());
+    }
+
+    [Fact]
+    public void TypeOrder_AbsentOrder_KeepsLegacyRoundDeclaration()
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: true);
+
+        var rounds = BuildRounds(requirements, DefaultOrder);
+
+        Assert.Equal(
+            new[]
+            {
+                LyricsCapabilityRound.NativeTtml,
+                LyricsCapabilityRound.WordSynchronizedLrc,
+                LyricsCapabilityRound.LineSynchronizedLrc,
+                LyricsCapabilityRound.PlainText
+            },
+            rounds.Select(round => round.Round).ToArray());
+    }
+
+    [Fact]
+    public void TypeOrder_RoundProviders_FollowConfiguredSourceOrderWithinEachRound()
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: false);
+
+        var forward = BuildRounds(
+            requirements,
+            new[] { "apple", "betterlyrics", "deezer", "lrclib" },
+            "lyrics,ttml-lyrics,syllable-lyrics");
+        var reversed = BuildRounds(
+            requirements,
+            new[] { "lrclib", "deezer", "betterlyrics", "apple" },
+            "lyrics,ttml-lyrics,syllable-lyrics");
+
+        // The type order is the outer loop; the configured source order is the inner loop.
+        // The plain round is still planned (every provider has the capability) but the
+        // execution gates keep it closed unless plain output is requested.
+        Assert.Equal(
+            new[] { LyricsCapabilityRound.LineSynchronizedLrc, LyricsCapabilityRound.NativeTtml, LyricsCapabilityRound.WordSynchronizedLrc, LyricsCapabilityRound.PlainText },
+            forward.Select(round => round.Round).ToArray());
+        Assert.Equal(new[] { "apple", "betterlyrics", "deezer", "lrclib" }, Providers(forward, LyricsCapabilityRound.LineSynchronizedLrc));
+        Assert.Equal(new[] { "apple", "betterlyrics" }, Providers(forward, LyricsCapabilityRound.NativeTtml));
+        Assert.Equal(new[] { "lrclib", "deezer", "betterlyrics", "apple" }, Providers(reversed, LyricsCapabilityRound.LineSynchronizedLrc));
+        Assert.Equal(new[] { "betterlyrics", "apple" }, Providers(reversed, LyricsCapabilityRound.NativeTtml));
+    }
+
+    [Fact]
+    public void TypeOrder_RoundsOmitDisabledOrIncapableSources()
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: false);
+
+        // deezer/spotify/lrclib cannot serve native TTML or word timings; they must not
+        // appear in either round even when placed first in the configured source order.
+        var rounds = BuildRounds(
+            requirements,
+            new[] { "lrclib", "deezer", "spotify", "apple", "musixmatch" },
+            "ttml-lyrics,syllable-lyrics,lyrics");
+
+        Assert.Equal(new[] { "apple" }, Providers(rounds, LyricsCapabilityRound.NativeTtml));
+        Assert.Equal(new[] { "apple", "musixmatch" }, Providers(rounds, LyricsCapabilityRound.WordSynchronizedLrc));
+        Assert.Equal(new[] { "lrclib", "deezer", "spotify", "apple", "musixmatch" }, Providers(rounds, LyricsCapabilityRound.LineSynchronizedLrc));
     }
 
     [Fact]
@@ -275,8 +374,8 @@ public class LyricsCapabilityRoundTest
     private static string[] DefaultOrder =>
         new[] { "apple", "deezer", "spotify", "lrclib", "musixmatch", "youlyplus", "betterlyrics" };
 
-    private static IReadOnlyList<LyricsRoundPlan> BuildRounds(object requirements, IReadOnlyList<string> providers)
-        => Invoke<IReadOnlyList<LyricsRoundPlan>>("BuildCapabilityRounds", requirements, providers);
+    private static IReadOnlyList<LyricsRoundPlan> BuildRounds(object requirements, IReadOnlyList<string> providers, string? typeOrder = null)
+        => Invoke<IReadOnlyList<LyricsRoundPlan>>("BuildCapabilityRounds", requirements, providers, typeOrder);
 
     private static bool ShouldEnterRound(LyricsCapabilityRound round, object requirements)
         => Invoke<bool>("ShouldEnterRound", round, requirements);
@@ -300,6 +399,328 @@ public class LyricsCapabilityRoundTest
 
     private static string[] Providers(IReadOnlyList<LyricsRoundPlan> rounds, LyricsCapabilityRound round)
         => rounds.First(candidate => candidate.Round == round).Providers.ToArray();
+
+    // ---- lyrics type priority: progress messages reflect the actual active round ----
+
+    [Theory]
+    [InlineData("ttml-lyrics,syllable-lyrics,lyrics", "word-synced TTML", "word-timed LRC", "line-synced LRC")]
+    [InlineData("lyrics,syllable-lyrics,ttml-lyrics", "line-synced LRC", "word-timed LRC", "word-synced TTML")]
+    [InlineData("syllable-lyrics,lyrics,ttml-lyrics", "word-timed LRC", "line-synced LRC", "word-synced TTML")]
+    [InlineData("unsynced-lyrics,lyrics,ttml-lyrics,syllable-lyrics", "line-synced LRC", "word-synced TTML", "word-timed LRC")]
+    public void TypeOrder_RoundGoalsFollowTheReorderedRounds(string typeOrder, string firstGoal, string secondGoal, string thirdGoal)
+    {
+        var requirements = CreateRequirements(wantsLrc: true, wantsTtml: true, wantsPlain: true);
+
+        var rounds = BuildRounds(requirements, DefaultOrder, typeOrder);
+
+        // The progress pipeline surfaces DescribeRoundGoal of the active round as
+        // LookupGoal, so these strings are what the Activities feed displays.
+        Assert.Equal(
+            new[] { firstGoal, secondGoal, thirdGoal, "plain lyrics" },
+            rounds.Select(round => round.Goal).ToArray());
+    }
+
+    // ---- lyrics type priority: AutoTag ordering widget (Node harness) ----
+
+    [Fact]
+    public async System.Threading.Tasks.Task LyricsTypeOrderUi_ReordersRichRowsAndKeepsPlainPinned()
+    {
+        var result = await RunLyricsTypeOrderWidgetAsync("""
+            const ui = buildUi('lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics');
+            setupLyricsTypeOrderDropdown();
+            assert.equal(ui.orderInput.value, 'ttml-lyrics,syllable-lyrics,lyrics,unsynced-lyrics',
+                'The default row order becomes the saved order when nothing was customized yet.');
+
+            // Mouse reorder: drag TTML below the line-synced row.
+            const ttml = ui.row('ttml-lyrics');
+            ui.dragstart(ttml);
+            ui.dragover(ui.row('lyrics'), { clientY: 999 });
+            ui.dragend();
+            assert.equal(ui.orderInput.value, 'syllable-lyrics,lyrics,ttml-lyrics,unsynced-lyrics');
+
+            // Plain row cannot be moved: dragging it changes nothing.
+            const plain = ui.row('unsynced-lyrics');
+            ui.dragstart(plain);
+            ui.dragover(ui.row('lyrics'), { clientY: 0 });
+            ui.dragend();
+            assert.equal(ui.orderInput.value, 'syllable-lyrics,lyrics,ttml-lyrics,unsynced-lyrics');
+            assert.equal(ui.list.children[3].dataset.value, 'unsynced-lyrics');
+
+            // Keyboard reorder: ArrowDown moves TTML back to last rich position.
+            ui.keydown(ui.row('ttml-lyrics'), 'ArrowDown');
+            assert.equal(ui.orderInput.value, 'syllable-lyrics,lyrics,ttml-lyrics,unsynced-lyrics',
+                'TTML is already last among rich rows; the order is unchanged.');
+            ui.keydown(ui.row('syllable-lyrics'), 'ArrowDown');
+            assert.equal(ui.orderInput.value, 'lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics');
+            process.stdout.write('OK');
+            """);
+        Assert.Equal("OK", result);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task LyricsTypeOrderUi_DisablingTypePreservesSavedOrder()
+    {
+        var result = await RunLyricsTypeOrderWidgetAsync("""
+            const ui = buildUi('lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics');
+            setupLyricsTypeOrderDropdown();
+            ui.dragstart(ui.row('ttml-lyrics'));
+            ui.dragover(ui.row('lyrics'), { clientY: 999 });
+            ui.dragend();
+            assert.equal(ui.orderInput.value, 'syllable-lyrics,lyrics,ttml-lyrics,unsynced-lyrics');
+
+            // Disable TTML and word-synced LRC through the membership checkboxes.
+            ui.setTypeSelection('lyrics,unsynced-lyrics');
+            ui.changeSelection();
+            assert.equal(ui.orderInput.value, 'syllable-lyrics,lyrics,ttml-lyrics,unsynced-lyrics',
+                'Disabling a type must not erase its saved position.');
+            assert.deepEqual(ui.disabledValues(), ['syllable-lyrics', 'ttml-lyrics'],
+                'Disabled rows are dimmed in their preserved displayed order.');
+
+            // Disabled types remain reorderable preferences while never looked up.
+            assert.equal(ui.row('lyrics').draggable, true);
+            assert.equal(ui.row('ttml-lyrics').draggable, true);
+            assert.equal(ui.row('syllable-lyrics').draggable, true);
+            ui.dragstart(ui.row('syllable-lyrics'));
+            ui.dragover(ui.row('ttml-lyrics'), { clientY: 999 });
+            ui.dragend();
+            assert.equal(ui.orderInput.value, 'lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics',
+                'A disabled type can still be arranged for its future priority.');
+
+            // Keyboard reordering works for disabled rows too.
+            ui.keydown(ui.row('ttml-lyrics'), 'ArrowUp');
+            assert.equal(ui.orderInput.value, 'ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics');
+
+            // Re-enabling keeps the same saved order.
+            ui.setTypeSelection('lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics');
+            ui.changeSelection();
+            assert.equal(ui.orderInput.value, 'ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics');
+            assert.deepEqual(ui.disabledValues(), []);
+            process.stdout.write('OK');
+            """);
+        Assert.Equal("OK", result);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task LyricsTypeOrderUi_LegacyOmittedFieldFallsBackToDefaultOrder()
+    {
+        var result = await RunLyricsTypeOrderWidgetAsync("""
+            const ui = buildUi('lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics');
+            ui.orderInput.value = '';
+            setupLyricsTypeOrderDropdown();
+            assert.equal(ui.orderInput.value, 'ttml-lyrics,syllable-lyrics,lyrics,unsynced-lyrics',
+                'A legacy client that never saved an order gets the default priority.');
+
+            // A profile without the field resolves through the same normalizer.
+            assert.equal(
+                normalizeLyricsTypeOrderSetting(''),
+                'ttml-lyrics,syllable-lyrics,lyrics');
+            assert.equal(
+                normalizeLyricsTypeOrderSetting('unsynced-lyrics,ttml,synced-lyrics'),
+                'ttml-lyrics,lyrics,syllable-lyrics,unsynced-lyrics');
+            assert.equal(
+                normalizeLyricsTypeOrderSetting('lyrics'),
+                'lyrics,ttml-lyrics,syllable-lyrics');
+            process.stdout.write('OK');
+            """);
+        Assert.Equal("OK", result);
+    }
+
+    [Fact]
+    public void LyricsTypeOrderUi_ProfileLoadSaveAndSettingsPayloadAreWired()
+    {
+        var script = File.ReadAllText(Path.Join(
+            AppContext.BaseDirectory, "../../../../DeezSpoTag.Web/wwwroot/js/autotag.js"));
+        // Profile load: restore the saved order and re-sync the widget.
+        Assert.Contains("applyFieldValueIfPresent(\"lyricsTypeOrder\"", script, StringComparison.Ordinal);
+        Assert.Contains("if (state.syncLyricsTypeOrder)", script, StringComparison.Ordinal);
+        // Profile save: persist the widget's order.
+        Assert.Contains("technical.lyricsTypeOrder = normalizeLyricsTypeOrderSetting(", script, StringComparison.Ordinal);
+
+        // Global settings save must round-trip the stored order instead of resetting it.
+        var settingsView = File.ReadAllText(Path.Join(
+            AppContext.BaseDirectory, "../../../../DeezSpoTag.Web/Views/Settings/Index.cshtml"));
+        Assert.Contains(
+            "lyricsTypeOrder: getValue('lyricsTypeOrder', baseSettings.lyricsTypeOrder ?? 'ttml-lyrics,syllable-lyrics,lyrics')",
+            settingsView, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Runs the AutoTag lyrics type order widget under Node against a minimal DOM stub,
+    /// mirroring the harness used by <see cref="AutoTagCreditRoleTest"/>.
+    /// </summary>
+    private static async System.Threading.Tasks.Task<string> RunLyricsTypeOrderWidgetAsync(string testScript)
+    {
+        var directory = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js")))
+        {
+            directory = directory.Parent;
+        }
+        Assert.NotNull(directory);
+
+        var harness = """
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+            const assert = require('node:assert/strict');
+            const source = fs.readFileSync(process.argv[1], 'utf8');
+            const boundary = source.indexOf('\n    document.addEventListener("change"');
+            assert(boundary > 0, 'AutoTag startup boundary not found');
+
+            function makeClassList(element) {
+                const set = new Set();
+                return {
+                    add: (c) => set.add(c),
+                    remove: (c) => set.delete(c),
+                    contains: (c) => set.has(c),
+                    toggle: (c, force) => {
+                        if (force === undefined) { set.has(c) ? set.delete(c) : set.add(c); return; }
+                        if (force) set.add(c); else set.delete(c);
+                    },
+                    _set: set
+                };
+            }
+
+            function makeElement(tag) {
+                const listeners = {};
+                const element = {
+                    tagName: tag,
+                    children: [],
+                    parentElement: null,
+                    dataset: {},
+                    textContent: '',
+                    value: '',
+                    draggable: false,
+                    disabled: false,
+                    classList: null,
+                    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+                    dispatch(type, event) {
+                        (listeners[type] || []).forEach((fn) => fn(Object.assign({
+                            preventDefault() {}, stopPropagation() {}, target: element
+                        }, event || {})));
+                    },
+                    appendChild(child) { element.children.push(child); child.parentElement = element; return child; },
+                    insertBefore(node, reference) {
+                        const current = element.children.indexOf(node);
+                        if (current >= 0) element.children.splice(current, 1);
+                        let at = reference ? element.children.indexOf(reference) : element.children.length;
+                        if (at < 0) at = element.children.length;
+                        element.children.splice(at, 0, node);
+                        node.parentElement = element;
+                        return node;
+                    },
+                    querySelector(selector) { return matchChildren(element, selector)[0] || null; },
+                    querySelectorAll(selector) { return matchChildren(element, selector); },
+                    getBoundingClientRect: () => ({ top: 0, height: 100 }),
+                    get nextSibling() {
+                        const p = element.parentElement;
+                        if (!p) return null;
+                        const at = p.children.indexOf(element);
+                        return at >= 0 ? p.children[at + 1] || null : null;
+                    }
+                };
+                element.classList = makeClassList(element);
+                return element;
+            }
+
+            // The widget only ever queries these three selectors.
+            function matchChildren(root, selector) {
+                const out = [];
+                const walk = (node) => {
+                    (node.children || []).forEach((child) => {
+                        if (matchesSelector(child, selector)) out.push(child);
+                        walk(child);
+                    });
+                };
+                walk(root);
+                return out;
+            }
+
+            function matchesSelector(element, selector) {
+                if (selector === '.drag-handle') return element.classList.contains('drag-handle');
+                const plainSelector = '.lyrics-type-order-item-plain[data-value="unsynced-lyrics"]';
+                if (selector === plainSelector) {
+                    return element.classList.contains('lyrics-type-order-item-plain')
+                        && element.dataset.value === 'unsynced-lyrics';
+                }
+                if (selector === '.lyrics-type-order-item:not(.lyrics-type-order-item-plain)') {
+                    return element.classList.contains('lyrics-type-order-item')
+                        && !element.classList.contains('lyrics-type-order-item-plain');
+                }
+                return false;
+            }
+
+            function buildUi(lrcTypeValue) {
+                const list = makeElement('ul');
+                ['ttml-lyrics', 'syllable-lyrics', 'lyrics', 'unsynced-lyrics'].forEach((value) => {
+                    const row = makeElement('li');
+                    row.dataset.value = value;
+                    row.classList.add('lyrics-type-order-item');
+                    if (value === 'unsynced-lyrics') row.classList.add('lyrics-type-order-item-plain');
+                    const label = makeElement('span');
+                    row.appendChild(label);
+                    const handle = makeElement('span');
+                    handle.classList.add('drag-handle');
+                    row.appendChild(handle);
+                    list.appendChild(row);
+                });
+                const orderInput = makeElement('input');
+                const lrcType = makeElement('input');
+                lrcType.value = lrcTypeValue;
+                const typeOptions = makeElement('div');
+                typeOptions.appendChild(lrcType);
+                const trigger = makeElement('button');
+                const menu = makeElement('div');
+                const dropdown = makeElement('div');
+                const document = {
+                    getElementById: (id) => ({
+                        lyricsTypeOrderDropdown: dropdown,
+                        lyricsTypeOrderTrigger: trigger,
+                        lyricsTypeOrderMenu: menu,
+                        lyricsTypeOrderList: list,
+                        lyricsTypeOrder: orderInput,
+                        lrcType,
+                        lyricsTypeOptions: typeOptions
+                    })[id] || null,
+                    addEventListener() {}
+                };
+                const context = { document, console, structuredClone, setTimeout, clearTimeout };
+                vm.createContext(context);
+                vm.runInContext(source.slice(0, boundary) + '\n globalThis.typeOrderTest = {setupLyricsTypeOrderDropdown, normalizeLyricsTypeOrderSetting, state, parseLyricsTypeSetting};})();', context);
+                const api = context.typeOrderTest;
+                globalThis.setupLyricsTypeOrderDropdown = api.setupLyricsTypeOrderDropdown;
+                globalThis.normalizeLyricsTypeOrderSetting = api.normalizeLyricsTypeOrderSetting;
+                globalThis.parseLyricsTypeSetting = api.parseLyricsTypeSetting;
+                return {
+                    get orderInput() { return orderInput; },
+                    get list() { return list; },
+                    row: (value) => list.children.find((child) => child.dataset.value === value),
+                    dragstart: (row) => list.dispatch('dragstart', { target: row, dataTransfer: { setData() {}, setDragImage() {} } }),
+                    dragover: (row, event) => list.dispatch('dragover', Object.assign({ target: row }, event)),
+                    dragend: () => list.dispatch('dragend'),
+                    keydown: (row, key) => list.dispatch('keydown', { key, target: row }),
+                    setTypeSelection: (value) => { lrcType.value = value; },
+                    changeSelection: () => typeOptions.dispatch('change', { target: lrcType }),
+                    disabledValues: () => list.children
+                        .filter((child) => child.classList.contains('lyrics-type-order-item-disabled'))
+                        .map((child) => child.dataset.value)
+                };
+            }
+            """ + "\nconst ui = buildUi; process.argv[2] = 'unused';\n";
+
+        var full = harness + "\n(async () => {\n" + testScript + "\n})().catch((error) => { console.error(error); process.exit(1); });\n";
+        var start = new System.Diagnostics.ProcessStartInfo("node")
+        {
+            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false
+        };
+        start.ArgumentList.Add("-e");
+        start.ArgumentList.Add(full);
+        start.ArgumentList.Add(Path.Combine(directory!.FullName, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, await stderr);
+        return (await stdout).Trim();
+    }
 
     /// <summary>
     /// <see cref="LyricsService"/> keeps its output requirements struct private, so it is built and

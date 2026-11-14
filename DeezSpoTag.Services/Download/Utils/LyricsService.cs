@@ -56,7 +56,15 @@ public interface ISpotifyLyricsAuthProvider
 public sealed record LyricsResolutionPlan(
     IReadOnlyList<string> RequestedFormats,
     IReadOnlyList<string> Providers,
-    bool PlainFallbackAllowed);
+    bool PlainFallbackAllowed)
+{
+    /// <summary>
+    /// Normalized rich-type lookup priority (canonical CSV, plain pinned last) that
+    /// produced this plan, or null for legacy callers. Part of the plan identity so
+    /// completed artifacts of one order cannot silently satisfy another.
+    /// </summary>
+    public string? TypeOrder { get; init; }
+}
 
 /// <summary>
 /// Capability tiers used to resolve lyrics. Rounds are attempted in declaration order and
@@ -334,7 +342,7 @@ public class LyricsService
         var state = new LyricsResolutionState();
         await ReportProgressAsync(progress, "started", null, null, outputRequirements, state, null, false, cancellationToken);
 
-        foreach (var round in BuildCapabilityRounds(outputRequirements, providers))
+        foreach (var round in BuildCapabilityRounds(outputRequirements, providers, plan.TypeOrder))
         {
             if (!ShouldEnterRound(round.Round, outputRequirements)
                 || (round.Round == LyricsCapabilityRound.PlainText
@@ -573,7 +581,10 @@ public class LyricsService
             requested.Add("txt");
         }
 
-        return new LyricsResolutionPlan(requested, ResolveLyricsProviders(settings), requirements.WantsPlainLyrics);
+        return new LyricsResolutionPlan(requested, ResolveLyricsProviders(settings), requirements.WantsPlainLyrics)
+        {
+            TypeOrder = LyricsSettingsPolicy.NormalizeLyricsTypeOrder(settings.LyricsTypeOrder)
+        };
     }
 
     private static LyricsResolutionResult EmptyResolution(LyricsResolutionPlan plan, string? error)
@@ -781,7 +792,8 @@ public class LyricsService
     /// </summary>
     private static IReadOnlyList<LyricsRoundPlan> BuildCapabilityRounds(
         LyricsOutputRequirements requirements,
-        IReadOnlyList<string> orderedProviders)
+        IReadOnlyList<string> orderedProviders,
+        string? typeOrder = null)
     {
         var candidates = orderedProviders
             .Where(static provider => !string.IsNullOrWhiteSpace(provider))
@@ -789,9 +801,31 @@ public class LyricsService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        // The configured type priority is the outer loop; the configured provider
+        // order stays the inner loop of every round. A supplied order is normalized
+        // through the shared policy so plain lyrics stay pinned last regardless of
+        // their position; a null/blank order keeps the legacy declaration order so a
+        // legacy caller keeps today's behavior exactly.
+        var allRounds = Enum.GetValues<LyricsCapabilityRound>();
         var rounds = new List<LyricsRoundPlan>(4);
-        foreach (var round in Enum.GetValues<LyricsCapabilityRound>())
+        var planned = new HashSet<LyricsCapabilityRound>();
+        var effectiveTypeOrder = string.IsNullOrWhiteSpace(typeOrder)
+            ? null
+            : LyricsSettingsPolicy.NormalizeLyricsTypeOrder(typeOrder);
+        var orderedRoundTypes = (effectiveTypeOrder ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static token => token.Trim().ToLowerInvariant())
+            .Select(TypeTokenToRound)
+            .Where(static round => round is not null)
+            .Cast<LyricsCapabilityRound>()
+            .Distinct();
+        foreach (var round in orderedRoundTypes.Concat(allRounds))
         {
+            if (!planned.Add(round))
+            {
+                continue;
+            }
+
             var providers = candidates
                 .Where(provider => LyricsProviderRegistry.TryGet(provider, out var descriptor)
                     && ProviderSupportsRound(descriptor, round))
@@ -804,6 +838,15 @@ public class LyricsService
 
         return rounds;
     }
+
+    private static LyricsCapabilityRound? TypeTokenToRound(string token) => token switch
+    {
+        "ttml-lyrics" => LyricsCapabilityRound.NativeTtml,
+        "syllable-lyrics" => LyricsCapabilityRound.WordSynchronizedLrc,
+        "lyrics" or "synced-lyrics" => LyricsCapabilityRound.LineSynchronizedLrc,
+        "unsynced-lyrics" => LyricsCapabilityRound.PlainText,
+        _ => null
+    };
 
     /// <summary>
     /// Drops providers that an earlier round already attempted. Apple and BetterLyrics qualify for

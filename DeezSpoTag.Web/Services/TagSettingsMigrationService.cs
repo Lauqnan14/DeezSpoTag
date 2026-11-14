@@ -198,6 +198,7 @@ public sealed class TagSettingsMigrationService
             result.EmbedLyrics = (tagSettings?.Lyrics ?? false) || (tagSettings?.SyncedLyrics ?? false);
             result.LrcType = settings.LrcType;
             result.LrcFormat = settings.LrcFormat;
+            result.LyricsTypeOrder = DeezSpoTag.Services.Download.Shared.LyricsSettingsPolicy.NormalizeLyricsTypeOrder(settings.LyricsTypeOrder);
             result.SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml;
             result.SynthesizeTtmlFromLrc = settings.SynthesizeTtmlFromLrc;
             result.PreferEnhancedLrc = settings.PreferEnhancedLrc;

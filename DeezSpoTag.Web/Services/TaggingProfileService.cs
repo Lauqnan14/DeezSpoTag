@@ -439,6 +439,16 @@ public sealed class TaggingProfileService
             changed = true;
         }
 
+        if (technical.LyricsSchemaVersion < 5)
+        {
+            // Normalize the new lyrics type priority through the shared policy:
+            // aliases map, unknown tokens drop, plain lyrics pin last. Absent
+            // fields keep the legacy default without resetting explicit orders.
+            technical.LyricsTypeOrder = DeezSpoTag.Services.Download.Shared.LyricsSettingsPolicy.NormalizeLyricsTypeOrder(technical.LyricsTypeOrder);
+            technical.LyricsSchemaVersion = 5;
+            changed = true;
+        }
+
         return changed;
     }
 

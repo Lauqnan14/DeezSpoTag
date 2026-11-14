@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Models;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
@@ -254,6 +255,7 @@ public sealed class LyricsArtifactStateTest
             SyncedLyrics = true,
             SaveLyrics = true,
             LrcType = "lyrics,unsynced-lyrics",
+            LyricsTypeOrder = "lyrics,unsynced-lyrics,ttml-lyrics,syllable-lyrics",
             LrcFormat = "ttml",
             SynthesizeLrcFromTtml = true,
             LyricsFallbackEnabled = false,
@@ -265,10 +267,231 @@ public sealed class LyricsArtifactStateTest
         Assert.True(effective.SyncedLyrics);
         Assert.True(effective.SaveLyrics);
         Assert.Equal("lyrics,unsynced-lyrics", effective.LrcType);
+        Assert.Equal("lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics", effective.LyricsTypeOrder);
         Assert.Equal("ttml", effective.LrcFormat);
         Assert.True(effective.SynthesizeLrcFromTtml);
         Assert.False(effective.LyricsFallbackEnabled);
         Assert.Equal("lrclib,apple", effective.LyricsFallbackOrder);
+    }
+
+    [Fact]
+    public void QueueSettingsSnapshot_LegacySnapshotWithoutTypeOrder_RetainsLegacyPriority()
+    {
+        // A queued job captured before the field existed must not inherit a later
+        // reordered global preference; it keeps the legacy default priority.
+        var snapshot = QueueSourceSettingsSnapshot.Capture(new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"
+        });
+        snapshot.LyricsTypeOrder = null;
+
+        var reorderedGlobal = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LyricsTypeOrder = "lyrics,ttml-lyrics,syllable-lyrics"
+        };
+
+        var effective = snapshot.ApplyTo(reorderedGlobal);
+
+        Assert.Equal("ttml-lyrics,syllable-lyrics,lyrics", effective.LyricsTypeOrder);
+    }
+
+    [Fact]
+    public void QueueSettingsSnapshot_JsonRead_ReadsTypeOrderInBothCasingConventions()
+    {
+        var pascal = QueueSourceSettingsSnapshot.ReadFromPayload(JsonNode.Parse(
+            """{"SourceSettingsSnapshot":{"SyncedLyrics":true,"LyricsTypeOrder":"lyrics,ttml-lyrics"}}""")!.AsObject());
+        Assert.Equal("lyrics,ttml-lyrics", pascal?.LyricsTypeOrder);
+
+        var camel = QueueSourceSettingsSnapshot.ReadFromPayload(JsonNode.Parse(
+            """{"sourceSettingsSnapshot":{"syncedLyrics":true,"lyricsTypeOrder":"unsynced-lyrics,lyrics"}}""")!.AsObject());
+        Assert.Equal("unsynced-lyrics,lyrics", camel?.LyricsTypeOrder);
+    }
+
+    // ---- lyrics type priority: ordered plan fingerprints ----
+
+    [Fact]
+    public void Fetching_PlanFingerprintDistinguishesTypeOrder()
+    {
+        var providers = new[] { "apple", "lrclib" };
+        var ttmlFirst = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "ttml-lyrics,lyrics"
+        };
+        var lineFirst = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "lyrics,ttml-lyrics"
+        };
+        var lineFirstAgain = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "lyrics,ttml-lyrics"
+        };
+
+        var ttmlFirstFingerprint = LyricsArtifactState.Fetching(ttmlFirst).PlanFingerprint;
+        var lineFirstFingerprint = LyricsArtifactState.Fetching(lineFirst).PlanFingerprint;
+        var lineFirstAgainFingerprint = LyricsArtifactState.Fetching(lineFirstAgain).PlanFingerprint;
+
+        Assert.NotEqual(ttmlFirstFingerprint, lineFirstFingerprint);
+        Assert.Equal(lineFirstFingerprint, lineFirstAgainFingerprint);
+    }
+
+    [Fact]
+    public void Fetching_ReorderedPlanCannotSatisfyCompletedArtifactOfOtherOrder()
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-lyrics-artifacts-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var ttmlPath = Path.Join(tempRoot, "track.ttml");
+            File.WriteAllText(ttmlPath, "<tt><body><p>lyrics</p></body></tt>");
+            var providers = new[] { "apple", "lrclib" };
+            var completed = new LyricsArtifactState
+            {
+                Revision = 50,
+                Status = "completed",
+                ResolvedFormats = ["ttml"],
+                DownloadedFormats = ["ttml"],
+                FilesByFormat = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["ttml"] = ttmlPath
+                }
+            };
+            completed.PlanFingerprint = LyricsArtifactState.Fetching(
+                new LyricsResolutionPlan(["ttml", "lrc"], providers, true) { TypeOrder = "ttml-lyrics,lyrics" }).PlanFingerprint;
+
+            var reordered = LyricsArtifactState.Fetching(
+                new LyricsResolutionPlan(["ttml", "lrc"], providers, true) { TypeOrder = "lyrics,ttml-lyrics" },
+                completed);
+
+            // The stale completed artifact of the other order cannot satisfy the
+            // reordered plan silently; its verified files are not carried over.
+            Assert.Equal("fetching", reordered.Status);
+            Assert.Empty(reordered.DownloadedFormats);
+            Assert.NotEqual(completed.PlanFingerprint, reordered.PlanFingerprint);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Fetching_DefaultTypeOrder_MatchesLegacyFingerprint()
+    {
+        // A plan whose resolved order is the legacy default (or absent, for legacy
+        // callers) must hash exactly like the pre-feature fingerprint so existing
+        // verified checkpoints keep their reuse eligibility.
+        var providers = new[] { "apple", "lrclib" };
+        var legacy = new LyricsResolutionPlan(["ttml", "lrc"], providers, true);
+        var defaultOrder = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "ttml-lyrics,syllable-lyrics,lyrics"
+        };
+        var blankOrder = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = ""
+        };
+
+        var legacyFingerprint = LyricsArtifactState.Fetching(legacy).PlanFingerprint;
+
+        Assert.Equal(legacyFingerprint, LyricsArtifactState.Fetching(defaultOrder).PlanFingerprint);
+        Assert.Equal(legacyFingerprint, LyricsArtifactState.Fetching(blankOrder).PlanFingerprint);
+
+        // The UI appends unsynced-lyrics whenever plain lyrics are enabled. Plain is
+        // pinned last in every plan and its availability is already encoded by
+        // PlainFallbackAllowed, so the plain suffix adds no ordering information and
+        // must not break legacy checkpoint reuse.
+        var uiDefaultWithPlain = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "ttml-lyrics,syllable-lyrics,lyrics,unsynced-lyrics"
+        };
+        var plainFirstDefault = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "unsynced-lyrics,ttml-lyrics,syllable-lyrics,lyrics"
+        };
+        Assert.Equal(legacyFingerprint, LyricsArtifactState.Fetching(uiDefaultWithPlain).PlanFingerprint);
+        Assert.Equal(legacyFingerprint, LyricsArtifactState.Fetching(plainFirstDefault).PlanFingerprint);
+
+        // Byte compatibility with checkpoints written before the field existed.
+        var legacyFormula = "ttml,lrc\u001fapple,lrclib\u001fTrue";
+        Assert.Equal(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(legacyFormula))),
+            legacyFingerprint);
+    }
+
+    [Fact]
+    public void Fetching_CustomOrderPlainSuffix_IsCanonicalAcrossPlainAvailability()
+    {
+        // A customized rich order fingerprints identically whether or not the caller
+        // appended the plain token: the rich order is the only ordering information.
+        var providers = new[] { "apple", "lrclib" };
+        var withoutPlain = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "lyrics,ttml-lyrics,syllable-lyrics"
+        };
+        var withPlain = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+        {
+            TypeOrder = "lyrics,unsynced-lyrics,ttml-lyrics,syllable-lyrics"
+        };
+
+        Assert.Equal(
+            LyricsArtifactState.Fetching(withoutPlain).PlanFingerprint,
+            LyricsArtifactState.Fetching(withPlain).PlanFingerprint);
+    }
+
+    [Fact]
+    public void Fetching_LegacyCheckpointKeepsReuseEligibilityUnderUnchangedPreferences()
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-lyrics-reuse-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var ttmlPath = Path.Join(tempRoot, "track.ttml");
+            File.WriteAllText(ttmlPath, "<tt><body><p>lyrics</p></body></tt>");
+            var providers = new[] { "apple", "lrclib" };
+            var legacyPlan = new LyricsResolutionPlan(["ttml", "lrc"], providers, true);
+
+            // A completed checkpoint written before the type order existed: verified
+            // TTML file plus the legacy (pre-feature) fingerprint.
+            var legacyCheckpoint = LyricsArtifactState.Fetching(legacyPlan);
+            legacyCheckpoint.Status = "completed";
+            legacyCheckpoint.ResolvedFormats = ["ttml"];
+            legacyCheckpoint.DownloadedFormats = ["ttml"];
+            legacyCheckpoint.FilesByFormat = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ttml"] = ttmlPath
+            };
+
+            // The same preferences after the update: the resolved order is still the
+            // legacy default, so the verified file must remain reusable. The second
+            // plan is exactly what the AutoTag UI saves when plain lyrics are enabled.
+            var samePreferences = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+            {
+                TypeOrder = "ttml-lyrics,syllable-lyrics,lyrics"
+            };
+            var uiSavedWithPlain = new LyricsResolutionPlan(["ttml", "lrc"], providers, true)
+            {
+                TypeOrder = "ttml-lyrics,syllable-lyrics,lyrics,unsynced-lyrics"
+            };
+            var resumed = LyricsArtifactState.Fetching(samePreferences, legacyCheckpoint);
+
+            Assert.Equal("fetching", resumed.Status);
+            Assert.Equal(["ttml"], resumed.DownloadedFormats);
+            Assert.Equal(ttmlPath, resumed.FilesByFormat["ttml"]);
+
+            var resumedFromUiOrder = LyricsArtifactState.Fetching(uiSavedWithPlain, legacyCheckpoint);
+
+            Assert.Equal(["ttml"], resumedFromUiOrder.DownloadedFormats);
+            Assert.Equal(ttmlPath, resumedFromUiOrder.FilesByFormat["ttml"]);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
     }
 
     [Fact]

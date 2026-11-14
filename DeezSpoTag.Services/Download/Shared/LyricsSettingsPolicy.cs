@@ -10,6 +10,78 @@ public static class LyricsSettingsPolicy
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string TtmlLyricsType = "ttml-lyrics";
 
+    /// <summary>
+    /// Legacy rich-type priority, used as the default type order and to append
+    /// rich types the caller did not supply. Plain lyrics are never part of it;
+    /// they are pinned last by <see cref="NormalizeLyricsTypeOrder"/> and by the
+    /// resolver regardless of their position in a supplied order.
+    /// </summary>
+    public const string DefaultLyricsTypeOrder = "ttml-lyrics,syllable-lyrics,lyrics";
+
+    /// <summary>
+    /// Normalizes a supplied lyrics type order into canonical CSV: known aliases
+    /// map to canonical tokens, unknown tokens and duplicates are dropped, the
+    /// supplied rich order is preserved, missing rich types are appended in
+    /// legacy default order, and plain lyrics are pinned last when supplied.
+    /// This is a pure preference string: it never enables a type or source, and
+    /// enabled-type membership continues to come from LrcType and the enable
+    /// settings alone.
+    /// </summary>
+    public static string NormalizeLyricsTypeOrder(string? rawValue)
+    {
+        var supplied = (rawValue ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeTypeToken)
+            .Where(static token => KnownLyricsTypes.Contains(token))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var richOrder = new List<string>();
+        var plainSupplied = false;
+        foreach (var token in supplied)
+        {
+            if (token == UnsyncedLyricsType)
+            {
+                plainSupplied = true;
+                continue;
+            }
+
+            richOrder.Add(token);
+        }
+
+        // Legacy default order for rich types the caller omitted.
+        foreach (var richType in (string[])[TtmlLyricsType, SyllableLyricsType, LyricsType])
+        {
+            if (!richOrder.Contains(richType, StringComparer.OrdinalIgnoreCase))
+            {
+                richOrder.Add(richType);
+            }
+        }
+
+        if (plainSupplied)
+        {
+            richOrder.Add(UnsyncedLyricsType);
+        }
+
+        return string.Join(",", richOrder);
+    }
+
+    /// <summary>
+    /// The rich-type portion of a lyrics type order, normalized. Plain lyrics are
+    /// removed because they are pinned last by the resolver in every plan and their
+    /// availability is carried separately; the rich order is the only ordering
+    /// information the value adds.
+    /// </summary>
+    public static string GetRichLyricsTypeOrder(string? rawValue)
+        => string.Join(
+            ",",
+            NormalizeLyricsTypeOrder(rawValue)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(static token => !string.Equals(token, UnsyncedLyricsType, StringComparison.OrdinalIgnoreCase)));
+
+    private static readonly HashSet<string> KnownLyricsTypes =
+        [LyricsType, SyllableLyricsType, TtmlLyricsType, UnsyncedLyricsType];
+
     public static bool IsLyricsGateEnabled(DeezSpoTagSettings settings)
     {
         return settings.SyncedLyrics

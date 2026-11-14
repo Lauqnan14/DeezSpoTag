@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 using System.Text;
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -331,6 +332,25 @@ public sealed class LyricsArtifactState
         var value = $"{string.Join(',', NormalizeFormats(plan.RequestedFormats))}\u001f"
             + $"{string.Join(',', NormalizeTokens(plan.Providers))}\u001f"
             + plan.PlainFallbackAllowed;
+
+        // Compatibility: a plan whose resolved rich order is the legacy default (or
+        // absent for legacy callers) must hash exactly like the pre-feature
+        // fingerprint so older verified checkpoints keep their reuse eligibility.
+        // The plain token is dropped before the comparison — plain lyrics are pinned
+        // last in every plan and their availability is already encoded by
+        // PlainFallbackAllowed, so a "default + unsynced-lyrics" order (what the UI
+        // saves when plain lyrics are enabled) is fingerprint-identical to legacy.
+        // Only a customized rich order extends the fingerprint, which is what keeps
+        // stale artifacts of one custom order from silently satisfying another.
+        var richOrder = string.IsNullOrWhiteSpace(plan.TypeOrder)
+            ? null
+            : LyricsSettingsPolicy.GetRichLyricsTypeOrder(plan.TypeOrder);
+        if (!string.IsNullOrEmpty(richOrder)
+            && !string.Equals(richOrder, LyricsSettingsPolicy.DefaultLyricsTypeOrder, StringComparison.OrdinalIgnoreCase))
+        {
+            value += $"\u001f{richOrder}";
+        }
+
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 

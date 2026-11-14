@@ -2,7 +2,7 @@ namespace DeezSpoTag.Core.Models.Settings;
 
 public class TechnicalTagSettings
 {
-    public const int CurrentLyricsSchemaVersion = 4;
+    public const int CurrentLyricsSchemaVersion = 5;
 
     public bool SavePlaylistAsCompilation { get; set; } = false;
     public bool UseNullSeparator { get; set; } = false;
@@ -29,6 +29,9 @@ public class TechnicalTagSettings
     public bool EmbedLyrics { get; set; } = true;
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
+
+    /// <summary>Lookup priority for the enabled lyrics types; plain lyrics stay last.</summary>
+    public string LyricsTypeOrder { get; set; } = "ttml-lyrics,syllable-lyrics,lyrics";
     public bool SynthesizeLrcFromTtml { get; set; } = false;
     public bool SynthesizeTtmlFromLrc { get; set; } = true;
     public bool PreferEnhancedLrc { get; set; } = true;

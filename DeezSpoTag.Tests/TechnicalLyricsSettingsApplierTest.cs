@@ -106,4 +106,37 @@ public sealed class TechnicalLyricsSettingsApplierTest
         Assert.False(settings.Tags.Lyrics);
         Assert.False(settings.Tags.SyncedLyrics);
     }
+
+    [Fact]
+    public void Apply_TransfersAndNormalizesProfileTypeOrder()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LyricsTypeOrder = "ttml-lyrics,syllable-lyrics,lyrics"
+        };
+        var technical = new TechnicalTagSettings
+        {
+            LyricsTypeOrder = "unsynced-lyrics,lyrics,ttml"
+        };
+
+        TechnicalLyricsSettingsApplier.Apply(settings, technical);
+
+        Assert.Equal("lyrics,ttml-lyrics,syllable-lyrics,unsynced-lyrics", settings.LyricsTypeOrder);
+    }
+
+    [Fact]
+    public void Apply_BlankProfileTypeOrder_KeepsExistingOrder()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            LyricsTypeOrder = "lyrics,ttml-lyrics,syllable-lyrics"
+        };
+        var technical = new TechnicalTagSettings { LyricsTypeOrder = "  " };
+
+        TechnicalLyricsSettingsApplier.Apply(settings, technical);
+
+        Assert.Equal("lyrics,ttml-lyrics,syllable-lyrics", settings.LyricsTypeOrder);
+    }
 }
