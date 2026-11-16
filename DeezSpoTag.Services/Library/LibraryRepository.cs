@@ -9934,11 +9934,21 @@ SELECT id,
        COALESCE(missing_summary.missing_count, 0),
        COALESCE(state_breakdown.mapping_retry_count, 0),
        COALESCE(state_breakdown.blocked_count, 0),
-       COALESCE(state_breakdown.failed_count, 0)
+       COALESCE(state_breakdown.failed_count, 0),
+       CASE
+         WHEN snapshot_cache.snapshot_id IS NULL THEN 'unknown'
+         WHEN pws.snapshot_id IS NULL THEN 'pending'
+         WHEN snapshot_cache.snapshot_id IS NOT pws.snapshot_id THEN 'changed'
+         WHEN snapshot_cache.is_complete = 1 THEN 'complete'
+         ELSE 'incomplete'
+       END AS snapshot_status
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
    AND pws.source_id = pw.source_id
+LEFT JOIN playlist_track_candidate_cache snapshot_cache
+    ON snapshot_cache.source = pw.source
+   AND snapshot_cache.source_id = pw.source_id
 LEFT JOIN (
     SELECT track.source,
            track.source_id,
@@ -10046,7 +10056,8 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                 MissingTrackCount: await reader.IsDBNullAsync(24, cancellationToken) ? 0 : reader.GetInt32(24),
                 MappingRetryCount: await reader.IsDBNullAsync(25, cancellationToken) ? 0 : reader.GetInt32(25),
                 BlockedTrackCount: await reader.IsDBNullAsync(26, cancellationToken) ? 0 : reader.GetInt32(26),
-                FailedTrackCount: await reader.IsDBNullAsync(27, cancellationToken) ? 0 : reader.GetInt32(27)));
+                FailedTrackCount: await reader.IsDBNullAsync(27, cancellationToken) ? 0 : reader.GetInt32(27),
+                SnapshotStatus: reader.GetString(28)));
         }
 
         return items;

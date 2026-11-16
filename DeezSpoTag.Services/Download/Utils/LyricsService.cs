@@ -113,6 +113,9 @@ public sealed record LyricsResolutionProgress(
     string? Detail = null,
     bool Incomplete = false)
 {
+    /// <summary>The active capability round's goal while a provider is being queried.</summary>
+    public string? LookupGoal { get; init; }
+
     /// <summary>
     /// Formats resolved so far (ttml/lrc/txt). Published on every progress tick so the
     /// download queue can render lyrics badges as soon as a provider answers instead of
@@ -490,6 +493,9 @@ public class LyricsService
             DeezSpoTag.Core.Security.LogSanitizer.OneLine(detail),
             incomplete)
         {
+            LookupGoal = phase == "provider-started" && state.CurrentRound is { } round
+                ? DescribeRoundGoal(round)
+                : null,
             ResolvedFormats = formats,
             LrcTiming = HasResolvedLrcOutput(progressRequirements, state.ResolvedLyrics)
                 ? (requirements.WantsEnhancedSynchronizedLyrics ? DescribeResolvedLrcTiming(state.ResolvedLyrics) : "line")

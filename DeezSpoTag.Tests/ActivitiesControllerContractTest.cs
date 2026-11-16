@@ -12,6 +12,37 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ActivitiesControllerContractTest
 {
+    [Fact]
+    public async System.Threading.Tasks.Task LyricsLookupMessage_UsesActiveGoalInsteadOfAllRemainingOutputs()
+    {
+        var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        var start = source.IndexOf("function getLyricsArtifactActivity(", StringComparison.Ordinal);
+        var end = source.IndexOf("\nfunction ", start + 1, StringComparison.Ordinal);
+        var script = source[start..end] + "\n" + """
+            const assert = require('node:assert/strict');
+            const artifacts = {status:'fetching', currentProvider:'lrclib', lookupGoal:'line-synced LRC',
+                remainingOutputs:['word-ttml','enhanced-lrc','plain-text']};
+            assert.equal(getLyricsArtifactActivity(artifacts), 'Fetching line-synced LRC from lrclib');
+            assert.equal(getLyricsArtifactActivity({...artifacts, lookupGoal:null}), 'Fetching lyrics from lrclib');
+            assert.equal(getLyricsArtifactActivity({...artifacts, currentProvider:null, lookupGoal:null}), 'Fetching lyrics');
+            assert.equal(getLyricsArtifactActivity({...artifacts, status:'completed'}), '');
+            assert.equal(getLyricsArtifactActivity({Status:'fetching', CurrentProvider:'apple', LookupGoal:'word-synced TTML'}),
+                'Fetching word-synced TTML from apple');
+            """;
+        var info = new System.Diagnostics.ProcessStartInfo("node")
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true,
+            RedirectStandardError = true, UseShellExecute = false
+        };
+        using var process = System.Diagnostics.Process.Start(info)!;
+        await process.StandardInput.WriteAsync(script);
+        process.StandardInput.Close();
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
     [Theory]
     [InlineData("provider_verification_required", "Session verification needed")]
     [InlineData("authentication_required", "Session verification needed")]

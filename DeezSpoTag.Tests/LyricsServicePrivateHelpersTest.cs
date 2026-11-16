@@ -56,6 +56,50 @@ public sealed class LyricsServicePrivateHelpersTest
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResolveLyrics_ActiveLookupRespectsCapabilitiesAndConfiguredProviders(bool fallbackEnabled)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LyricsFallbackOrder = "lrclib,musixmatch,apple", LyricsFallbackEnabled = fallbackEnabled
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings,
+            new Dictionary<string, LyricsBase>
+            {
+                ["apple"] = LyricsNew.CreateError("No lyrics available"),
+                ["musixmatch"] = LyricsNew.CreateError("No lyrics available"),
+                ["lrclib"] = LyricsNew.CreateError("No lyrics available")
+            });
+        Assert.Equal(fallbackEnabled ? new[] { "apple", "musixmatch", "lrclib" } : new[] { "lrclib" }, result.ProvidersAttempted);
+        var starts = progress.Where(tick => tick.Phase == "provider-started").ToArray();
+        var goalProperty = typeof(LyricsResolutionProgress).GetProperty("LookupGoal");
+        Assert.NotNull(goalProperty);
+        foreach (var tick in starts)
+        {
+            var goal = Assert.IsType<string>(goalProperty.GetValue(tick));
+            Assert.Equal(tick.Provider switch
+            {
+                "apple" => "word-synced TTML",
+                "musixmatch" => "word-timed LRC",
+                "lrclib" => "line-synced LRC",
+                _ => throw new InvalidOperationException("Unexpected provider")
+            }, goal);
+            var artifacts = DeezSpoTag.Services.Download.Queue.LyricsArtifactState.Fetching(result.Plan);
+            artifacts.ApplyProgress(tick);
+            var json = JsonSerializer.SerializeToElement(artifacts);
+            Assert.Equal(goal, json.GetProperty("lookupGoal").GetString());
+            var end = progress.First(value => value.Phase == "provider-completed" && value.Provider == tick.Provider);
+            artifacts.ApplyProgress(end);
+            Assert.Null(artifacts.CurrentProvider);
+            Assert.Equal(JsonValueKind.Null, JsonSerializer.SerializeToElement(artifacts).GetProperty("lookupGoal").ValueKind);
+        }
+        Assert.NotEmpty(starts);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ResolveLyrics_RichSuccessSkipsPlainLookupAndRequirement(bool ttml)

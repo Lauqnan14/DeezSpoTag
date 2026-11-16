@@ -71,6 +71,33 @@ public sealed class WatchlistDurabilityRepositoryTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SnapshotCompletion_IsIndependentOfOperationalAndSyncStatusUntilSnapshotChanges()
+    {
+        const string id = "snapshot-completion";
+        await _repository.AddPlaylistWatchlistAsync("boomplay", id, new PlaylistWatchlistMetadataInput("Snapshot", null, null, 2));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "boomplay", id, "v1", 2, null, null, DateTimeOffset.UtcNow, "completed"));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("boomplay", id, "v1", "[]", 4, "identity", "provider", true);
+        foreach (var status in new[] { "completed", "incomplete", "waiting_for_target_sync", "media_sync_blocked", "source_failure" })
+        {
+            await ExecuteSqlAsync("UPDATE playlist_watch_state SET last_run_status=@status WHERE source_id=@id;", ("status", status), ("id", id));
+            var row = Assert.Single(await _repository.GetPlaylistWatchlistAsync());
+            Assert.Equal("complete", JsonSerializer.SerializeToElement(row).GetProperty("SnapshotStatus").GetString());
+            Assert.Equal(0, row.SyncedTrackCount);
+            Assert.Equal(2, row.IncompleteTrackCount);
+        }
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("boomplay", id, "v2", "[]", 4, "identity", "provider", true);
+        Assert.Equal("changed", JsonSerializer.SerializeToElement(Assert.Single(await _repository.GetPlaylistWatchlistAsync())).GetProperty("SnapshotStatus").GetString());
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "boomplay", id, "v2", 2, null, null, DateTimeOffset.UtcNow, "incomplete"));
+        Assert.Equal("complete", JsonSerializer.SerializeToElement(Assert.Single(await _repository.GetPlaylistWatchlistAsync())).GetProperty("SnapshotStatus").GetString());
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("boomplay", id, "v3", "[]", 4, "identity", "provider", false);
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "boomplay", id, "v3", 2, null, null, DateTimeOffset.UtcNow, "incomplete"));
+        Assert.Equal("incomplete", JsonSerializer.SerializeToElement(Assert.Single(await _repository.GetPlaylistWatchlistAsync())).GetProperty("SnapshotStatus").GetString());
+    }
+
+    [Fact]
     public async Task ConfirmedThrottleCannotBeShortenedOrClearedByAnOlderSuccess()
     {
         var deadline = DateTimeOffset.UtcNow.AddMinutes(15);

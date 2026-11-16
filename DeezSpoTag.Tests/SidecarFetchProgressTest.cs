@@ -235,7 +235,11 @@ public sealed class SidecarFetchProgressTest
     [Fact]
     public async Task SlowAnimatedArtworkWriteIsNotKilledByTheNetworkBudget()
     {
-        var networkBudget = TimeSpan.FromMilliseconds(100);
+        // The margins are deliberately wide: on loaded CI runners a Task.Delay can overshoot
+        // its nominal duration by far more than its resolution, so the fetch must sit far
+        // inside the network budget (50ms against 1000ms) while the write stays far outside
+        // it (1500ms), making the final elapsed assertion hold by construction.
+        var networkBudget = TimeSpan.FromMilliseconds(1000);
         using var budget = new AutoTagService.SidecarFetchBudget(
             networkBudget,
             TimeSpan.FromSeconds(30),
@@ -247,9 +251,9 @@ public sealed class SidecarFetchProgressTest
             {
                 // Stands in for the animated-artwork download followed by the long local write:
                 // the fetch is well inside the network budget, the write is well outside it.
-                await Task.Delay(TimeSpan.FromMilliseconds(30), token);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), token);
                 await budget.BeginWrite(token);
-                await Task.Delay(TimeSpan.FromMilliseconds(400), token);
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), token);
                 return "written";
             },
             budget,

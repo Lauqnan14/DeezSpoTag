@@ -60,6 +60,9 @@ public sealed class LyricsArtifactState
     [JsonPropertyName("currentProvider")]
     public string? CurrentProvider { get; set; }
 
+    [JsonPropertyName("lookupGoal")]
+    public string? LookupGoal { get; set; }
+
     [JsonPropertyName("requestedOutputs")]
     public List<string> RequestedOutputs { get; set; } = new();
 
@@ -150,6 +153,7 @@ public sealed class LyricsArtifactState
             ? "incomplete"
             : ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
         CurrentProvider = null;
+        LookupGoal = null;
         IncompleteReason = result.Incomplete
             ? result.Error
             : RemainingOutputs.Count > 0
@@ -160,9 +164,9 @@ public sealed class LyricsArtifactState
     public void ApplyProgress(LyricsResolutionProgress progress)
     {
         Revision++;
-        CurrentProvider = string.Equals(progress.Phase, "completed", StringComparison.OrdinalIgnoreCase)
-            ? null
-            : progress.Provider;
+        var lookupActive = string.Equals(progress.Phase, "provider-started", StringComparison.OrdinalIgnoreCase);
+        CurrentProvider = lookupActive ? progress.Provider : null;
+        LookupGoal = lookupActive ? progress.LookupGoal : null;
         RequestedOutputs = NormalizeTokens(progress.RequestedOutputs);
         ResolvedOutputs = NormalizeTokens(progress.ResolvedOutputs);
         RemainingOutputs = NormalizeTokens(progress.RemainingOutputs);

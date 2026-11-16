@@ -65,7 +65,7 @@ function buildWatchlistRuntimeHealthSummary(runtime) {
         parts.push(`${runtimeHealth.pendingReconciliationRequests} reconciliation request(s)`);
     }
     if (runtimeHealth.lastAdmissionBlockReason) {
-        parts.push(runtimeHealth.lastAdmissionBlockReason);
+        parts.push(`Last admission check: ${runtimeHealth.lastAdmissionBlockReason}`);
     }
     if (Number(runtimeHealth.lastRecoveredClaimCount || 0) > 0) {
         parts.push(`recovered ${runtimeHealth.lastRecoveredClaimCount} stale claim(s)`);
@@ -78,11 +78,13 @@ function buildWatchlistRuntimeHealthSummary(runtime) {
             return;
         }
         const label = String(platform.label || platform.source || '').trim();
-        const summary = String(platform.summary || '').trim();
+        const summary = String(platform.summary || '').trim()
+            .replace(/\b(\d+) prepared\b/g, '$1 snapshots prepared');
         if (!label) {
             return;
         }
-        parts.push(summary ? `${label} · ${summary}` : label);
+        const phase = runtimeHealth.isRunning && !platform.completedUtc ? 'current check' : 'last check';
+        parts.push(summary ? `${label} (${phase}) · ${summary}` : `${label} (${phase})`);
     });
     if (Number(claimHealth.orphanedPending || 0) > 0) {
         parts.push(`${claimHealth.orphanedPending} orphaned pending claim(s)`);
@@ -108,13 +110,13 @@ function buildWatchlistRuntimeHealthSummary(runtime) {
         parts.push(`oldest target job ${formatRelativeTime(syncJobHealth.oldestPendingUtc)}`);
     }
     if (syncJobHealth.lastError) {
-        parts.push(syncJobHealth.lastError);
+        parts.push(`Last target sync result: ${syncJobHealth.lastError}`);
     }
     const presentation = runtime?.presentation || {};
     const presentationParts = [
         [presentation.review, 'review'],
         [presentation.missing, 'missing'],
-        [presentation.mappingRetry, 'mapping retry'],
+        [presentation.mappingRetry, 'unmapped'],
         [presentation.blocked, 'blocked'],
         [presentation.failed, 'failed'],
         [presentation.queued, 'queued'],
@@ -1573,13 +1575,58 @@ function resolvePlaylistWatchlistPresentation(item) {
     };
 }
 
+function formatPlaylistWatchlistSnapshotStatus(item) {
+    switch (String(item.snapshotStatus || '').toLowerCase()) {
+        case 'complete': return 'Snapshot: complete';
+        case 'incomplete': return 'Snapshot: incomplete';
+        case 'changed': return 'Snapshot changed; processing pending';
+        case 'pending': return 'Snapshot: processing pending';
+        default: return 'Snapshot completion not checked';
+    }
+}
+
+function formatPlaylistWatchlistMappingStatus(item) {
+    const count = toNonNegativeCount(item.mappingRetryCount);
+    return count > 0 ? `${count} unmapped track${count === 1 ? '' : 's'}` : '';
+}
+
+function formatPlaylistWatchlistSyncStatus(item) {
+    if (item.trackCount === null || item.trackCount === undefined) return 'Target sync not checked';
+    const counts = resolvePlaylistWatchlistPresentation(item);
+    if (counts.totalTrackCount === 0) return 'No tracked tracks';
+    const label = `Target sync: ${counts.syncedTrackCount}/${counts.totalTrackCount} synced`;
+    return counts.incompleteTrackCount > 0 ? `${label} · ${counts.incompleteTrackCount} not synced` : label;
+}
+
+function getWatchlistSourceCircuitPresentation(circuit, referenceUtc) {
+    if (!circuit?.isOpen) return { isActive: false, label: '', detail: '' };
+    const until = Date.parse(circuit.openUntilUtc);
+    const reference = Date.parse(referenceUtc);
+    const now = Number.isFinite(reference) ? reference : Date.now();
+    const elapsed = Number.isFinite(until) && until <= now;
+    const reason = String(circuit.reason || '').trim();
+    if (elapsed) {
+        return {
+            isActive: false,
+            label: 'Source cooldown elapsed; awaiting next check',
+            detail: reason ? `Last source restriction: ${reason}` : ''
+        };
+    }
+    return {
+        isActive: true,
+        label: 'Source cooling down',
+        detail: [reason, Number.isFinite(until) ? `until ${formatRelativeTime(circuit.openUntilUtc)}` : '']
+            .filter(Boolean).join(' • ')
+    };
+}
+
 function formatPlaylistWatchlistRunStatus(item) {
     const runStatus = String(item.lastRunStatus || '').trim().toLowerCase();
     if (!runStatus) {
-        return 'never checked yet';
+        return 'Not checked yet';
     }
 
-    return runStatus.replaceAll('_', ' ');
+    return `Last check: ${runStatus.replaceAll('_', ' ')}`;
 }
 
 function renderPlaylistWatchlistPresentationBadges(item) {
@@ -1599,7 +1646,7 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     const stateBadges = [
         renderPlaylistWatchlistStateBadge(reviewTrackCount, 'review', 'track requiring review', 'fa-magnifying-glass'),
         renderPlaylistWatchlistStateBadge(missingTrackCount, 'missing', 'missing downloadable track', 'fa-download'),
-        renderPlaylistWatchlistStateBadge(mappingRetryCount, 'mapping-retry', 'track waiting for mapping', 'fa-link-slash'),
+        renderPlaylistWatchlistStateBadge(mappingRetryCount, 'mapping-retry', 'unmapped track', 'fa-link-slash'),
         renderPlaylistWatchlistStateBadge(blockedTrackCount, 'blocked', 'blocked track', 'fa-ban'),
         renderPlaylistWatchlistStateBadge(Math.max(0, ignoredBlockedTrackCount - blockedTrackCount), 'ignored', 'ignored track', 'fa-eye-slash'),
         renderPlaylistWatchlistStateBadge(failedTrackCount, 'failed', 'failed track', 'fa-triangle-exclamation'),
@@ -1856,34 +1903,33 @@ async function loadPlaylistWatchlist() {
                 : `${item.trackCount} tracks`;
             const source = String(item.source || '').trim().toLowerCase();
             const sourceId = String(item.sourceId || '').trim();
-            const isActive = activeSource && activeSourceId && source === activeSource && sourceId === activeSourceId;
-            const circuit = circuitBySource.get(source);
+            const isActive = runtime?.runtime?.isRunning === true
+                && activeSource && activeSourceId && source === activeSource && sourceId === activeSourceId;
+            const circuit = getWatchlistSourceCircuitPresentation(circuitBySource.get(source), runtime?.utcNow);
             const runMessage = String(item.lastRunMessage || '').trim();
             const consecutiveFailures = Number(item.consecutiveFailures || 0);
             const nextAttempt = item.nextAttemptUtc
                 ? formatRelativeTime(item.nextAttemptUtc)
                 : '';
-            const presentationCounts = resolvePlaylistWatchlistPresentation(item);
-            const statusLabel = formatPlaylistWatchlistRunStatus(item);
+            const statusLabel = formatPlaylistWatchlistSnapshotStatus(item);
+            const syncStatus = formatPlaylistWatchlistSyncStatus(item);
+            const mappingStatus = formatPlaylistWatchlistMappingStatus(item);
             const statusParts = [statusLabel];
             if (isActive) {
-                statusParts.push('active');
+                statusParts.push('checking playlist');
             }
-            if (circuit?.isOpen) {
-                statusParts.push('source circuit open');
+            if (circuit.label) {
+                statusParts.push(circuit.label);
             }
             if (consecutiveFailures > 0) {
-                statusParts.push(`failures ${consecutiveFailures}`);
+                statusParts.push(`recorded failures ${consecutiveFailures}`);
             }
             if (nextAttempt) {
-                statusParts.push(`next ${nextAttempt}`);
+                statusParts.push(`recorded retry time ${nextAttempt}`);
             }
             const statusMeta = statusParts.join(' • ');
-            const circuitMeta = circuit?.isOpen
-                ? [circuit.reason, circuit.openUntilUtc ? `until ${formatRelativeTime(circuit.openUntilUtc)}` : null]
-                    .filter(Boolean)
-                    .join(' • ')
-                : '';
+            const circuitMeta = circuit.detail;
+            const lastCheck = formatPlaylistWatchlistRunStatus(item);
             return `<div class="watchlist-playlist-card-v2" draggable="true" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" data-playlist-track-count="${escapeHtml(String(item.trackCount ?? ''))}">
                 <button class="watchlist-card-art" type="button"
                     data-playlist-open="${escapeHtml(item.sourceId)}"
@@ -1909,7 +1955,10 @@ async function loadPlaylistWatchlist() {
                     <div class="watchlist-card-name">${escapeHtml(item.name)}</div>
                     ${trackCount ? `<div class="watchlist-card-meta">${escapeHtml(trackCount)}</div>` : ''}
                     <div class="watchlist-card-meta">${escapeHtml(statusMeta)}</div>
-                    ${runMessage ? `<div class="watchlist-card-meta">${escapeHtml(runMessage)}</div>` : ''}
+                    <div class="watchlist-card-meta">${escapeHtml(syncStatus)}</div>
+                    ${mappingStatus ? `<div class="watchlist-card-meta">${escapeHtml(mappingStatus)}</div>` : ''}
+                    <div class="watchlist-card-meta">${escapeHtml(lastCheck)}</div>
+                    ${runMessage ? `<div class="watchlist-card-meta">Last check details: ${escapeHtml(runMessage)}</div>` : ''}
                     ${circuitMeta ? `<div class="watchlist-card-meta">${escapeHtml(circuitMeta)}</div>` : ''}
                 </div>
             </div>`;

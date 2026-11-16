@@ -7432,11 +7432,10 @@ function getLyricsArtifactActivity(artifacts) {
         return '';
     }
     const provider = String(artifacts.currentProvider ?? artifacts.CurrentProvider ?? '').trim();
-    const remaining = artifacts.remainingOutputs ?? artifacts.RemainingOutputs;
-    const labels = Array.isArray(remaining) ? remaining.filter(Boolean).join(', ') : '';
-    if (provider && labels) return `Fetching ${labels} from ${provider}`;
+    const goal = String(artifacts.lookupGoal ?? artifacts.LookupGoal ?? '').trim();
+    if (provider && goal) return `Fetching ${goal} from ${provider}`;
     if (provider) return `Fetching lyrics from ${provider}`;
-    return labels ? `Fetching ${labels}` : 'Fetching lyrics';
+    return 'Fetching lyrics';
 }
 
 function setTaskActivity(taskId, message) {

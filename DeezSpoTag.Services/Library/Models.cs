@@ -837,7 +837,8 @@ public sealed record PlaylistWatchlistDto(
     int? MissingTrackCount = null,
     int? MappingRetryCount = null,
     int? BlockedTrackCount = null,
-    int? FailedTrackCount = null);
+    int? FailedTrackCount = null,
+    string? SnapshotStatus = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
