@@ -93,7 +93,9 @@ public sealed class QueueItemErrorLineTest
         };
         var method = typeof(EngineFallbackCoordinator).GetMethod("BuildExhaustionMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
         var line = (string)method.Invoke(null, new object[] { payload, "tidal" })!;
-        Assert.Equal("Qobuz (6) download API session needs verification; Amazon Music (HD_FLAC) had no copy of this track.", line);
+        // "unresolved" is a failed peer search, not a confirmed catalogue absence; it must
+        // not be described as the provider having no copy of the track.
+        Assert.Equal("Qobuz (6) download API session needs verification; Amazon Music (HD_FLAC) could not confirm a download source.", line);
     }
 
     [Fact]

@@ -1172,6 +1172,103 @@ WHERE queue_uuid = @queueUuid;";
     }
 
     [Fact]
+    public async Task RequeueAsync_MonitoringOrigin_BlocksCancelledRow_ButRequeuesFailedRow()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("monitoring-cancelled-block", "Artist", "Blocked", 42) with { Status = "canceled" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("monitoring-failed-allow", "Artist", "Allowed", 43) with { Status = "failed", Error = "provider timed out" },
+            CancellationToken.None);
+
+        Assert.False(await context.QueueRepository.RequeueAsync(
+            "monitoring-cancelled-block",
+            QueueRequeueOrigin.Monitoring,
+            CancellationToken.None));
+        var cancelled = await context.QueueRepository.GetByUuidAsync("monitoring-cancelled-block", CancellationToken.None);
+        Assert.NotNull(cancelled);
+        Assert.Equal("canceled", cancelled!.Status, ignoreCase: true);
+
+        Assert.True(await context.QueueRepository.RequeueAsync(
+            "monitoring-failed-allow",
+            QueueRequeueOrigin.Monitoring,
+            CancellationToken.None));
+        var failed = await context.QueueRepository.GetByUuidAsync("monitoring-failed-allow", CancellationToken.None);
+        Assert.NotNull(failed);
+        Assert.Equal("queued", failed!.Status, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_DoesNotResurrectCancelledRow()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("cancelled-status-guard", "Artist", "Guard", 42) with { Status = "canceled" },
+            CancellationToken.None);
+
+        // Every late callback (failure, completion, dequeue, progress) must lose to the
+        // durable cancellation; only a cancelled target may touch a cancelled row.
+        foreach (var resurrectedStatus in new[] { "failed", "completed", "queued", "downloading", "retrying" })
+        {
+            await context.QueueRepository.UpdateStatusAsync(
+                "cancelled-status-guard",
+                resurrectedStatus,
+                $"late {resurrectedStatus} callback",
+                cancellationToken: CancellationToken.None);
+            var persisted = await context.QueueRepository.GetByUuidAsync("cancelled-status-guard", CancellationToken.None);
+            Assert.NotNull(persisted);
+            Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+            Assert.Null(persisted.Error);
+        }
+
+        // Cancelling an already cancelled row stays allowed and remains cancelled.
+        await context.QueueRepository.UpdateStatusAsync("cancelled-status-guard", "canceled", cancellationToken: CancellationToken.None);
+        var afterRecancel = await context.QueueRepository.GetByUuidAsync("cancelled-status-guard", CancellationToken.None);
+        Assert.NotNull(afterRecancel);
+        Assert.Equal("canceled", afterRecancel!.Status, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task CancelledRow_IgnoresRetryArtifactMutations()
+    {
+        await using var context = await CreateContextAsync();
+        const string originalPayload = """{"AutoIndex":1,"FallbackPlan":[{"StepId":"step-0","Engine":"deezer","Quality":"320"}]}""";
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("cancelled-mutation-guard", "Artist", "Guard", 42) with
+            {
+                Status = "canceled",
+                PayloadJson = originalPayload
+            },
+            CancellationToken.None);
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            "cancelled-mutation-guard",
+            """{"/library/a.flac":"/library/b.flac"}""",
+            cancellationToken: CancellationToken.None);
+
+        // A rejected automatic retry must not rewrite the cancelled row's payload,
+        // engine or download artifacts while the row stays cancelled.
+        await context.QueueRepository.UpdatePayloadAsync(
+            "cancelled-mutation-guard",
+            """{"AutoIndex":0,"FallbackPlan":[]}""",
+            CancellationToken.None);
+        await context.QueueRepository.UpdateEngineAsync("cancelled-mutation-guard", "qobuz", CancellationToken.None);
+        await context.QueueRepository.UpdatePayloadAndEngineAsync(
+            "cancelled-mutation-guard",
+            "qobuz",
+            """{"AutoIndex":0,"FallbackPlan":[]}""",
+            CancellationToken.None);
+        await context.QueueRepository.ClearRetryArtifactsAsync("cancelled-mutation-guard", CancellationToken.None);
+
+        var persisted = await context.QueueRepository.GetByUuidAsync("cancelled-mutation-guard", CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+        Assert.Equal("deezer", persisted.Engine, ignoreCase: true);
+        Assert.Equal(originalPayload, persisted.PayloadJson);
+        Assert.Equal("""{"/library/a.flac":"/library/b.flac"}""", persisted.FinalDestinationsJson);
+    }
+
+    [Fact]
     public async Task ScheduleRetryAsync_PersistsDelayAndRemovesItemFromRunnableQueue()
     {
         await using var context = await CreateContextAsync();

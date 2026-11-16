@@ -770,6 +770,13 @@ public sealed class DownloadIntentService
             => resolutionHistory.Add(new FallbackAttempt(step.StepId, "skipped", errorClass,
                 $"{step.Engine} quality={step.Quality}: {reason}"));
 
+        // Catalog identity is recording-level work, independent of the quality step.
+        // Share it only inside this queue attempt; the next retry must make a fresh request.
+        Task<TrackIdentityResolution?>? identityLookup = null;
+        Task<TrackIdentityResolution?> ResolveIdentityOnceAsync()
+            => identityLookup ??= ResolveTrackIdentityMatrixAsync(intent, settings,
+                BuildIdentityTargetsForDownload(settings, fallbackPlan.Select(step => step.Engine)), cancellationToken);
+
         string? lastSkipReason = null;
         for (var index = startIndex; index < fallbackPlan.Count; index++)
         {
@@ -795,7 +802,8 @@ public sealed class DownloadIntentService
                     preferIsrcOnly: false,
                     preResolved: null,
                     effectiveSettings: settings,
-                    cancellationToken);
+                    cancellationToken,
+                    resolveIdentity: ResolveIdentityOnceAsync);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested
                                        && FallbackFailureClassifier.IsRecoverableProviderFailure(ex))
@@ -886,9 +894,12 @@ public sealed class DownloadIntentService
         // One line on the item, same as everywhere else in the queue: the reason, and nothing the status beside
         // it already says. "Track unavailable in enabled download sources. Last skip: <reason>" was two
         // sentences for one fact.
-        var preResolutionError = string.IsNullOrWhiteSpace(lastSkipReason)
-            ? "No enabled source has this track."
-            : lastSkipReason.Trim();
+        var operationalFailures = resolutionHistory.Where(attempt => attempt.ErrorClass != "source_disabled")
+            .Select(attempt => attempt.Detail).Where(detail => !string.IsNullOrWhiteSpace(detail))
+            .Distinct(StringComparer.Ordinal).ToList();
+        var preResolutionError = operationalFailures.Count > 0
+            ? string.Join("; ", operationalFailures)
+            : string.IsNullOrWhiteSpace(lastSkipReason) ? "No enabled source has this track." : lastSkipReason.Trim();
 
         return new QueuePreResolutionPayload.ResolutionResult(
             item.Engine,
@@ -2498,7 +2509,8 @@ public sealed class DownloadIntentService
         bool preferIsrcOnly,
         PlatformLinkResult? preResolved,
         DeezSpoTagSettings? effectiveSettings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<Task<TrackIdentityResolution?>>? resolveIdentity = null)
     {
         var bootstrap = BootstrapIntentResolution(intent);
         var sourceUrl = bootstrap.SourceUrl;
@@ -2516,11 +2528,15 @@ public sealed class DownloadIntentService
             return directResult.Value;
         }
 
-        var identityResolution = await ResolveTrackIdentityMatrixAsync(
-            intent,
-            settings,
-            BuildIdentityTargetsForDownload(settings, new[] { engine }),
-            cancellationToken);
+        var identityResolution = resolveIdentity is not null
+            ? await resolveIdentity()
+            : await ResolveTrackIdentityMatrixAsync(
+                intent, settings, BuildIdentityTargetsForDownload(settings, new[] { engine }), cancellationToken);
+        var catalogAlreadyAttempted = resolveIdentity is not null && identityResolution?.Candidates.Any(candidate =>
+            string.Equals(candidate.Platform, engine, StringComparison.OrdinalIgnoreCase)) == true;
+        if (resolveIdentity is not null && identityResolution is not null)
+            preResolved ??= BuildAvailabilityFromIdentity(identityResolution) ?? new PlatformLinkResult();
+
         (string Engine, string? SourceUrl, string Message, string MappingSource) PreserveIdentityRejection(
             (string Engine, string? SourceUrl, string Message, string MappingSource) candidate)
         {
@@ -2561,7 +2577,10 @@ public sealed class DownloadIntentService
         var strictSpotifyDeezerMode = IsStrictSpotifyDeezerMode(settings, engine, sourceUrl, intent.SpotifyId);
         var resolverStrictMode = settings.StrictSpotifyDeezerMode;
 
-        var isrcFastResult = await TryResolveIsrcIntentSourceAsync(intent, engine, preferIsrcOnly, cancellationToken);
+        // The queue's matrix already ran this native lookup; quality changes do not
+        // justify repeating the same catalog request and timeout within this attempt.
+        var isrcFastResult = catalogAlreadyAttempted ? null
+            : await TryResolveIsrcIntentSourceAsync(intent, engine, preferIsrcOnly, cancellationToken);
         if (isrcFastResult.HasValue)
         {
             return isrcFastResult.Value;
@@ -2572,7 +2591,8 @@ public sealed class DownloadIntentService
             return BuildStrictSpotifyDeezerFailure(intent.Isrc);
         }
 
-        var nativeResolutionResult = await TryResolveEngineSpecificIntentUrlAsync(intent, engine, cancellationToken);
+        var nativeResolutionResult = catalogAlreadyAttempted ? null
+            : await TryResolveEngineSpecificIntentUrlAsync(intent, engine, cancellationToken);
         if (nativeResolutionResult.HasValue)
         {
             return PreserveIdentityRejection(nativeResolutionResult.Value);
@@ -2794,7 +2814,7 @@ public sealed class DownloadIntentService
             userCountry,
             mappingSource,
             cancellationToken);
-        if (!mapped.Resolved)
+        if (!mapped.Resolved || string.IsNullOrWhiteSpace(mapped.Url) || !IsServiceUrlMatch(mapped.Url, engine))
         {
             return null;
         }
@@ -2904,7 +2924,8 @@ public sealed class DownloadIntentService
                 TargetPlatforms: new[] { normalizedEngine },
                 Storefront: settings.AppleMusic?.Storefront,
                 Language: EnglishUsLocale,
-                MediaUserToken: settings.AppleMusic?.MediaUserToken),
+                MediaUserToken: settings.AppleMusic?.MediaUserToken,
+                RequiredPlatforms: new[] { normalizedEngine }),
             cancellationToken);
         ApplyResolvedIdentity(intent, resolution);
         var resolvedUrl = ResolveSourceUrlFromIdentityResolution(resolution, normalizedEngine)
@@ -3080,7 +3101,8 @@ public sealed class DownloadIntentService
                 TargetPlatforms: engines,
                 Storefront: settings.AppleMusic?.Storefront,
                 Language: EnglishUsLocale,
-                MediaUserToken: settings.AppleMusic?.MediaUserToken),
+                MediaUserToken: settings.AppleMusic?.MediaUserToken,
+                RequiredPlatforms: engines),
             cancellationToken);
     }
 

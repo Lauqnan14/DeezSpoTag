@@ -23414,6 +23414,46 @@ WHERE id = @id;", connection);
     }
 
     /// <summary>
+    /// Points an existing monitoring record at a NEW queue row's uuid: the original row was
+    /// deleted and a fresh enqueue created a replacement, so the next re-check must observe the
+    /// replacement's outcome rather than repeatedly searching for the deleted uuid. Fails (and
+    /// leaves the record unchanged) when another record already monitors the new uuid or the
+    /// row was removed concurrently, because <c>queue_uuid</c> is unique.
+    /// </summary>
+    public async Task<bool> RebindManualUnavailableTrackQueueAsync(
+        long id,
+        string newQueueUuid,
+        DateTimeOffset nextRetryAtUtc,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || id <= 0 || string.IsNullOrWhiteSpace(newQueueUuid))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE manual_unavailable_track
+SET queue_uuid = @newQueueUuid,
+    next_retry_at_utc = @nextRetryAtUtc,
+    reason = COALESCE(@reason, reason),
+    updated_at_utc = @updatedAtUtc
+WHERE id = @id
+  AND NOT EXISTS (
+      SELECT 1
+      FROM manual_unavailable_track AS other
+      WHERE other.queue_uuid = @newQueueUuid
+        AND other.id <> @id);", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("newQueueUuid", newQueueUuid);
+        command.Parameters.AddWithValue("nextRetryAtUtc", nextRetryAtUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("reason", ToDbText(reason));
+        command.Parameters.AddWithValue("updatedAtUtc", DateTimeOffset.UtcNow.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    /// <summary>
     /// Every projection over <c>manual_unavailable_track</c> must list columns in exactly this
     /// order. Named ordinals keep a future column from silently shifting a neighbouring value.
     /// </summary>

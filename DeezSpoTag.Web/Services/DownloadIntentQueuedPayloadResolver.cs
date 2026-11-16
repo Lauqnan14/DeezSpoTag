@@ -1,11 +1,15 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 
 namespace DeezSpoTag.Web.Services;
 
 public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayloadResolver
 {
     private const string UnavailableStatus = "unavailable";
+    private const string FailedStatus = "failed";
     private readonly DownloadIntentService _downloadIntentService;
 
     public DownloadIntentQueuedPayloadResolver(DownloadIntentService downloadIntentService)
@@ -23,16 +27,16 @@ public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayload
         QueuePreResolutionPayload.ApplyHistory(payload, result);
         if (!string.IsNullOrWhiteSpace(result.Error))
         {
-            // Propagate the real failure text. A constant here collapses every resolution failure
-            // into "track unavailable", which IsTrackUnavailableFailure classifies as a terminal
-            // catalogue miss, so a timeout or rate limit would be misfiled as a missing track and
-            // never retried.
+            // Propagate the real failure text and classify the terminal status with the
+            // shared saved-evidence rule, not error substrings: a timeout or rate limit is
+            // a recoverable failure, and only a saved plan whose enabled steps all
+            // conclusively prove absence is unavailable.
             var error = result.Error.Trim();
             QueuePreResolutionPayload.ApplyFailed(payload, error, DateTimeOffset.UtcNow);
             return new QueuedDownloadPayloadResolution(
                 BuildIdentityUpdateItem(item, payload.ToJsonString(), result.Engine) with
                 {
-                    Status = UnavailableStatus,
+                    Status = ResolveResolutionFailureStatus(payload, error),
                     Error = error
                 },
                 error);
@@ -42,6 +46,31 @@ public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayload
         return new QueuedDownloadPayloadResolution(
             BuildIdentityUpdateItem(item, payload.ToJsonString(), result.Engine),
             null);
+    }
+
+    private static string ResolveResolutionFailureStatus(JsonObject payload, string error)
+    {
+        var plan = DownloadExecutionPlan.Read(payload);
+        if (plan.Count == 0)
+        {
+            return FailedStatus;
+        }
+
+        List<FallbackAttempt> history;
+        try
+        {
+            history = (payload["FallbackHistory"] ?? payload["fallbackHistory"])
+                ?.Deserialize<List<FallbackAttempt>>() ?? [];
+        }
+        catch (JsonException)
+        {
+            return FailedStatus;
+        }
+
+        return FallbackFailureClassifier.IsPlanUnavailable(
+            plan, history, QueueSourceSettingsSnapshot.ReadFromPayload(payload))
+            ? UnavailableStatus
+            : FailedStatus;
     }
 
     private static DownloadQueueItem BuildIdentityUpdateItem(

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
@@ -91,22 +92,7 @@ public sealed class ManualUnavailableRetryService : BackgroundService
         try
         {
             var result = await intentService.EnqueueManualAsync(intent, cancellationToken);
-            if (result.Queued.Count > 0)
-            {
-                await repository.DeleteManualUnavailableTrackAsync(track.Id, cancellationToken);
-                _logger.LogInformation(
-                    "Manual unavailable retry queued {Title} by {Artist}; record removed.",
-                    LogSanitizer.OneLine(track.Title),
-                    LogSanitizer.OneLine(track.Artist));
-                return;
-            }
-
-            var reason = FirstNonEmpty(result.Message, result.SkipReasons.FirstOrDefault(), "Track still unavailable from enabled sources.");
-            await repository.ScheduleManualUnavailableTrackRetryAsync(
-                track.Id,
-                DateTimeOffset.UtcNow.Add(RetryDelay),
-                reason,
-                cancellationToken);
+            await RecordFreshEnqueueOutcomeAsync(repository, track, result, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -124,10 +110,69 @@ public sealed class ManualUnavailableRetryService : BackgroundService
     }
 
     /// <summary>
+    /// Books the re-check outcome for a fresh enqueue started because the original queue row no
+    /// longer exists. The record must keep monitoring until a later re-check reaches a terminal
+    /// conclusion on the new row, and it must do so by following the NEW row's uuid: the next
+    /// re-check observes whether the new download completed, failed or was cancelled. When the
+    /// rebind fails (the new uuid is already monitored, or nothing was queued) the record stays
+    /// rescheduled on its current identity for the next re-check.
+    /// </summary>
+    private async Task RecordFreshEnqueueOutcomeAsync(
+        LibraryRepository repository,
+        ManualUnavailableTrackDto track,
+        DownloadIntentResult result,
+        CancellationToken cancellationToken)
+    {
+        var nextRetryAtUtc = DateTimeOffset.UtcNow.Add(RetryDelay);
+        if (result.Queued.Count > 0)
+        {
+            var newQueueUuid = FirstNonEmpty(result.Queued[0], result.RelatedQueueUuids.FirstOrDefault());
+            if (!string.IsNullOrWhiteSpace(newQueueUuid)
+                && await repository.RebindManualUnavailableTrackQueueAsync(
+                    track.Id,
+                    newQueueUuid,
+                    nextRetryAtUtc,
+                    "Fresh queue row enqueued; the next re-check reviews the attempt outcome.",
+                    cancellationToken))
+            {
+                _logger.LogInformation(
+                    "Fresh enqueue for {Title} by {Artist} created {QueueUuid}; monitoring rebound to it.",
+                    LogSanitizer.OneLine(track.Title),
+                    LogSanitizer.OneLine(track.Artist),
+                    LogSanitizer.OneLine(newQueueUuid));
+                return;
+            }
+
+            // Keep the record scheduled even when the rebind could not land: deleting it here
+            // would abandon the track if the fresh attempt fails again.
+            _logger.LogWarning(
+                "Fresh enqueue for {Title} by {Artist} could not rebind monitoring to {QueueUuid}; the record stays on its current uuid.",
+                LogSanitizer.OneLine(track.Title),
+                LogSanitizer.OneLine(track.Artist),
+                LogSanitizer.OneLine(FirstNonEmpty(result.Queued[0], result.RelatedQueueUuids.FirstOrDefault()) ?? "(none)"));
+        }
+
+        var reason = result.Queued.Count > 0
+            ? "Fresh queue row enqueued; the next re-check reviews the attempt outcome."
+            : FirstNonEmpty(result.Message, result.SkipReasons.FirstOrDefault(), "Track still unavailable from enabled sources.");
+        await repository.ScheduleManualUnavailableTrackRetryAsync(
+            track.Id,
+            nextRetryAtUtc,
+            reason,
+            cancellationToken);
+        _logger.LogInformation(
+            "Fresh enqueue outcome for {Title} by {Artist}: record stays scheduled ({Reason}).",
+            LogSanitizer.OneLine(track.Title),
+            LogSanitizer.OneLine(track.Artist),
+            LogSanitizer.OneLine(reason));
+    }
+
+    /// <summary>
     /// Returns true when the tracked row was handled here, so the caller must not fall through to
-    /// a fresh enqueue. A user-cancelled row is retired instead of revived, because
-    /// <see cref="DeezSpoTagApp.RetryDownloadAsync"/> requeues with a manual origin and would clear
-    /// the cancellation.
+    /// a fresh enqueue. Only a missing queue row falls through: while the row still exists, a
+    /// fresh enqueue is rejected as a queue duplicate. A user-cancelled row is retired instead of
+    /// revived, because <see cref="DeezSpoTagApp.RetryDownloadAsync"/> requeues with a manual origin
+    /// and would clear the cancellation.
     /// </summary>
     private async Task<bool> TryRequeueExistingRowAsync(
         LibraryRepository repository,
@@ -158,27 +203,115 @@ public sealed class ManualUnavailableRetryService : BackgroundService
                 return true;
             }
 
-            if (await app.RetryDownloadAsync(track.QueueUuid, cancellationToken))
+            var decision = ClassifyRowForRecheck(existing.Status);
+            if (decision == RecheckDecision.RetireObtained)
             {
+                // The track was obtained: monitoring concluded and the record retires.
                 await repository.DeleteManualUnavailableTrackAsync(track.Id, cancellationToken);
                 _logger.LogInformation(
-                    "Unavailable retry requeued {Title} by {Artist} from the original queue row; record removed.",
+                    "Retired unavailable retry for {Title} by {Artist}; the original download completed.",
                     LogSanitizer.OneLine(track.Title),
                     LogSanitizer.OneLine(track.Artist));
                 return true;
             }
+
+            if (decision == RecheckDecision.WaitActive)
+            {
+                // The row is live (queued/running): resetting it in place would discard the live
+                // attempt's progress and could double-process it. Wait for the outcome instead.
+                await repository.ScheduleManualUnavailableTrackRetryAsync(
+                    track.Id,
+                    DateTimeOffset.UtcNow.Add(RetryDelay),
+                    "Waiting for the active download to conclude before the next re-check.",
+                    cancellationToken);
+                _logger.LogInformation(
+                    "Unavailable retry for {Title} by {Artist} waits on the active download; record rescheduled.",
+                    LogSanitizer.OneLine(track.Title),
+                    LogSanitizer.OneLine(track.Artist));
+                return true;
+            }
+
+            // Automatic re-check: pass the Monitoring origin so the requeue SQL refuses to
+            // revive a row the user cancelled (a manual origin would clear the cancellation
+            // if a cancel lands between the status check above and this retry).
+            if (await app.RetryDownloadAsync(track.QueueUuid, cancellationToken, origin: QueueRequeueOrigin.Monitoring))
+            {
+                // Keep the record scheduled: if this re-attempt fails again, the next re-check
+                // must still fire. The record retires only when a re-check reaches a terminal
+                // conclusion (obtained or cancelled), never immediately after queueing a retry.
+                await repository.ScheduleManualUnavailableTrackRetryAsync(
+                    track.Id,
+                    DateTimeOffset.UtcNow.Add(RetryDelay),
+                    "Requeued from the original queue row; the next re-check reviews the retry outcome.",
+                    cancellationToken);
+                _logger.LogInformation(
+                    "Unavailable retry requeued {Title} by {Artist} from the original queue row; monitoring continues.",
+                    LogSanitizer.OneLine(track.Title),
+                    LogSanitizer.OneLine(track.Artist));
+                return true;
+            }
+
+            // The requeue was rejected (for example a cancel landed between the status read and
+            // the requeue). The row still exists, so a fresh enqueue would be rejected as a queue
+            // duplicate: reschedule and let the next re-check review the row again.
+            await repository.ScheduleManualUnavailableTrackRetryAsync(
+                track.Id,
+                DateTimeOffset.UtcNow.Add(RetryDelay),
+                "Requeue was not accepted; the next re-check reviews the row again.",
+                cancellationToken);
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Fall through to the enqueue path: a failed in-place requeue must not abandon the track.
+            // A failed re-check must not abandon the track. The queue row still exists here, so a
+            // fresh enqueue would be rejected as a duplicate: reschedule and keep monitoring.
             _logger.LogWarning(
                 ex,
-                "In-place requeue failed for {Title} by {Artist}; falling back to a fresh enqueue.",
+                "In-place requeue failed for {Title} by {Artist}; the next re-check will retry.",
                 LogSanitizer.OneLine(track.Title),
                 LogSanitizer.OneLine(track.Artist));
+            try
+            {
+                await repository.ScheduleManualUnavailableTrackRetryAsync(
+                    track.Id,
+                    DateTimeOffset.UtcNow.Add(RetryDelay),
+                    ex.Message,
+                    CancellationToken.None);
+            }
+            catch (Exception scheduleEx) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(scheduleEx))
+            {
+                _logger.LogWarning(
+                    scheduleEx,
+                    "Could not reschedule the unavailable retry for {Title} by {Artist}.",
+                    LogSanitizer.OneLine(track.Title),
+                    LogSanitizer.OneLine(track.Artist));
+            }
+
+            return true;
+        }
+    }
+
+    private enum RecheckDecision
+    {
+        RetireObtained,
+        Requeue,
+        WaitActive
+    }
+
+    private static RecheckDecision ClassifyRowForRecheck(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized is "failed" or "unavailable" or "skipped")
+        {
+            return RecheckDecision.Requeue;
         }
 
-        return false;
+        if (normalized is "completed" or "complete" or "canceled" or "cancelled")
+        {
+            return RecheckDecision.RetireObtained;
+        }
+
+        return RecheckDecision.WaitActive;
     }
 
     private static bool IsCanceledStatus(string? status)

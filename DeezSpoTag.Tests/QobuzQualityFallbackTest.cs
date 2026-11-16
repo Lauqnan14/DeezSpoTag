@@ -277,6 +277,19 @@ public sealed class QobuzQualityFallbackTest
     }
 
     [Fact]
+    public void QueueFailureMarking_UsesTheSharedEvidenceRuleInsteadOfErrorSubstrings()
+    {
+        // Terminal status and retry eligibility must come from the saved plan/history
+        // evidence rule, not from substring-matching the error text: a timeout that
+        // merely mentions "unavailable" must stay failed and retryable, and a confirmed
+        // absence must be unavailable without a retry.
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."));
+        var processor = File.ReadAllText(Path.Join(root, "DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        Assert.Contains("EngineAudioPostDownloadHelper.ResolveTerminalDownloadStatus", processor);
+        Assert.DoesNotContain("IsTrackUnavailableFailure", processor, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildRequest_UsesOnlyTheCurrentPersistedPlanQuality()
     {
         var request = QobuzRequestBuilder.BuildRequest(

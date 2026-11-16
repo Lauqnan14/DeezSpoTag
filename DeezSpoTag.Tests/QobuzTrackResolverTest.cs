@@ -14,6 +14,49 @@ namespace DeezSpoTag.Tests;
 public sealed class QobuzTrackResolverTest
 {
     [Fact]
+    public void PublicQobuzCatalogForbiddenDoesNotMeanTheDownloadSessionNeedsSigningIn()
+    {
+        var forbidden = new System.Net.Http.HttpRequestException("HTTP 403", null, System.Net.HttpStatusCode.Forbidden);
+        var catalog = new AggregateException("Qobuz catalog lookup failed", forbidden);
+        Assert.Equal("catalog_lookup_failed", DeezSpoTag.Services.Download.Fallback.FallbackFailureClassifier.Classify(catalog));
+        Assert.True(DeezSpoTag.Services.Download.Fallback.FallbackFailureClassifier.IsTemporaryProviderFailure(catalog));
+        // An actual download/session rejection keeps its existing authentication gate.
+        Assert.Equal("authentication_required", DeezSpoTag.Services.Download.Fallback.FallbackFailureClassifier.Classify(forbidden));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RequiredDownloadLookupCanCompleteBeyondTheOptionalEnrichmentDeadline(bool required)
+    {
+        var track = new QobuzTrack { Id = 1234, Title = "Signal", ISRC = "USABC1234567", Duration = 180,
+            Performer = new QobuzArtist { Name = "Artist" }, Album = new QobuzAlbum { Title = "Album" } };
+        async Task<QobuzTrack?> DelayedResult()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(4));
+            return track;
+        }
+        var metadata = new StubQobuzMetadataService { PendingIsrc = DelayedResult() };
+        var resolver = new DeezSpoTag.Web.Services.TrackIdentityResolver(
+            null!, null!, null!, CreateResolver(metadata), null!, null!, null!, null!, null,
+            NullLogger<DeezSpoTag.Web.Services.TrackIdentityResolver>.Instance);
+        var request = new DeezSpoTag.Services.Download.Identity.TrackIdentityResolutionRequest(
+            "shazam", null, "Signal", "Artist", "Album", "USABC1234567", 180000,
+            TargetPlatforms: ["qobuz"], RequiredPlatforms: required ? ["qobuz"] : null);
+        var result = await resolver.ResolveAsync(request, CancellationToken.None);
+        if (required)
+        {
+            Assert.Equal("1234", result.QobuzId);
+            Assert.Contains(result.Candidates, candidate => candidate.Accepted && candidate.Platform == "qobuz");
+        }
+        else
+        {
+            Assert.Null(result.QobuzId);
+            Assert.Contains(result.Candidates, candidate => candidate.Reason == "qobuz-timeout");
+        }
+    }
+
+    [Fact]
     public async Task AlbumRecovery_RemovesSoundtrackAnnotationAndPreservesEditionAndArtist()
     {
         var candidate = new QobuzTrack { Id = 1234, Title = "Signal (Remix)", ISRC = "USABC1234567", Duration = 180,
@@ -176,7 +219,7 @@ public sealed class QobuzTrackResolverTest
         var candidates = new List<DeezSpoTag.Services.Download.Identity.PlatformIdentityCandidate>();
         var method = typeof(DeezSpoTag.Web.Services.TrackIdentityResolver).GetMethod("ResolveQobuzAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-        await (Task)method.Invoke(resolver, [state, candidates, deadline.Token])!;
+        await (Task)method.Invoke(resolver, [state, candidates, deadline.Token, false])!;
         Assert.Equal(expected, candidates.Exists(candidate => candidate.Accepted));
         if (!youtube) Assert.Contains(candidates, candidate => candidate.Reason == "qobuz-timeout");
     }

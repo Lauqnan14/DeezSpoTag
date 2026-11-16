@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Web.Controllers.Api;
 using Xunit;
 
@@ -777,5 +778,69 @@ public sealed class DownloadSourceOrderFallbackParityTest
                     .ToList()
             }
         };
+    }
+
+    // ---- Task 2: the saved selection, not current settings, decides which plan steps are enabled ----
+
+    [Fact]
+    public void SavedSnapshotEnablesExactlyTheConfiguredEngineQualities()
+    {
+        var snapshot = new QueueSourceSettingsSnapshot
+        {
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines =
+                [
+                    new DownloadEngineOrderItem
+                    {
+                        Engine = "qobuz",
+                        Qualities = [new DownloadEngineQualityItem { Quality = "27" }]
+                    },
+                    new DownloadEngineOrderItem
+                    {
+                        Engine = "deezer",
+                        Enabled = false,
+                        Qualities = [new DownloadEngineQualityItem { Quality = "9" }]
+                    }
+                ]
+            }
+        };
+        var settings = snapshot.ApplyTo(new DeezSpoTagSettings());
+
+        Assert.True(DownloadSourceOrder.IsSourceQualityEnabled(settings, "qobuz", "27"));
+        // A selection outside the saved providers (and the disabled engine) is not enabled.
+        Assert.False(DownloadSourceOrder.IsSourceQualityEnabled(settings, "tidal", "HI_RES"));
+        Assert.False(DownloadSourceOrder.IsSourceQualityEnabled(settings, "deezer", "9"));
+    }
+
+    [Fact]
+    public void SavedSnapshotSeparatesStereoQualityFromAtmos()
+    {
+        // An enabled engine carries its default quality ladder; atmos is off only when
+        // the saved selection explicitly disables the atmos quality.
+        var snapshot = new QueueSourceSettingsSnapshot
+        {
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines =
+                [
+                    new DownloadEngineOrderItem
+                    {
+                        Engine = "tidal",
+                        Qualities =
+                        [
+                            new DownloadEngineQualityItem { Quality = "HI_RES" },
+                            new DownloadEngineQualityItem { Quality = "DOLBY_ATMOS", Enabled = false }
+                        ]
+                    }
+                ]
+            }
+        };
+        var settings = snapshot.ApplyTo(new DeezSpoTagSettings());
+
+        Assert.True(DownloadSourceOrder.IsSourceQualityEnabled(settings, "tidal", "HI_RES"));
+        Assert.False(DownloadSourceOrder.IsSourceQualityEnabled(settings, "tidal", "DOLBY_ATMOS"));
     }
 }

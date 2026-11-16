@@ -3690,19 +3690,7 @@ public static partial class EngineAudioPostDownloadHelper
         var failureMessage = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
             ? payload.ResolutionError
             : exception.Message;
-        var terminalStatus = IsTrackUnavailableFailure(failureMessage)
-            ? "unavailable"
-            : FailedStatus;
-        if (payload is { FallbackPlan.Count: > 0 })
-        {
-            terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(payload.FallbackPlan, payload.FallbackHistory)
-                ? "unavailable" : FailedStatus;
-        }
-        else if (terminalStatus == "unavailable")
-        {
-            context.Logger.LogWarning("Cannot confirm unavailability without saved engine/quality outcomes for {QueueUuid}.", queueUuid);
-            terminalStatus = FailedStatus;
-        }
+        var terminalStatus = ResolveTerminalDownloadStatus(payload, queueUuid, failureMessage, context.Logger);
         if (IsFinalDestinationDedupeBlock(failureMessage)
             && payload != null
             && await TryCompleteWatchlistFinalDestinationDedupeAsync(
@@ -3834,6 +3822,38 @@ public static partial class EngineAudioPostDownloadHelper
             RegexOptions.IgnoreCase,
             TimeSpan.FromMilliseconds(250));
         return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    /// <summary>
+    ///     One evidence rule for the persisted terminal status after a download failure: a
+    ///     saved plan whose enabled steps all conclusively prove absence becomes
+    ///     "unavailable"; every other failure stays "failed" and retry-eligible. Error text
+    ///     alone is never proof - without saved plan evidence a substring match is downgraded
+    ///     to failed with a warning.
+    /// </summary>
+    public static string ResolveTerminalDownloadStatus<TPayload>(
+        TPayload? payload,
+        string queueUuid,
+        string failureMessage,
+        ILogger logger)
+        where TPayload : EngineQueueItemBase
+    {
+        var terminalStatus = IsTrackUnavailableFailure(failureMessage)
+            ? "unavailable"
+            : FailedStatus;
+        if (payload is { FallbackPlan.Count: > 0 })
+        {
+            terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(
+                payload.FallbackPlan, payload.FallbackHistory, payload.SourceSettingsSnapshot)
+                ? "unavailable" : FailedStatus;
+        }
+        else if (terminalStatus == "unavailable")
+        {
+            logger.LogWarning("Cannot confirm unavailability without saved engine/quality outcomes for {QueueUuid}.", queueUuid);
+            terminalStatus = FailedStatus;
+        }
+
+        return terminalStatus;
     }
 
     public static bool IsTrackUnavailableFailure(string? message)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -87,6 +88,88 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
             Assert.True(await retry.RunRetrySweepAsync());
             Assert.Equal("queued", (await _repository.GetByUuidAsync(payload.Id))!.Status);
         }
+    }
+
+    [Fact]
+    public async Task NasSixOutcomeFailureKeepsProviderRecoveryBeyondAttemptExhaustion()
+    {
+        // Mirrors the NAS stranded row: six skipped outcomes (catalogue 403 / mapping
+        // timeout / missing URL, two qualities each) with no step proving absence. The
+        // reconstructed failure history is a temporary provider failure, so provider
+        // recovery must keep scheduling retries even after the ordinary attempt budget
+        // is exhausted, and the retry sweep must restart the saved plan from step-0.
+        var payload = BuildPayload();
+        payload.Engine = "amazon";
+        payload.SourceService = "amazon";
+        payload.Quality = "HD_FLAC";
+        payload.AutoIndex = 5;
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "amazon", "ULTRA_HD_FLAC", [], "mapped_url"),
+            new("step-3", "qobuz", "6", [], "isrc"),
+            new("step-4", "tidal", "LOSSLESS", [], "isrc"),
+            new("step-5", "amazon", "HD_FLAC", [], "mapped_url")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "catalog_lookup_failed", "qobuz quality=7: qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-1", "skipped", "provider_timeout", "tidal quality=HI_RES: Unable to resolve mapping for requested engine. tidal provider timed out: tidal-timeout"),
+            new("step-2", "skipped", "identity_unresolved", "amazon quality=ULTRA_HD_FLAC: missing_url"),
+            new("step-3", "skipped", "catalog_lookup_failed", "qobuz quality=6: qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-4", "skipped", "provider_timeout", "tidal quality=LOSSLESS: Unable to resolve mapping for requested engine. tidal provider timed out: tidal-timeout"),
+            new("step-5", "skipped", "identity_unresolved", "amazon quality=HD_FLAC: missing_url")
+        ];
+        await EnqueueAsync(payload);
+        await _repository.UpdateStatusAsync(payload.Id, "failed", "amazon quality=ULTRA_HD_FLAC: missing_url");
+
+        var item = await _repository.GetByUuidAsync(payload.Id);
+        Assert.NotNull(item);
+        var retryFailure = (AggregateException)typeof(DeezSpoTagApp)
+            .GetMethod("ResolveRetryFailure", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [item])!;
+        Assert.True(FallbackFailureClassifier.IsTemporaryProviderFailure(retryFailure));
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(payload.FallbackPlan, payload.FallbackHistory));
+
+        // Exhaust the ordinary attempt budget: without provider recovery the item stays
+        // terminal instead of silently looping.
+        await using (var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "UPDATE download_task SET retry_attempt_count = 99 WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.False(await _repository.ScheduleRetryAsync(payload.Id, "amazon", item.Error ?? "missing_url", 3));
+
+        // Provider recovery continues past the budget...
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(),
+            new DeezSpoTagListener(), NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        Assert.True(await retry.ScheduleRetryAsync(payload.Id, "amazon", item.Error ?? "missing_url", default,
+            minimumDelay: null, continueProviderRecovery: true));
+        Assert.Equal("retry_waiting", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+
+        // ...and the due sweep requeues the same UUID and restarts the saved plan from
+        // its first enabled step, preserving the saved plan rather than current settings.
+        await using (var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.True(await retry.RunRetrySweepAsync());
+        var requeued = await _repository.GetByUuidAsync(payload.Id);
+        Assert.Equal("queued", requeued!.Status);
+        Assert.Equal("qobuz", requeued.Engine);
+        var restarted = System.Text.Json.JsonSerializer.Deserialize<QobuzQueueItem>(requeued.PayloadJson!);
+        Assert.NotNull(restarted);
+        Assert.Equal(0, restarted!.AutoIndex);
+        Assert.Equal("qobuz", restarted.Engine);
+        Assert.Empty(restarted.FallbackHistory);
     }
 
     [Fact]
@@ -199,6 +282,578 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
             transient ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.NotFound), payload.Id, payload, context, CancellationToken.None);
         Assert.Equal(expected, (await _repository.GetByUuidAsync(payload.Id))!.Status);
         Assert.Equal(expected == "retry_waiting", await retry.HasPendingRetriesAsync());
+    }
+
+    [Fact]
+    public async Task FinalStatus_DisabledStepTimeout_DoesNotHideConfirmedAbsence()
+    {
+        // The saved selection enabled qobuz 27 + tidal HI_RES; deezer 9 was disabled
+        // afterwards. Both enabled steps conclusively missed; the disabled step's last
+        // outcome is a timeout. The saved-selection evidence rule must mark the item
+        // unavailable (no retry), matching what the monitor button and the failure
+        // message then show.
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload();
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "27", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "deezer", "9", [], "direct_url")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "unavailable", "Confirmed missing recording"),
+            new("step-1", "skipped", "unavailable", "Confirmed missing recording"),
+            new("step-2", "skipped", "provider_timeout", "deezer provider timed out")
+        ];
+        payload.SourceSettingsSnapshot = new QueueSourceSettingsSnapshot
+        {
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines =
+                [
+                    new DownloadEngineOrderItem { Engine = "qobuz", Qualities = [new DownloadEngineQualityItem { Quality = "27" }] },
+                    new DownloadEngineOrderItem { Engine = "tidal", Qualities = [new DownloadEngineQualityItem { Quality = "HI_RES" }] }
+                ]
+            }
+        };
+        payload.ResolutionError = "tidal quality=HI_RES: confirmed unavailable";
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "qobuz", NullLogger.Instance);
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(
+            new HttpRequestException(
+                "HTTP 404: {\"code\":\"TRACK_UNAVAILABLE\",\"retryable\":false,\"retry_mode\":\"none\"}",
+                null, HttpStatusCode.NotFound), payload.Id, payload, context, CancellationToken.None);
+        Assert.Equal("unavailable", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        Assert.False(await retry.HasPendingRetriesAsync());
+    }
+
+    [Fact]
+    public async Task FinalStatus_MixedProviderOutcomes_StayFailedWithProviderRecovery()
+    {
+        // Pin: the NAS six-outcome shape (two catalogue 403s, two mapping timeouts, two
+        // unresolved identities) is not evidence of absence - the item stays failed and
+        // provider recovery keeps retry eligibility.
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload();
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "amazon", "ULTRA_HD_FLAC", [], "mapped_url"),
+            new("step-3", "qobuz", "6", [], "isrc"),
+            new("step-4", "tidal", "LOSSLESS", [], "isrc"),
+            new("step-5", "amazon", "HD_FLAC", [], "mapped_url")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "catalog_lookup_failed", "qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-1", "skipped", "provider_timeout", "tidal provider timed out"),
+            new("step-2", "skipped", "identity_unresolved", "missing_url"),
+            new("step-3", "skipped", "catalog_lookup_failed", "qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-4", "skipped", "provider_timeout", "tidal provider timed out"),
+            new("step-5", "skipped", "identity_unresolved", "missing_url")
+        ];
+        payload.ResolutionError = "amazon quality=ULTRA_HD_FLAC: missing_url";
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "amazon", NullLogger.Instance);
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(
+            new HttpRequestException("HTTP 404", null, HttpStatusCode.NotFound), payload.Id, payload, context,
+            CancellationToken.None);
+        // The scheduler immediately requeues a failed row (retry_waiting), so the durable
+        // agreement to check is: never unavailable, and a retry is pending.
+        Assert.NotEqual("unavailable", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        Assert.True(await retry.HasPendingRetriesAsync());
+    }
+
+    [Fact]
+    public void ExhaustionMessage_UnresolvedSearchIsNotDescribedAsHavingNoCopy()
+    {
+        // "unresolved" is a failed peer search, not a confirmed catalogue absence; the
+        // sentence must not claim the provider had no copy of the track.
+        var payload = BuildPayload();
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "unresolved", "No peer with a copy was found"),
+            new("step-1", "skipped", "provider_timeout", "tidal provider timed out")
+        ];
+
+        var message = (string)typeof(EngineFallbackCoordinator)
+            .GetMethod("BuildExhaustionMessage", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [payload, "tidal"])!;
+
+        Assert.DoesNotContain("had no copy", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("timed out", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Qobuz", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Tidal", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ExhaustionMessage_KeepsEveryEnabledProviderDiagnostic()
+    {
+        var payload = BuildPayload();
+        payload.SourceSettingsSnapshot = new QueueSourceSettingsSnapshot();
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "amazon", "ULTRA_HD_FLAC", [], "mapped_url")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "catalog_lookup_failed", "qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-1", "skipped", "provider_timeout", "tidal provider timed out"),
+            new("step-2", "skipped", "identity_unresolved", "amazon missing_url")
+        ];
+
+        var message = (string)typeof(EngineFallbackCoordinator)
+            .GetMethod("BuildExhaustionMessage", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [payload, "amazon"])!;
+
+        Assert.Contains("could not access its catalog", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("timed out", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("could not approve a matching track identity", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task QobuzTemporaryOutage_BeyondTheAttemptBudget_KeepsProviderRecoveryScheduled()
+    {
+        // A temporary outage that exhausts the ordinary retry budget must still schedule a
+        // retry (provider recovery continues past the budget), matching the shared helper's
+        // failure path - otherwise the downloaded-pending state strands after the budget.
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload();
+        await EnqueueAsync(payload);
+        await using (var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "UPDATE download_task SET retry_attempt_count = 99 WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var processor = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(QobuzEngineProcessor));
+        SetProcessorField(processor, "_queueRepository", _repository);
+        SetProcessorField(processor, "_retryScheduler",
+            new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), new DeezSpoTagListener(),
+                NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry()));
+        SetProcessorField(processor, "_activityLog", new NullActivityLogWriter());
+        SetProcessorField(processor, "_serviceProvider", new ServiceCollection().BuildServiceProvider());
+        SetProcessorField(processor, "_logger", NullLogger<QobuzEngineProcessor>.Instance);
+        SetProcessorField(processor, "_deezspotagListener", new DeezSpoTagListener());
+
+        var failure = new HttpRequestException("Qobuz download stream failed: HTTP 503 (Service Unavailable).",
+            null, HttpStatusCode.ServiceUnavailable);
+        typeof(QobuzEngineProcessor)
+            .GetMethod("MarkFinalFailureAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(processor, [payload.Id, payload, failure]);
+
+        Assert.True(await ((DownloadRetryScheduler)GetProcessorField(processor, "_retryScheduler")!).HasPendingRetriesAsync());
+        Assert.Equal("retry_waiting", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+    }
+
+    private static void SetProcessorField(object processor, string name, object? value)
+        => typeof(QobuzEngineProcessor)
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(processor, value);
+
+    private static object? GetProcessorField(object processor, string name)
+        => typeof(QobuzEngineProcessor)
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(processor);
+
+    [Fact]
+    public async Task RecoveryFlow_FailedItemCompletesOnTheSameRowOnceRecordingBecomesObtainable()
+    {
+        // End-to-end proof on one row: a mixed-outcome failure (no step proved absence) keeps
+        // provider recovery scheduling retries; the due sweep requeues the SAME queue row and
+        // restarts the saved plan; the real processor pipeline then downloads actual audio (a
+        // TagLib-parseable FLAC delivered by the fake provider) and the same row completes with
+        // its artifacts, and no retry stays pending. The test never writes the completed status
+        // itself: completion comes out of QobuzEngineProcessor.ProcessQueueItemAsync, the same
+        // download → quality-guard → tag-writing → completion path production runs.
+        var settings = _settings.LoadSettings();
+        settings.MaxRetries = 3;
+        settings.DownloadLocation = Path.Join(_root, "library");
+        settings.SaveLyrics = false;
+        settings.SyncedLyrics = false;
+        settings.SaveArtwork = false;
+        settings.SaveAnimatedArtwork = false;
+        settings.SaveArtworkArtist = false;
+        settings.Tags.Cover = false;
+        _settings.SaveSettings(settings);
+        Directory.CreateDirectory(settings.DownloadLocation);
+
+        var payload = BuildPayload();
+        payload.Engine = "amazon";
+        payload.SourceService = "amazon";
+        payload.Quality = "HD_FLAC";
+        payload.AutoIndex = 2;
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "6", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "amazon", "ULTRA_HD_FLAC", [], "mapped_url")
+        ];
+        payload.FallbackHistory =
+        [
+            new("step-0", "skipped", "catalog_lookup_failed", "qobuz catalog lookup failed: 403 (Forbidden)"),
+            new("step-1", "skipped", "provider_timeout", "tidal provider timed out"),
+            new("step-2", "skipped", "identity_unresolved", "amazon missing_url")
+        ];
+        await EnqueueAsync(payload);
+        await _repository.UpdateStatusAsync(payload.Id, "failed", "amazon quality=ULTRA_HD_FLAC: missing_url");
+
+        var listener = new DeezSpoTagListener();
+        var registry = new DownloadCancellationRegistry();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, registry);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "amazon", NullLogger.Instance);
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(
+            new HttpRequestException("HTTP 404", null, HttpStatusCode.NotFound), payload.Id, payload, context,
+            CancellationToken.None);
+        Assert.True(await retry.HasPendingRetriesAsync());
+
+        // The due sweep requeues the same row and restarts the saved plan from step-0.
+        await MakeRetryDueAsync(payload.Id);
+        Assert.True(await retry.RunRetrySweepAsync());
+        var requeued = await _repository.GetByUuidAsync(payload.Id);
+        Assert.Equal("queued", requeued!.Status);
+        Assert.Equal(payload.Id, requeued.QueueUuid);
+        Assert.Equal("qobuz", requeued.Engine);
+
+        // The recording becomes obtainable: drive the REAL processor with a provider that
+        // delivers actual audio - a real encoder-produced FLAC containing audio frames, not
+        // just metadata blocks. The row must complete through the actual pipeline.
+        var fakeDownloader = new FakeQobuzDownloadService(_root, RealEncodedFlacBytes());
+        using var scopeServices = BuildProcessorScope(listener);
+        var processor = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(QobuzEngineProcessor));
+        SetProcessorField(processor, "_queueRepository", _repository);
+        SetProcessorField(processor, "_cancellationRegistry", registry);
+        SetProcessorField(processor, "_settingsService", _settings);
+        SetProcessorField(processor, "_deezspotagListener", listener);
+        SetProcessorField(processor, "_retryScheduler", retry);
+        SetProcessorField(processor, "_qobuzDownloader", fakeDownloader);
+        SetProcessorField(processor, "_serviceProvider", scopeServices);
+        SetProcessorField(processor, "_fallbackCoordinator", null);
+        SetProcessorField(processor, "_activityLog", new NullActivityLogWriter());
+        SetProcessorField(processor, "_lyricsService", null);
+        SetProcessorField(processor, "_postDownloadTaskScheduler", null);
+        SetProcessorField(processor, "_folderConversionSettingsOverlay", new StubFolderConversionOverlay());
+        SetProcessorField(processor, "_tagSettingsResolver", new StubDownloadTagSettingsResolver());
+        SetProcessorField(processor, "_logger", NullLogger<QobuzEngineProcessor>.Instance);
+
+        await ((QobuzEngineProcessor)processor).ProcessQueueItemAsync(requeued, CancellationToken.None);
+
+        // The same queue row completed on its own: the provider actually delivered audio, the
+        // row reports the download, and no retry remains pending.
+        var afterProcessing = await _repository.GetByUuidAsync(payload.Id);
+        Assert.True(fakeDownloader.DownloadCount == 1,
+            $"The processor never downloaded: row status={afterProcessing?.Status}, error={afterProcessing?.Error}");
+        var completed = await _repository.GetByUuidAsync(payload.Id);
+        Assert.NotNull(completed);
+        Assert.Equal(payload.Id, completed!.QueueUuid);
+        Assert.True(string.Equals("completed", completed.Status, StringComparison.OrdinalIgnoreCase),
+            $"The row did not complete: status={completed.Status}, error={completed.Error}");
+        Assert.Equal(100, completed.Progress);
+        Assert.Equal(1, completed.Downloaded);
+        Assert.False(await retry.HasPendingRetriesAsync());
+
+        // The delivered audio is real and survived the finalization (tag writing) on disk: the
+        // file exists, keeps the FLAC magic, still parses via TagLib with the delivered
+        // CD-quality properties, and contains actual audio frames beyond the metadata blocks.
+        Assert.NotNull(fakeDownloader.LastWrittenPath);
+        Assert.True(File.Exists(fakeDownloader.LastWrittenPath));
+        var finalBytes = await File.ReadAllBytesAsync(fakeDownloader.LastWrittenPath!);
+        Assert.Equal("fLaC", System.Text.Encoding.ASCII.GetString(finalBytes, 0, 4));
+        using var parsed = TagLib.File.Create(fakeDownloader.LastWrittenPath!);
+        Assert.Equal(44100, parsed.Properties.AudioSampleRate);
+        Assert.Equal(16, parsed.Properties.BitsPerSample);
+        Assert.True(parsed.Properties.Duration > TimeSpan.Zero);
+        Assert.True(ContainsFlacAudioFrame(finalBytes),
+            "The delivered FLAC must contain actual audio frames, not only metadata blocks.");
+    }
+
+    /// <summary>
+    /// A genuine FLAC-encoded 0.1 s stereo tone (44.1 kHz, 16-bit), produced by FFmpeg's FLAC
+    /// encoder. Unlike a hand-built metadata-only placeholder, it carries a real audio frame
+    /// (frame sync 0xFF 0xF8 at its audio section), so delivery proves playable audio, and the
+    /// production tag writer exercises the same TagLib read/write path it does in production.
+    /// </summary>
+    private static byte[] RealEncodedFlacBytes()
+        => Convert.FromBase64String(RealEncodedFlacBase64);
+
+    private static bool ContainsFlacAudioFrame(byte[] flac)
+    {
+        // FLAC frame headers begin with the 14-bit sync code 11111111 111111xx; the fixed/
+        // variable blocking-strategy bit yields 0xF8 (fixed) or 0xF9 (variable) as the second
+        // byte. Search past the mandatory STREAMINFO block (bytes 0-7).
+        for (var index = 8; index < flac.Length - 1; index++)
+        {
+            if (flac[index] == 0xFF && flac[index + 1] is 0xF8 or 0xF9)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+        private const string RealEncodedFlacBase64 =
+            """
+            ZkxhQwAAACISABIAAATQAATQCsRC8AAAETqn4Skya1vFrImnvuJ36HQkBAAALg0AAABMYXZmNjAuMTYuMTAwAQAAABUAAABlbmNv
+            ZGVyPUxhdmY2MC4xNi4xMDCBACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+            AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/+HmIABE5vU4AAAC1AWkCHQLOA3wEJwTO5qPnHm3+07W3U17o
+            QDNElYAczMmSEyZOZmcyTQk4eZJknmS5DchmUk5OTOyZM5CeTkkmSZJYZMmZMmZkh8JfM/Pk85CXJJZJJSTw5Q5k5JMmTJksySzk
+            uZNMh5OfISpkzlMlMyzMzJlMMM0kkzCUkzCeGUpPJCykpOTzhNkOySeScyckhPhPJyZMzmZOZJ5JyfJMlJYZyTknJkpJMzCZmE5M
+            yZIc5JzJKc5Jck58zz8k8pnk5OknOSSSknMyckzMklOScmcNyE6ZPw8yGsJzJklKEMmZOZJzPJJnJkzJ0yfk50k+Zpk0yZzJKFJk
+            smQnMkh5JKSdCTmZOcpCfMnyVJnnDLDJ0hNw5nycOZJnJMkoTw8mGz4Z5mc7JOZMzkmwlkh5JJphPhOQmkkyeTJMmcyySznkyzk7
+            JmfknkyZpk5mSTyQnOGkyZJlKYT5CfJLOHOQsyachyZLCbJDmZJJPOTMzknJMycuT4Zh0klk/NJ8kynITNIZySk4SeThPhmSchwp
+            MnM/J2E+STTMMzJZJMnJMwmeQyTJmZkhPSHklJk55Oc8mc5ySkk4ZsmGUyTmcnJkyTDMyyTJz5LJ/Dnk+GcnCaZOQ8MzISWSTJyf
+            ITM5knM5k5OYTpmbkkmmTkmeSk4TmSWTMnhySdJA9MmTwyyQ7MmpIbJM8kyc8mZkyGScycnJCZM8meGcnmSS8k8ymZ5JlOTzJMnk
+            zJDOZJ5DySeEzySch8Oc5yfkOc88JmfJMMykkyck8nmYc5zkszPMnOZmcyT0JMJkzknCcyeYaQzISckOyTOTOTzmkzOZNKczyczM
+            mSEyZOZmcyTQk4eZJknmS5DchmUk5OTOyZKEyfJySTJMksMmTMmTMyQ+EvmfnyechLkkskkpJ4cocyckmTJkyWZJZyXMmmQ8nPkJ
+            UyZymSmZZmZkymGGaSSZhKSZhPDKUnkhZSUnJ5wmyHZJPJOZOSQnwnk5MmZzMnMM8J5PkmSksM5JyTkyUkmZhMzCcmZMkOck5klO
+            ckuSSnJM8/JPKZ5OTpJzkkkpJzMnJMzJJTknJnDchOmT8PMhrCcyZJShDJmTmSczySZyZMydMn5OdJPmaZNMmcyShSZLJkJzJIeS
+            SknQk5mTnKQnzJ8lSZ5wywydITcOZ8nDmSZyTJKE8PJhs+GeZnOyTmTM5JsJZIeSSaYT4TkJpJMnkyTJnMsks55Ms5OyZn5J5Mma
+            ZOZkk8kJzhpMmSZSmE+QnySzhzkLMmnIcmSwmyQ5mSSTzkzM5JyTMnLk+GYdJJZPzSfJMpyEzSGckpOEnk4T4ZknIcKTJzPydhPk
+            k0zDMyWSTJyTMJnkMkyZmZIT0h5JSZOeTnPJnOckpJOGbJhlMk5nJyZMkwzMskyc+Syfw55PhnJwmmTkPDMyElkkycnyEzOZJzOZ
+            OTmE6Zm5JJpk5JnkpOE5klkzJ4cknSQPTJk8MskOzJqSGyTPJMnPJmZMhknMnJyQmTPJnhnJ5kkvJPMpmeSZTk8yTJ5MyQzmSeEu
+            STwmeSTkPhznOT8hznnhMz5JhmUkmTknk8zDnOclmZ5k5zMzmSehJhMmck4TmTzDSGZCTkh2SZyZyec0mZzJpTAAAAAmxQ==
+            """;
+
+    private ServiceProvider BuildProcessorScope(DeezSpoTagListener listener)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(_repository);
+        services.AddSingleton<IDeezSpoTagListener>(listener);
+        services.AddSingleton(new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance));
+        services.AddSingleton(new AudioTagger(NullLogger<AudioTagger>.Instance, _settings));
+        return services.BuildServiceProvider();
+    }
+
+    private sealed class FakeQobuzDownloadService(string rootPath, byte[] audioBytes) : IQobuzDownloadService
+    {
+        public int DownloadCount { get; private set; }
+        public string? LastWrittenPath { get; private set; }
+
+        public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+        public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+        public Task<string?> BeginPublicDownloadVerificationAsync(
+            CancellationToken cancellationToken, string? publicAppBaseUrl = null)
+            => Task.FromResult<string?>(null);
+        public Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<QobuzQualityResolution?> ResolveQualityAsync(
+            long trackId, string qualityCode, CancellationToken cancellationToken)
+            => Task.FromResult<QobuzQualityResolution?>(
+                new QobuzQualityResolution(trackId, qualityCode, qualityCode, "https://fake.invalid/audio.flac", 16, 44.1, "qobuz"));
+
+        public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
+        {
+            DownloadCount++;
+            var outputDir = string.IsNullOrWhiteSpace(request.OutputDir) ? Path.Join(rootPath, "staging") : request.OutputDir;
+            Directory.CreateDirectory(outputDir);
+            var path = Path.Join(outputDir, "proof.flac");
+            await File.WriteAllBytesAsync(path, audioBytes, cancellationToken);
+            LastWrittenPath = path;
+            return path;
+        }
+    }
+
+    private sealed class StubFolderConversionOverlay : IFolderConversionSettingsOverlay
+    {
+        public Task ApplyAsync(DeezSpoTagSettings settings, long? destinationFolderId, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Production always resolves a download profile for the destination folder; an empty
+    /// profile stands in for the default one the app would resolve.
+    /// </summary>
+    private sealed class StubDownloadTagSettingsResolver : IDownloadTagSettingsResolver
+    {
+        public Task<TagSettings?> ResolveAsync(long? destinationFolderId, CancellationToken cancellationToken)
+            => Task.FromResult<TagSettings?>(null);
+
+        public Task<DownloadTagProfileSettings?> ResolveProfileAsync(long? destinationFolderId, CancellationToken cancellationToken)
+            => Task.FromResult<DownloadTagProfileSettings?>(
+                new DownloadTagProfileSettings(new TagSettings { Cover = false }, null, null, null));
+    }
+
+    [Fact]
+    public async Task RecoveryFlow_CancellationDuringProviderRecoveryStaysFinalUntilManualRequeue()
+    {
+        // The user cancels while the item waits for provider recovery: the sweep must not
+        // revive it, and only the manual origin may leave the cancelled state (proven at the
+        // app level by RetryDownloadAsync_ManualRequeueOfCancelledItem_ClearsCancellation).
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload();
+        payload.FallbackPlan = [new("step-0", "qobuz", "7", [], "isrc")];
+        payload.FallbackHistory = [];
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var registry = new DownloadCancellationRegistry();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(),
+            new DeezSpoTagListener(), NullLogger<DownloadRetryScheduler>.Instance, registry);
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), new DeezSpoTagListener(), retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "qobuz", NullLogger.Instance);
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(
+            new HttpRequestException("Provider HTTP 503", null, HttpStatusCode.ServiceUnavailable),
+            payload.Id, payload, context, CancellationToken.None);
+        Assert.Equal("retry_waiting", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+
+        // Durable cancellation, mirroring CancelDownloadAsync's write-first ordering.
+        registry.MarkUserCanceled(payload.Id);
+        Assert.True(await _repository.UpdateStatusAsync(payload.Id, "canceled"));
+
+        await MakeRetryDueAsync(payload.Id);
+        await retry.RunRetrySweepAsync();
+        var cancelled = await _repository.GetByUuidAsync(payload.Id);
+        Assert.Equal("canceled", cancelled!.Status);
+        Assert.True(registry.WasUserCanceled(payload.Id));
+    }
+
+    private async Task MakeRetryDueAsync(string queueUuid)
+    {
+        await using var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}");
+        await db.OpenAsync();
+        await using var command = db.CreateCommand();
+        command.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+        command.Parameters.AddWithValue("$uuid", queueUuid);
+        await command.ExecuteNonQueryAsync();
     }
 
     [Fact]

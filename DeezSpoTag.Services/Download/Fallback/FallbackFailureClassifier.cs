@@ -37,16 +37,59 @@ public static class FallbackFailureClassifier
                : exception.InnerException is { } inner && IsTemporaryProviderFailure(inner));
 
     public static bool IsPlanUnavailable(IReadOnlyList<FallbackPlanStep> plan, IReadOnlyList<FallbackAttempt> history)
+        => IsPlanUnavailable(plan, history, null);
+
+    /// <summary>
+    /// The only error classes that prove the catalogue cannot deliver the recording or the
+    /// requested quality. Everything else (timeouts, unresolved identity, unknown quality)
+    /// is a non-answer and must keep the item recoverable.
+    /// </summary>
+    public static bool IsConclusiveAbsenceClass(string? errorClass)
+        => errorClass is Unavailable or QualityBelowRequested or CatalogQualityBelowRequested;
+
+    /// <summary>
+    /// The plan steps that were enabled in the item's saved selection. A null snapshot
+    /// means no saved selection override exists, so every step was enabled.
+    /// </summary>
+    public static IReadOnlyList<FallbackPlanStep> EnabledSavedPlanSteps(
+        IReadOnlyList<FallbackPlanStep> plan,
+        QueueSourceSettingsSnapshot? snapshot)
+    {
+        if (plan.Count == 0 || snapshot is null)
+        {
+            return plan;
+        }
+
+        var settings = snapshot.ApplyTo(new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings());
+        return plan.Where(step => DownloadSourceOrder.IsSourceQualityEnabled(settings, step.Engine, step.Quality))
+            .ToList();
+    }
+
+    /// <summary>
+    ///     One evidence rule for "this track is genuinely unavailable": every plan step that
+    ///     was enabled in the item's saved selection must have a last outcome that conclusively
+    ///     proves absence (confirmed missing recording, or confirmed below the requested
+    ///     quality). A disabled step's inconclusive outcome is not doubt about the enabled
+    ///     steps' evidence, and an enabled step without any outcome, with a completed outcome,
+    ///     or with a timeout/identity/unknown-quality answer keeps the item recoverable.
+    /// </summary>
+    public static bool IsPlanUnavailable(
+        IReadOnlyList<FallbackPlanStep> plan,
+        IReadOnlyList<FallbackAttempt> history,
+        QueueSourceSettingsSnapshot? snapshot)
     {
         if (plan.Count == 0 || history.Any(attempt => attempt is null)
             || plan.Any(step => step is null || string.IsNullOrWhiteSpace(step.StepId))
             || plan.Select(step => step.StepId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != plan.Count)
             return false;
-        return plan.All(step =>
+        var enabledSteps = EnabledSavedPlanSteps(plan, snapshot);
+        if (enabledSteps.Count == 0)
+            return false;
+        return enabledSteps.All(step =>
         {
             var outcome = history.LastOrDefault(attempt => string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase));
             return outcome is not null && outcome.Status is "failed" or "skipped" or "rejected"
-                && outcome.ErrorClass is Unavailable or QualityBelowRequested;
+                && IsConclusiveAbsenceClass(outcome.ErrorClass);
         });
     }
 
@@ -104,7 +147,14 @@ public static class FallbackFailureClassifier
     {
         if (exception is AggregateException aggregate)
         {
-            var classes = aggregate.Flatten().InnerExceptions.Select(Classify).ToList();
+            var failures = aggregate.Flatten().InnerExceptions;
+            var classes = failures.Select(Classify).ToList();
+            // These are anonymous public-catalog requests, not signed download-session requests.
+            // A rejected catalog app/edge request cannot establish that the user's session expired.
+            if (aggregate.Message.StartsWith("Qobuz catalog lookup failed", StringComparison.OrdinalIgnoreCase)
+                && failures.Count > 0 && failures.All(failure => failure is HttpRequestException
+                    { StatusCode: System.Net.HttpStatusCode.Forbidden }))
+                return CatalogLookupFailed;
             foreach (var failureClass in new[] { ProviderRateLimited, ProviderVerificationRequired, ProviderTimeout })
             {
                 if (classes.Contains(failureClass)) return failureClass;

@@ -31,9 +31,9 @@ public sealed class ActivitiesControllerContractTest
         });
         var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
-        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic"]));
-        Assert.Null(method.Invoke(null, [json, "complete", "technical diagnostic"]));
-        Assert.Null(method.Invoke(null, [json, "canceled", "technical diagnostic"]));
+        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic", null, null, null, null]));
+        Assert.Null(method.Invoke(null, [json, "complete", "technical diagnostic", null, null, null, null]));
+        Assert.Null(method.Invoke(null, [json, "canceled", "technical diagnostic", null, null, null, null]));
     }
 
     [Fact]
@@ -41,8 +41,8 @@ public sealed class ActivitiesControllerContractTest
     {
         var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
-        Assert.Null(method.Invoke(null, ["{}", "unavailable", "Track not found"]));
-        Assert.Null(method.Invoke(null, ["not json", "failed", "HTTP 503"]));
+        Assert.Null(method.Invoke(null, ["{}", "unavailable", "Track not found", null, null, null, null]));
+        Assert.Null(method.Invoke(null, ["not json", "failed", "HTTP 503", null, null, null, null]));
         var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
         Assert.Contains("const displayedError = task.failureMessage;", source, StringComparison.Ordinal);
@@ -72,7 +72,7 @@ public sealed class ActivitiesControllerContractTest
             }
         });
         var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
-        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic"]));
+        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic", null, null, null, null]));
     }
 
     [Fact]
@@ -89,7 +89,196 @@ public sealed class ActivitiesControllerContractTest
             FallbackHistory = new[] { new { StepId = "step-0", Status = "failed", ErrorClass = "authentication_required", Detail = "disabled source" } }
         });
         var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
-        Assert.Null(method.Invoke(null, [json, "failed", "technical diagnostic"]));
+        Assert.Null(method.Invoke(null, [json, "failed", "technical diagnostic", null, null, null, null]));
+    }
+
+    // ---- Task 3: "Session verification needed" must respect the recorded session state ----
+    // The NAS stranded row still showed "Session verification needed" although all three
+    // signed sessions report authenticated: the message preferred any auth-class outcome
+    // without checking whether a session verification had already been recorded after the
+    // failure. A verification recorded at/after the failure already had its chance to
+    // recover the row, so claiming the session needs verification again is misleading.
+    // Verification is tracked per provider: an Amazon verification must not silence a
+    // Tidal failure, and a session that is currently usable counts as recovered even when
+    // its last recorded verification predates the failure.
+
+    private const string AuthOutcomePayload = """
+        {
+          "FallbackPlan": [
+            {"StepId": "step-0", "Engine": "qobuz", "Quality": "27", "RequiredInputs": [], "ResolutionStrategy": "isrc"}
+          ],
+          "FallbackHistory": [
+            {"StepId": "step-0", "Status": "skipped", "ErrorClass": "authentication_required", "Detail": "qobuz catalog lookup failed: 403 (Forbidden)"}
+          ]
+        }
+        """;
+
+    private static IReadOnlyDictionary<string, DateTimeOffset?> Verified(Dictionary<string, DateTimeOffset?> entries)
+        => new Dictionary<string, DateTimeOffset?>(entries, StringComparer.OrdinalIgnoreCase);
+
+    [Fact]
+    public void DownloadFailureMessage_VerificationRecordedAfterTheFailure_DoesNotClaimSessionVerification()
+    {
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var verifiedAt = failedAt.AddMinutes(5);
+
+        Assert.Null(method.Invoke(null,
+        [
+            AuthOutcomePayload, "failed", "qobuz catalog lookup failed: 403", failedAt,
+            Verified(new() { ["qobuz"] = verifiedAt }), new HashSet<string>(StringComparer.OrdinalIgnoreCase), "qobuz"
+        ]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_NoVerificationRecordYet_StillClaimsSessionVerification()
+    {
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var noSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal("Session verification needed",
+            method.Invoke(null,
+            [
+                AuthOutcomePayload, "failed", "qobuz catalog lookup failed: 403", failedAt,
+                Verified(new() { ["qobuz"] = (DateTimeOffset?)null }), noSlugs, "qobuz"
+            ]));
+        Assert.Equal("Session verification needed",
+            method.Invoke(null, [AuthOutcomePayload, "failed", "qobuz catalog lookup failed: 403", null, null, null, null]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_VerificationPredatingTheFailure_StillClaimsSessionVerification()
+    {
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var verifiedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var failedAt = verifiedAt.AddMinutes(5);
+
+        Assert.Equal("Session verification needed",
+            method.Invoke(null,
+            [
+                AuthOutcomePayload, "failed", "qobuz catalog lookup failed: 403", failedAt,
+                Verified(new() { ["qobuz"] = verifiedAt }), new HashSet<string>(StringComparer.OrdinalIgnoreCase), "qobuz"
+            ]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_VerificationOnAnotherProvider_DoesNotSuppressThisProvider()
+    {
+        // Verifying Amazon must not silence a failure caused by Tidal: only the providers the
+        // failure involved count, and every one of them must be recovered.
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var verifiedAt = failedAt.AddMinutes(5);
+        var json = """
+            {
+              "FallbackPlan": [
+                {"StepId": "step-0", "Engine": "qobuz", "Quality": "7", "RequiredInputs": [], "ResolutionStrategy": "isrc"},
+                {"StepId": "step-1", "Engine": "tidal", "Quality": "LOSSLESS", "RequiredInputs": [], "ResolutionStrategy": "isrc"}
+              ],
+              "FallbackHistory": [
+                {"StepId": "step-0", "Status": "failed", "ErrorClass": "unavailable", "Detail": "confirmed"},
+                {"StepId": "step-1", "Status": "failed", "ErrorClass": "authentication_required", "Detail": "tidal session rejected"}
+              ]
+            }
+            """;
+
+        Assert.Equal("Session verification needed",
+            method.Invoke(null,
+            [
+                json, "failed", "tidal session rejected", failedAt,
+                Verified(new() { ["qobuz"] = verifiedAt, ["amazon"] = verifiedAt }),
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                "tidal"
+            ]));
+
+        // With Tidal verified as well, all involved providers are recovered.
+        Assert.Null(method.Invoke(null,
+        [
+            json, "failed", "tidal session rejected", failedAt,
+            Verified(new() { ["qobuz"] = verifiedAt, ["tidal"] = verifiedAt }),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            "tidal"
+        ]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_OnlyTheVerificationFailedProviderMustBeRecovered()
+    {
+        // Attribution goes to the step that actually demanded verification: the plan's Tidal
+        // step failed with a plain unavailability, so Tidal's session state is irrelevant to
+        // the verification warning. A verification on Qobuz alone recovers the warning.
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var verifiedAt = failedAt.AddMinutes(5);
+        var json = """
+            {
+              "FallbackPlan": [
+                {"StepId": "step-0", "Engine": "qobuz", "Quality": "6", "RequiredInputs": [], "ResolutionStrategy": "isrc"},
+                {"StepId": "step-1", "Engine": "tidal", "Quality": "LOSSLESS", "RequiredInputs": [], "ResolutionStrategy": "isrc"}
+              ],
+              "FallbackHistory": [
+                {"StepId": "step-0", "Status": "failed", "ErrorClass": "authentication_required", "Detail": "qobuz session rejected"},
+                {"StepId": "step-1", "Status": "failed", "ErrorClass": "unavailable", "Detail": "tidal has no copy"}
+              ]
+            }
+            """;
+
+        Assert.Null(method.Invoke(null,
+        [
+            json, "failed", "qobuz session rejected", failedAt,
+            Verified(new() { ["qobuz"] = verifiedAt }),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            "qobuz"
+        ]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_CurrentlyUsableSession_SuppressesEvenWhenVerifiedBeforeTheFailure()
+    {
+        // An older but still-valid session keeps the provider reachable right now: it had its
+        // chance to recover this failure and the provider is usable, so the stale-verification
+        // warning would mislead the user.
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var verifiedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var failedAt = verifiedAt.AddMinutes(5);
+
+        Assert.Null(method.Invoke(null,
+        [
+            AuthOutcomePayload, "failed", "qobuz catalog lookup failed: 403", failedAt,
+            Verified(new() { ["qobuz"] = verifiedAt }),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "qobuz" },
+            "qobuz"
+        ]));
+    }
+
+    [Fact]
+    public void BuildQueuePayload_PassesTheItemFailureTimeAndRecordedVerification()
+    {
+        var buildQueuePayload = typeof(ActivitiesController).GetMethod(
+            "BuildQueuePayload", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(buildQueuePayload);
+
+        var failedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var item = FailureItem("failed", "qobuz catalog lookup failed: 403 (Forbidden)", AuthOutcomePayload) with
+        {
+            UpdatedAt = failedAt
+        };
+        var verifiedAt = failedAt.AddMinutes(5);
+
+        var payload = (Dictionary<string, object>)buildQueuePayload!.Invoke(null,
+        [
+            item,
+            new DeezSpoTagSettings(),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            Verified(new() { ["qobuz"] = verifiedAt }),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        ])!;
+
+        // The verification already happened after this failure; the card must not claim the
+        // session needs verification again.
+        Assert.True(payload.TryGetValue("failureMessage", out var failureMessage));
+        Assert.Null(failureMessage);
     }
 
     [Fact]
@@ -184,13 +373,132 @@ public sealed class ActivitiesControllerContractTest
 
         var payload = (Dictionary<string, object>)buildQueuePayload!.Invoke(
             null,
-            [queueItem, new DeezSpoTagSettings(), new HashSet<string>(StringComparer.OrdinalIgnoreCase)])!;
+            [queueItem, new DeezSpoTagSettings(), new HashSet<string>(StringComparer.OrdinalIgnoreCase), null, null])!;
 
         Assert.True(payload.TryGetValue("error", out var error));
         Assert.Equal("Network timeout", error);
         Assert.Equal("fetching", payload["prefetchArtworkStatus"]);
         Assert.True(payload.ContainsKey("lyricsArtifacts"));
         Assert.False(payload.ContainsKey("prefetchLyricsStatus"));
+    }
+
+    // ---- Task 2: monitor eligibility requires saved absence evidence, not error substrings ----
+
+    private const string ConclusiveEvidencePayload = """
+        {
+          "FallbackPlan": [
+            {"StepId": "step-0", "Engine": "qobuz", "Quality": "27", "RequiredInputs": [], "ResolutionStrategy": "isrc"}
+          ],
+          "FallbackHistory": [
+            {"StepId": "step-0", "Status": "skipped", "ErrorClass": "unavailable", "Detail": "Confirmed missing recording"}
+          ]
+        }
+        """;
+
+    private const string InconclusiveEvidencePayload = """
+        {
+          "FallbackPlan": [
+            {"StepId": "step-0", "Engine": "qobuz", "Quality": "27", "RequiredInputs": [], "ResolutionStrategy": "isrc"}
+          ],
+          "FallbackHistory": [
+            {"StepId": "step-0", "Status": "skipped", "ErrorClass": "provider_timeout", "Detail": "qobuz provider timed out"}
+          ]
+        }
+        """;
+
+    private static DownloadQueueItem FailureItem(string status, string error, string payloadJson) => new(
+        Id: 1, QueueUuid: "monitor-evidence", Engine: "qobuz", ArtistName: "Artist",
+        TrackTitle: "Track", Isrc: null, DeezerTrackId: null, DeezerAlbumId: null,
+        DeezerArtistId: null, SpotifyTrackId: null, SpotifyAlbumId: null,
+        SpotifyArtistId: null, AppleTrackId: null, AppleAlbumId: null,
+        AppleArtistId: null, DurationMs: null, DestinationFolderId: null,
+        QualityRank: null, QueueOrder: null, ContentType: "stereo",
+        FinalizationStatus: null, EnrichmentStatus: null, Status: status,
+        PayloadJson: payloadJson, Progress: 0, Downloaded: 0, Failed: 0,
+        Error: error, CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+
+    [Fact]
+    public void FailedItemWithUnavailableSubstringError_IsNotMonitorableWithoutEvidence()
+    {
+        // A "failed" row whose error text merely mentions unavailability is exactly how a
+        // timeout or auth failure got mis-filed as a catalogue miss; only rows actually
+        // persisted as unavailable with saved evidence are monitorable.
+        var isMonitorable = typeof(ActivitiesController).GetMethod(
+            "IsMonitorableUnavailableActivityItem", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(isMonitorable);
+
+        var item = FailureItem("failed", "Tidal says the track is unavailable for this account.",
+            InconclusiveEvidencePayload);
+        Assert.False((bool)isMonitorable!.Invoke(null, [item])!);
+    }
+
+    [Fact]
+    public void UnavailableStatusWithoutConclusiveSavedEvidence_IsNotMonitorable()
+    {
+        var isMonitorable = typeof(ActivitiesController).GetMethod(
+            "IsMonitorableUnavailableActivityItem", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(isMonitorable);
+
+        var item = FailureItem("unavailable", "qobuz provider timed out", InconclusiveEvidencePayload);
+        Assert.False((bool)isMonitorable!.Invoke(null, [item])!);
+
+        var evidenceless = FailureItem("unavailable", "qobuz had no copy", "{}");
+        Assert.False((bool)isMonitorable.Invoke(null, [evidenceless])!);
+    }
+
+    [Fact]
+    public void UnavailableStatusWithConclusiveSavedEvidence_IsMonitorable()
+    {
+        var isMonitorable = typeof(ActivitiesController).GetMethod(
+            "IsMonitorableUnavailableActivityItem", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(isMonitorable);
+
+        var item = FailureItem("unavailable", "Qobuz (27) had no copy of this track.", ConclusiveEvidencePayload);
+        Assert.True((bool)isMonitorable!.Invoke(null, [item])!);
+    }
+
+    [Fact]
+    public void BuildQueuePayload_FailedSubstringRowStaysFailedAndUnmonitorable()
+    {
+        var buildQueuePayload = typeof(ActivitiesController).GetMethod(
+            "BuildQueuePayload", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(buildQueuePayload);
+
+        var item = FailureItem("failed", "Qobuz says the track is unavailable.", InconclusiveEvidencePayload);
+        var payload = (Dictionary<string, object>)buildQueuePayload!.Invoke(null,
+            [item, new DeezSpoTagSettings(), new HashSet<string>(StringComparer.OrdinalIgnoreCase), null, null])!;
+
+        Assert.Equal("failed", payload["status"]);
+        Assert.False((bool)payload["canMonitorUnavailable"]!);
+    }
+
+    [Fact]
+    public void BuildQueuePayload_UnavailableConclusiveRowOffersMonitoring()
+    {
+        var buildQueuePayload = typeof(ActivitiesController).GetMethod(
+            "BuildQueuePayload", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(buildQueuePayload);
+
+        var item = FailureItem("unavailable", "Qobuz (27) had no copy of this track.", ConclusiveEvidencePayload);
+        var payload = (Dictionary<string, object>)buildQueuePayload!.Invoke(null,
+            [item, new DeezSpoTagSettings(), new HashSet<string>(StringComparer.OrdinalIgnoreCase), null, null])!;
+
+        Assert.Equal("unavailable", payload["status"]);
+        Assert.True((bool)payload["canMonitorUnavailable"]!);
+    }
+
+    [Fact]
+    public void WatchlistRowsWithEvidenceStillUseWatchlistUnavailableTracking()
+    {
+        var canMonitor = typeof(ActivitiesController).GetMethod(
+            "CanMonitorUnavailableItem", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(canMonitor);
+
+        var item = FailureItem("unavailable", "Qobuz (27) had no copy of this track.", ConclusiveEvidencePayload);
+        var payload = new Dictionary<string, object> { ["watchlistSource"] = "playlist" };
+
+        Assert.False((bool)canMonitor!.Invoke(null,
+            [item, payload, new HashSet<string>(StringComparer.OrdinalIgnoreCase)])!);
     }
 
     [Fact]

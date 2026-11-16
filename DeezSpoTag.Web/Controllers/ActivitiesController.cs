@@ -705,6 +705,31 @@ public class ActivitiesController : Controller
             ActivitiesTerminalItemLimit,
             HttpContext.RequestAborted);
         var monitoredUnavailableQueueUuids = await GetManualUnavailableQueueUuidSetAsync(HttpContext.RequestAborted);
+        var verificationStore = _serviceProvider.GetService<PublicApiSessionVerificationStore>();
+        // Per-provider session state: a verification recorded on one provider (Amazon) must not
+        // silence a failure caused by another (Tidal), and a session that is currently usable
+        // counts as recovered even when its last recorded verification predates the failure.
+        var verifiedAtBySlug = new Dictionary<string, DateTimeOffset?>(StringComparer.OrdinalIgnoreCase);
+        var usableSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (verificationStore is not null)
+        {
+            foreach (var slug in PublicApiSessionVerificationStore.PublicApiSlugs)
+            {
+                verifiedAtBySlug[slug] = verificationStore.GetLastVerifiedAtUtc(slug);
+            }
+        }
+
+        var sessionCoordinator = _serviceProvider.GetService<ZarzSignedSessionCoordinator>();
+        if (sessionCoordinator is not null)
+        {
+            foreach (var slug in PublicApiSessionVerificationStore.PublicApiSlugs)
+            {
+                if (await sessionCoordinator.PeekUsableSessionAsync(slug, HttpContext.RequestAborted))
+                {
+                    usableSlugs.Add(slug);
+                }
+            }
+        }
 
         var queue = new Dictionary<string, Dictionary<string, object>>();
         var queueOrder = new List<string>();
@@ -716,7 +741,8 @@ public class ActivitiesController : Controller
                 continue;
             }
 
-            var payload = BuildQueuePayload(item, settings, monitoredUnavailableQueueUuids);
+            var payload = BuildQueuePayload(
+                item, settings, monitoredUnavailableQueueUuids, verifiedAtBySlug, usableSlugs);
             queue[item.QueueUuid] = payload;
             queueOrder.Add(item.QueueUuid);
         }
@@ -832,13 +858,39 @@ public class ActivitiesController : Controller
         return IsTerminalActivityStatus(GetActivityStatus(item.Status));
     }
 
-    private static bool IsUnavailableActivityItem(DownloadQueueItem item)
-        => string.Equals((item.Status ?? string.Empty).Trim(), UnavailableStatus, StringComparison.OrdinalIgnoreCase);
-
+    // Monitor eligibility is evidence-based: only rows persisted as unavailable whose
+    // saved plan/history proves absence for the enabled selection offer monitoring. A
+    // "failed" row whose error text merely mentions unavailability is exactly how a
+    // timeout or auth failure got mis-filed as a catalogue miss, and an unavailable row
+    // without conclusive saved outcomes offers nothing to monitor.
     private static bool IsMonitorableUnavailableActivityItem(DownloadQueueItem item)
-        => IsUnavailableActivityItem(item)
-            || (GetActivityStatus(item.Status) == ActivityStatus.Failed
-                && EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(item.Error));
+    {
+        if (GetActivityStatus(item.Status) != ActivityStatus.Unavailable)
+        {
+            return false;
+        }
+
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson ?? string.Empty);
+        var plan = DownloadExecutionPlan.Read(payload);
+        if (plan.Count == 0)
+        {
+            return false;
+        }
+
+        List<FallbackAttempt> history;
+        try
+        {
+            history = (payload["FallbackHistory"] ?? payload["fallbackHistory"])
+                ?.Deserialize<List<FallbackAttempt>>() ?? [];
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return FallbackFailureClassifier.IsPlanUnavailable(
+            plan, history, QueueSourceSettingsSnapshot.ReadFromPayload(payload));
+    }
 
     private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()
         => _serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.DeezSpoTagApp>();
@@ -846,7 +898,9 @@ public class ActivitiesController : Controller
     private static Dictionary<string, object> BuildQueuePayload(
         DownloadQueueItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        IReadOnlySet<string>? monitoredUnavailableQueueUuids = null)
+        IReadOnlySet<string>? monitoredUnavailableQueueUuids = null,
+        IReadOnlyDictionary<string, DateTimeOffset?>? verifiedAtBySlug = null,
+        IReadOnlySet<string>? usableSlugs = null)
     {
         var payload = ParsePayload(item.PayloadJson);
         NormalizePayloadKeys(payload);
@@ -870,7 +924,8 @@ public class ActivitiesController : Controller
         {
             payload["error"] = item.Error;
         }
-        payload["failureMessage"] = BuildDownloadFailureMessage(item.PayloadJson, item.Status, item.Error)!;
+        payload["failureMessage"] = BuildDownloadFailureMessage(
+            item.PayloadJson, item.Status, item.Error, item.UpdatedAt, verifiedAtBySlug, usableSlugs, item.Engine)!;
         if (!payload.TryGetValue("quality", out var quality) || quality is null || string.IsNullOrWhiteSpace(quality.ToString()))
         {
             payload["quality"] = ResolveSourceQuality(item.Engine, settings);
@@ -878,7 +933,14 @@ public class ActivitiesController : Controller
         return payload;
     }
 
-    private static string? BuildDownloadFailureMessage(string? payloadJson, string status, string? error)
+    private static string? BuildDownloadFailureMessage(
+        string? payloadJson,
+        string status,
+        string? error,
+        DateTimeOffset? failedAtUtc = null,
+        IReadOnlyDictionary<string, DateTimeOffset?>? verifiedAtBySlug = null,
+        IReadOnlySet<string>? usableSlugs = null,
+        string? rowEngine = null)
     {
         if (GetActivityStatus(status) is not (ActivityStatus.Failed or ActivityStatus.Unavailable or ActivityStatus.Retrying))
             return null;
@@ -906,8 +968,22 @@ public class ActivitiesController : Controller
             ? plan.Where(step => step is not null).Select(step => history.LastOrDefault(attempt => attempt is not null
                 && string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase)))
             : history.TakeLast(1);
+
+        // A "Session verification needed" warning is only justified while a public provider the
+        // failure involved still needs its session. Attribute the warning to exactly the steps
+        // whose outcome was a verification/authentication failure (for plan-less rows, the row's
+        // engine), and suppress only when every attributed provider is currently usable or was
+        // verified at/after the failure. A verification on one provider (Amazon) must not
+        // silence another provider's failure (Tidal), and a provider whose step failed for a
+        // non-verification reason must not keep the warning visible.
+        var verificationProviders = ResolveVerificationRequiredProviders(plan, outcomes, rowEngine);
+        var verificationRecovered = verificationProviders.Count > 0
+            && verificationProviders.All(slug => IsPublicProviderRecovered(
+                slug, failedAtUtc, verifiedAtBySlug, usableSlugs));
+
         if (outcomes.Any(attempt => attempt?.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired
-            or FallbackFailureClassifier.AuthenticationRequired))
+            or FallbackFailureClassifier.AuthenticationRequired)
+            && !verificationRecovered)
             return "Session verification needed";
 
         if (FallbackFailureClassifier.IsPlanUnavailable(plan, history))
@@ -920,11 +996,98 @@ public class ActivitiesController : Controller
         {
             var reason = FallbackFailureClassifier.Classify(new InvalidOperationException(error ?? string.Empty));
             if (reason is FallbackFailureClassifier.ProviderVerificationRequired or FallbackFailureClassifier.AuthenticationRequired)
-                return "Session verification needed";
+            {
+                var rowProviders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                AddPublicProvider(rowProviders, rowEngine);
+                var rowRecovered = rowProviders.Count > 0
+                    && rowProviders.All(slug => IsPublicProviderRecovered(
+                        slug, failedAtUtc, verifiedAtBySlug, usableSlugs));
+                if (!rowRecovered)
+                {
+                    return "Session verification needed";
+                }
+            }
+
             if (reason == FallbackFailureClassifier.QualityBelowRequested)
                 return "Quality unavailable";
         }
         return null;
+    }
+
+    private static readonly IReadOnlySet<string> PublicProviderSlugs =
+        new HashSet<string>(PublicApiSessionVerificationStore.PublicApiSlugs, StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlySet<string> ResolveVerificationRequiredProviders(
+        List<FallbackPlanStep> plan,
+        IEnumerable<FallbackAttempt?> outcomes,
+        string? rowEngine)
+    {
+        var involved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var attempts = outcomes as ICollection<FallbackAttempt?> ?? outcomes.ToList();
+        if (plan.Count > 0)
+        {
+            // The outcomes sequence is parallel to the non-null plan steps: each entry is that
+            // step's latest recorded attempt. Only steps whose conclusion demanded verification
+            // attribute the warning.
+            var stepIndex = 0;
+            foreach (var step in plan)
+            {
+                if (step is null)
+                {
+                    continue;
+                }
+
+                var attempt = stepIndex < attempts.Count ? attempts.ElementAt(stepIndex) : null;
+                if (attempt?.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired
+                    or FallbackFailureClassifier.AuthenticationRequired)
+                {
+                    AddPublicProvider(involved, step.Engine);
+                }
+
+                stepIndex++;
+            }
+        }
+        else if (attempts.Any(attempt => attempt?.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired
+            or FallbackFailureClassifier.AuthenticationRequired))
+        {
+            // History entries carry no engine of their own; the row's engine column is the
+            // available attribution for plan-less rows.
+            AddPublicProvider(involved, rowEngine);
+        }
+
+        return involved;
+    }
+
+    private static void AddPublicProvider(HashSet<string> involved, string? engine)
+    {
+        if (string.IsNullOrWhiteSpace(engine))
+        {
+            return;
+        }
+
+        if (PublicProviderSlugs.Contains(engine))
+        {
+            involved.Add(engine.Trim().ToLowerInvariant());
+        }
+    }
+
+    private static bool IsPublicProviderRecovered(
+        string slug,
+        DateTimeOffset? failedAtUtc,
+        IReadOnlyDictionary<string, DateTimeOffset?>? verifiedAtBySlug,
+        IReadOnlySet<string>? usableSlugs)
+    {
+        // A currently usable session is definitive: the provider is reachable right now, even
+        // when its last recorded verification predates this failure.
+        if (usableSlugs?.Contains(slug) == true)
+        {
+            return true;
+        }
+
+        return verifiedAtBySlug?.TryGetValue(slug, out var verifiedAt) == true
+            && verifiedAt is { } verified
+            && failedAtUtc is { } failedAt
+            && verified >= failedAt;
     }
 
     private static bool CanMonitorUnavailableItem(

@@ -1034,7 +1034,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
         _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
         await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
-        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, ex.Message, CancellationToken.None);
+        // Rate limiting is a temporary provider condition: keep provider recovery alive past
+        // the ordinary attempt budget so a throttle does not strand the acquired audio.
+        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, ex.Message, CancellationToken.None,
+            FallbackFailureClassifier.MinimumRetryDelay(ex),
+            FallbackFailureClassifier.IsTemporaryProviderFailure(ex));
     }
 
     private async Task MarkFinalFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
@@ -1046,20 +1050,24 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var error = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
             ? payload.ResolutionError
             : ex.Message;
-        await MarkQueueFailedAsync(queueUuid, payload, error);
+        var terminalStatus = await MarkQueueFailedAsync(queueUuid, payload, error);
         _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {error}");
-        if (!EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(error)
+        if (terminalStatus != UnavailableStatus
             && !EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
-            await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, error, CancellationToken.None);
+            // Temporary outages keep provider recovery alive past the ordinary attempt budget,
+            // matching the shared helper's failure path; otherwise the acquired audio strands
+            // once the budget is exhausted.
+            await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, error, CancellationToken.None,
+                FallbackFailureClassifier.MinimumRetryDelay(ex),
+                FallbackFailureClassifier.IsTemporaryProviderFailure(ex));
         }
     }
 
-    private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
+    private async Task<string> MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
     {
-        var terminalStatus = EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(error)
-            ? UnavailableStatus
-            : FailedStatus;
+        var terminalStatus = EngineAudioPostDownloadHelper.ResolveTerminalDownloadStatus(
+            payload, queueUuid, error, _logger);
         if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
             await _queueRepository.UpdatePrefetchFilesAndArtworkAsync(
@@ -1074,6 +1082,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         {
             await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, terminalStatus, _serviceProvider, CancellationToken.None);
         }
+
+        return terminalStatus;
     }
 
     private static bool IsRateLimitFailure(Exception exception)

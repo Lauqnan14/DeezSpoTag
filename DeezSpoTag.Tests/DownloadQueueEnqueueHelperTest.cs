@@ -8,13 +8,16 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Core.Models.Settings;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -76,6 +79,276 @@ public sealed class DownloadQueueEnqueueHelperTest
         var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
         Assert.NotNull(persisted);
         Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_MonitoringOrigin_CannotRequeueCancelledRow()
+    {
+        await using var context = await CreateContextAsync();
+        var (app, registry) = CreateApp(context);
+        var payload = CreatePayload("monitoring-cancelled-retry");
+        payload.AutoIndex = 1;
+        payload.FallbackPlan = [new("step-0", "qobuz", "27", [], "direct_url")];
+        payload.FallbackHistory = [new("step-0", "skipped", "provider_timeout", "qobuz timed out")];
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
+        await app.CancelDownloadAsync(payload.Id);
+        Assert.True(registry.WasUserCanceled(payload.Id));
+
+        // Monitoring is an automatic origin: it must lose to the durable cancellation
+        // and must not rewrite the cancelled row's payload, engine or cancel mark.
+        var accepted = await app.RetryDownloadAsync(payload.Id, origin: QueueRequeueOrigin.Monitoring);
+
+        Assert.False(accepted);
+        var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+        var restoredPayload = System.Text.Json.JsonSerializer.Deserialize<QobuzQueueItem>(persisted.PayloadJson!);
+        Assert.NotNull(restoredPayload);
+        Assert.Equal(1, restoredPayload!.AutoIndex);
+        Assert.Single(restoredPayload.FallbackHistory);
+        Assert.Equal("qobuz", persisted.Engine, ignoreCase: true);
+        Assert.True(registry.WasUserCanceled(payload.Id));
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_ClearsStaleResolutionFieldsFromThePreviousFailure()
+    {
+        // A direct retry must not carry the previous failure's resolution record: the stale
+        // ResolutionError would be preferred over a fresh failure's message when the next
+        // attempt fails (EngineAudioPostDownloadHelper prefers payload.ResolutionError), and
+        // a stale ResolutionStatus makes the row look still-failed while it is queued again.
+        await using var context = await CreateContextAsync();
+        var (app, _) = CreateApp(context);
+        var payload = CreatePayload("stale-resolution-retry");
+        payload.AutoIndex = 1;
+        payload.ResolutionStatus = "failed";
+        payload.ResolutionError = "qobuz catalog lookup failed: 403 (Forbidden)";
+        payload.ResolvedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-4);
+        payload.FallbackPlan = [new("step-0", "qobuz", "27", [], "direct_url")];
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "failed"), CancellationToken.None);
+
+        var accepted = await app.RetryDownloadAsync(payload.Id, origin: QueueRequeueOrigin.Monitoring);
+
+        Assert.True(accepted);
+        var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        var retriedPayload = JsonSerializer.Deserialize<QobuzQueueItem>(persisted!.PayloadJson!);
+        Assert.NotNull(retriedPayload);
+        Assert.True(string.IsNullOrWhiteSpace(retriedPayload!.ResolutionError), $"ResolutionError survived the retry: {retriedPayload.ResolutionError}");
+        Assert.True(string.IsNullOrWhiteSpace(retriedPayload.ResolutionStatus), $"ResolutionStatus survived the retry: {retriedPayload.ResolutionStatus}");
+        Assert.Null(retriedPayload.ResolvedAtUtc);
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_WakesTheProcessorOnlyAfterThePreparedStateIsPersisted()
+    {
+        // The requeue flips the row to queued and pulses the queue wake signal. A processor
+        // waking on that signal must never observe the pre-retry payload (stale engine,
+        // stale AutoIndex, stale fallback history) or the pre-retry artifacts.
+        await using var context = await CreateContextAsync();
+        var (app, _) = CreateApp(context);
+        var payload = CreatePayload("wake-race-retry");
+        payload.AutoIndex = 2;
+        payload.FallbackPlan =
+        [
+            new("step-0", "qobuz", "27", [], "direct_url"),
+            new("step-1", "amazon", "HD_FLAC", [], "mapped_url"),
+            new("step-2", "deezer", "9", [], "direct_url")
+        ];
+        payload.FallbackHistory = [new("step-2", "skipped", "provider_timeout", "deezer timed out")];
+        payload.ResolutionError = "deezer mapping timed out";
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "failed"), CancellationToken.None);
+        await context.QueueRepository.UpdateEngineAsync(payload.Id, "deezer", CancellationToken.None);
+
+        var observedStale = new List<string>();
+        void OnQueueStateChanged(DownloadQueueRepository.QueueStateChangedEvent change)
+        {
+            if (!string.Equals(change.QueueUuid, payload.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var row = context.QueueRepository.GetByUuidAsync(payload.Id).GetAwaiter().GetResult();
+            if (row is null || !string.Equals(row.Status, "queued", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var wakePayload = JsonSerializer.Deserialize<QobuzQueueItem>(row.PayloadJson!)!;
+            if (wakePayload.AutoIndex != 0
+                || wakePayload.FallbackHistory.Count != 0
+                || !string.IsNullOrWhiteSpace(wakePayload.ResolutionError))
+            {
+                observedStale.Add($"payload (autoIndex={wakePayload.AutoIndex}, history={wakePayload.FallbackHistory.Count}, resolutionError={wakePayload.ResolutionError})");
+            }
+
+            if (!string.Equals(row.Engine, "qobuz", StringComparison.OrdinalIgnoreCase))
+            {
+                observedStale.Add($"engine ({row.Engine})");
+            }
+        }
+
+        DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
+        try
+        {
+            var accepted = await app.RetryDownloadAsync(payload.Id, origin: QueueRequeueOrigin.Monitoring);
+            Assert.True(accepted);
+        }
+        finally
+        {
+            DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
+        }
+
+        Assert.True(observedStale.Count == 0, $"The processor was woken with stale state: {string.Join("; ", observedStale)}");
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_ClearsTheStaleRetryScheduleBeforeWakingTheProcessor()
+    {
+        // The stale-schedule cleanup must land BEFORE the queued notification: a processor
+        // woken by the signal may fail and schedule a fresh retry before the retry method
+        // finishes, and a cleanup that runs afterwards would erase that fresh schedule and
+        // strand the row in retry_waiting without a due time.
+        await using var context = await CreateContextAsync();
+        var (app, _) = CreateApp(context);
+        var payload = CreatePayload("wake-retry-clear");
+        payload.AutoIndex = 0;
+        payload.FallbackPlan = [new("step-0", "qobuz", "27", [], "direct_url")];
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "failed"), CancellationToken.None);
+        // An earlier failure left a stale retry schedule pending on the row.
+        Assert.True(await context.QueueRepository.ScheduleRetryAsync(payload.Id, "qobuz", "earlier failure", 3));
+
+        void OnQueueStateChanged(DownloadQueueRepository.QueueStateChangedEvent change)
+        {
+            if (!string.Equals(change.QueueUuid, payload.Id, StringComparison.Ordinal)
+                || !string.Equals(change.Status, "queued", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            // Simulate a processor that wakes on the signal, runs, fails and schedules a new
+            // retry before the retry method continues past the requeue.
+            var wokenScheduler = new DownloadRetryScheduler(
+                context.QueueRepository,
+                context.SettingsService,
+                new NullActivityLogWriter(),
+                new DeezSpoTagListener(),
+                NullLogger<DownloadRetryScheduler>.Instance,
+                new DownloadCancellationRegistry());
+            wokenScheduler.ScheduleRetryAsync(payload.Id, "qobuz", "fresh failure after the wake")
+                .GetAwaiter().GetResult();
+        }
+
+        DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
+        try
+        {
+            var accepted = await app.RetryDownloadAsync(payload.Id, origin: QueueRequeueOrigin.Monitoring);
+            Assert.True(accepted);
+        }
+        finally
+        {
+            DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
+        }
+
+        var row = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(row);
+        await using (var db = new SqliteConnection($"Data Source={Path.Join(context.TempRoot, "queue.db")}"))
+        {
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "SELECT retry_next_at, status FROM download_task WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.False(reader.IsDBNull(0),
+                "The fresh retry schedule scheduled after the wake must survive the retry's own cleanup.");
+            Assert.Equal("retry_waiting", reader.GetString(1), ignoreCase: true);
+        }
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_MonitoringOrigin_RequeuesFailedItem()
+    {
+        await using var context = await CreateContextAsync();
+        var (app, registry) = CreateApp(context);
+        var payload = CreatePayload("monitoring-failed-retry");
+        payload.AutoIndex = 1;
+        payload.FallbackPlan = [new("step-0", "qobuz", "27", [], "direct_url")];
+        payload.FallbackHistory = [new("step-0", "skipped", "provider_timeout", "qobuz timed out")];
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "failed"), CancellationToken.None);
+
+        var accepted = await app.RetryDownloadAsync(payload.Id, origin: QueueRequeueOrigin.Monitoring);
+
+        Assert.True(accepted);
+        var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("queued", persisted!.Status, ignoreCase: true);
+        Assert.Equal("qobuz", persisted.Engine, ignoreCase: true);
+        Assert.False(registry.WasUserCanceled(payload.Id));
+    }
+
+    [Fact]
+    public async Task RetryDownloadAsync_ManualRequeueOfCancelledItem_ClearsCancellation()
+    {
+        await using var context = await CreateContextAsync();
+        var (app, registry) = CreateApp(context);
+        var payload = CreatePayload("manual-cancelled-retry");
+        payload.AutoIndex = 1;
+        payload.FallbackPlan = [new("step-0", "qobuz", "27", [], "direct_url")];
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
+        await app.CancelDownloadAsync(payload.Id);
+        Assert.True(registry.WasUserCanceled(payload.Id));
+
+        // Manual retry is the only origin allowed to leave the cancelled state.
+        var accepted = await app.RetryDownloadAsync(payload.Id);
+
+        Assert.True(accepted);
+        var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("queued", persisted!.Status, ignoreCase: true);
+        Assert.False(registry.WasUserCanceled(payload.Id));
+    }
+
+    private static (DeezSpoTagApp App, DownloadCancellationRegistry Registry) CreateApp(TestContext context)
+    {
+        var cancellationRegistry = new DownloadCancellationRegistry();
+        var listener = new DeezSpoTagListener(null);
+        var retryScheduler = new DownloadRetryScheduler(
+            context.QueueRepository,
+            context.SettingsService,
+            new NullActivityLogWriter(),
+            listener,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DownloadRetryScheduler>.Instance,
+            cancellationRegistry);
+        var app = new DeezSpoTagApp(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTagApp>.Instance,
+            new DeezSpoTagApp.Dependencies(
+                context.SettingsService,
+                listener,
+                retryScheduler,
+                context.QueueRepository,
+                cancellationRegistry,
+                new AlwaysClosedExecutionGate()),
+            context.ServiceProvider);
+        return (app, cancellationRegistry);
+    }
+
+    private sealed class AlwaysOpenExecutionGate : IDownloadQueueExecutionGate
+    {
+        public Task<DownloadQueueExecutionDecision> EvaluateDownloadExecutionAsync(
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new DownloadQueueExecutionDecision(true, "open", string.Empty));
+    }
+
+    /// <summary>
+    /// Keeps the queue processor from dequeuing so these tests observe the persisted
+    /// requeue state instead of racing the live download worker.
+    /// </summary>
+    private sealed class AlwaysClosedExecutionGate : IDownloadQueueExecutionGate
+    {
+        public Task<DownloadQueueExecutionDecision> EvaluateDownloadExecutionAsync(
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new DownloadQueueExecutionDecision(false, "closed", "test harness"));
     }
 
     [Fact]

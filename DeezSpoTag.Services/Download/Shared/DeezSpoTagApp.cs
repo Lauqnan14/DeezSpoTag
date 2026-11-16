@@ -49,6 +49,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private readonly DownloadCancellationRegistry _cancellationRegistry;
     private readonly IDownloadQueueExecutionGate _executionGate;
 
+    // Serializes the CancelDownloadAsync and RetryDownloadAsync critical sections so a
+    // newer cancellation cannot be cleared by older retry preparation work.
+    private readonly SemaphoreSlim _cancelRetryGate = new(1, 1);
+
     public object? CurrentJob { get; private set; }
 
     public DeezSpoTagSettings Settings { get; private set; }
@@ -524,7 +528,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             if (savedPlan.Count > 0)
             {
                 var history = ReadRecoveryHistory(resolvedPayload);
-                terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(savedPlan, history)
+                terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(
+                    savedPlan, history, QueueSourceSettingsSnapshot.ReadFromPayload(resolvedPayload))
                     ? UnavailableStatus : FailedStatus;
             }
             else if (terminalStatus == UnavailableStatus)
@@ -553,27 +558,47 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task CancelDownloadAsync(string uuid)
     {
-        var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
-        _cancellationRegistry.MarkUserCanceled(uuid);
-        await _retryScheduler.ClearAsync(uuid, CancellationToken.None);
-        var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);
-        if (activeCancellationRequested)
+        if (string.IsNullOrWhiteSpace(uuid))
         {
-            await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
-            await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
-            Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
-            Listener?.Send("cancellingCurrentItem", uuid);
-            DeezSpoTagSpeedTracker.Clear(uuid);
             return;
         }
 
-        await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
-        await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
-        // The row still exists with status "canceled", so report a status change. Emitting
-        // "removedFromQueue" here only hid the card in the UI while the entry stayed in the queue
-        // and reappeared on the next hydration.
-        Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
-        DeezSpoTagSpeedTracker.Clear(uuid);
+        await _cancelRetryGate.WaitAsync(CancellationToken.None);
+        try
+        {
+            var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
+            _cancellationRegistry.MarkUserCanceled(uuid);
+            // Persist the cancellation before anything else: once this write lands, no
+            // later status update can resurrect the row, and a crash here still leaves
+            // the cancellation durable.
+            var updated = await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
+            if (!updated)
+            {
+                return;
+            }
+
+            await _retryScheduler.ClearAsync(uuid, CancellationToken.None);
+            var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);
+            if (activeCancellationRequested)
+            {
+                await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
+                Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
+                Listener?.Send("cancellingCurrentItem", uuid);
+                DeezSpoTagSpeedTracker.Clear(uuid);
+                return;
+            }
+
+            await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
+            // The row still exists with status "canceled", so report a status change. Emitting
+            // "removedFromQueue" here only hid the card in the UI while the entry stayed in the queue
+            // and reappeared on the next hydration.
+            Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
+            DeezSpoTagSpeedTracker.Clear(uuid);
+        }
+        finally
+        {
+            _cancelRetryGate.Release();
+        }
     }
 
     public async Task PauseDownloadAsync(string uuid)
@@ -595,101 +620,135 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
-    public async Task<bool> RetryDownloadAsync(string uuid, CancellationToken cancellationToken = default, bool verificationRecovery = false)
+    public async Task<bool> RetryDownloadAsync(string uuid, CancellationToken cancellationToken = default, bool verificationRecovery = false, QueueRequeueOrigin? origin = null)
     {
         if (string.IsNullOrWhiteSpace(uuid))
         {
             return false;
         }
 
-        var queueItem = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
-        if (queueItem == null || (verificationRecovery && !string.Equals(queueItem.Status, "failed", StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
+        var requeueOrigin = origin ?? (verificationRecovery ? QueueRequeueOrigin.AutoRetry : QueueRequeueOrigin.Manual);
 
-        string firstStepEngine;
-        var firstStepQuality = string.Empty;
-        var updatedPayloadForWatchlist = string.Empty;
-        var safeUuid = DeezSpoTag.Core.Security.LogSanitizer.OneLine(uuid);
-
-        if (string.IsNullOrWhiteSpace(queueItem.PayloadJson))
-        {
-            _logger.LogWarning("Manual retry blocked for {QueueUuid}: queue payload is missing.", safeUuid);
-            return false;
-        }
-
-        JsonObject payloadObj;
+        // Serialized with CancelDownloadAsync: a cancellation cannot interleave with the
+        // accepted requeue transition and its registry update.
+        await _cancelRetryGate.WaitAsync(CancellationToken.None);
         try
         {
-            payloadObj = JsonNode.Parse(queueItem.PayloadJson) as JsonObject
-                ?? throw new JsonException("Queue payload root is not an object.");
+            var queueItem = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
+            if (queueItem == null || (verificationRecovery && !string.Equals(queueItem.Status, "failed", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            string firstStepEngine;
+            var firstStepQuality = string.Empty;
+            var updatedPayloadForWatchlist = string.Empty;
+            var safeUuid = DeezSpoTag.Core.Security.LogSanitizer.OneLine(uuid);
+
+            if (string.IsNullOrWhiteSpace(queueItem.PayloadJson))
+            {
+                _logger.LogWarning("Manual retry blocked for {QueueUuid}: queue payload is missing.", safeUuid);
+                return false;
+            }
+
+            JsonObject payloadObj;
+            try
+            {
+                payloadObj = JsonNode.Parse(queueItem.PayloadJson) as JsonObject
+                    ?? throw new JsonException("Queue payload root is not an object.");
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Manual retry blocked for {QueueUuid}: queue payload is invalid.", safeUuid);
+                return false;
+            }
+
+            DownloadExecutionPlan.NormalizePersistedRetryPlan(payloadObj, out var plan);
+            if (plan.Count == 0)
+            {
+                _logger.LogWarning("Manual retry blocked for {QueueUuid}: execution plan is missing.", safeUuid);
+                return false;
+            }
+
+            var preserveAcquiredAudio = HasRecoverableAcquiredAudio(payloadObj);
+            if (!preserveAcquiredAudio)
+            {
+                payloadObj["AutoIndex"] = 0;
+                payloadObj["autoIndex"] = 0;
+                payloadObj["FallbackHistory"] = new JsonArray();
+                payloadObj["fallbackHistory"] = new JsonArray();
+            }
+            ResetPayloadRetryState(payloadObj, preserveAcquiredAudio);
+
+            var retryStepIndex = preserveAcquiredAudio
+                ? Math.Clamp(ReadJsonInt(payloadObj, "AutoIndex", "autoIndex"), 0, plan.Count - 1)
+                : 0;
+            firstStepEngine = plan[retryStepIndex].Engine;
+            firstStepQuality = plan[retryStepIndex].Quality ?? string.Empty;
+
+            updatedPayloadForWatchlist = payloadObj.ToJsonString();
+            // Cleanup happens while the row is still terminal: the artifact-clear statement
+            // refuses to touch a cancelled row, so a rejected requeue leaves them intact. The
+            // stale retry schedule is cleared here too, BEFORE the requeue publishes the queued
+            // state: a processor woken by that signal may fail and schedule a fresh retry, and
+            // a cleanup running afterwards would erase it and strand the row without a due time.
+            await _queueRepository.ClearRetryArtifactsAsync(uuid, cancellationToken);
+            await _retryScheduler.ClearAsync(uuid, cancellationToken);
+
+            // Accept the transition before mutating anything: a rejected requeue (for
+            // example Monitoring against a cancelled row) must leave the row untouched,
+            // keeping its payload, engine, artifacts and cancellation mark intact. The
+            // prepared payload and engine are applied by the requeue's own UPDATE, so the
+            // queued state that wakes the processor is never visible with stale data.
+            var requeued = await _queueRepository.RequeueAsync(
+                uuid,
+                requeueOrigin,
+                cancellationToken,
+                payloadJson: updatedPayloadForWatchlist,
+                engine: string.IsNullOrWhiteSpace(firstStepEngine) ? null : firstStepEngine);
+            if (!requeued)
+            {
+                _logger.LogInformation(
+                    "Retry blocked for {QueueUuid}: requeue rejected (origin={Origin}).",
+                    safeUuid,
+                    requeueOrigin);
+                return false;
+            }
+
+            _cancellationRegistry.ClearUserCanceled(uuid);
+
+            // A cancellation that landed while this retry was being prepared wins.
+            if (_cancellationRegistry.WasUserCanceled(uuid))
+            {
+                _logger.LogInformation(
+                    "Retry reverted to cancelled for {QueueUuid}: a newer user cancellation landed.",
+                    safeUuid);
+                await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus, cancellationToken: cancellationToken);
+                DeezSpoTagSpeedTracker.Clear(uuid);
+                return false;
+            }
+
+            await UpdateWatchlistTrackStatusAsync(updatedPayloadForWatchlist, "queued", cancellationToken);
+            Listener?.Send(UpdateQueueEvent, new
+            {
+                uuid,
+                status = "inQueue",
+                progress = 0,
+                downloaded = 0,
+                failed = 0,
+                error = default(string),
+                engine = firstStepEngine,
+                quality = firstStepQuality
+            });
+            DeezSpoTagSpeedTracker.Clear(uuid);
+            await EnsureQueueProcessorRunningAsync();
+
+            return true;
         }
-        catch (JsonException ex)
+        finally
         {
-            _logger.LogWarning(ex, "Manual retry blocked for {QueueUuid}: queue payload is invalid.", safeUuid);
-            return false;
+            _cancelRetryGate.Release();
         }
-
-        DownloadExecutionPlan.NormalizePersistedRetryPlan(payloadObj, out var plan);
-        if (plan.Count == 0)
-        {
-            _logger.LogWarning("Manual retry blocked for {QueueUuid}: execution plan is missing.", safeUuid);
-            return false;
-        }
-
-        var preserveAcquiredAudio = HasRecoverableAcquiredAudio(payloadObj);
-        if (!preserveAcquiredAudio)
-        {
-            payloadObj["AutoIndex"] = 0;
-            payloadObj["autoIndex"] = 0;
-            payloadObj["FallbackHistory"] = new JsonArray();
-            payloadObj["fallbackHistory"] = new JsonArray();
-        }
-        ResetPayloadRetryState(payloadObj, preserveAcquiredAudio);
-
-        updatedPayloadForWatchlist = payloadObj.ToJsonString();
-        await _queueRepository.UpdatePayloadAsync(uuid, updatedPayloadForWatchlist, cancellationToken);
-
-        var retryStepIndex = preserveAcquiredAudio
-            ? Math.Clamp(ReadJsonInt(payloadObj, "AutoIndex", "autoIndex"), 0, plan.Count - 1)
-            : 0;
-        firstStepEngine = plan[retryStepIndex].Engine;
-        firstStepQuality = plan[retryStepIndex].Quality ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(firstStepEngine))
-        {
-            await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
-        }
-
-        await _retryScheduler.ClearAsync(uuid, cancellationToken);
-        _cancellationRegistry.ClearUserCanceled(uuid);
-        await _queueRepository.ClearRetryArtifactsAsync(uuid, cancellationToken);
-
-        var requeued = await _queueRepository.RequeueAsync(
-            uuid,
-            verificationRecovery ? QueueRequeueOrigin.AutoRetry : QueueRequeueOrigin.Manual,
-            cancellationToken);
-        if (!requeued)
-        {
-            return false;
-        }
-
-        await UpdateWatchlistTrackStatusAsync(updatedPayloadForWatchlist, "queued", cancellationToken);
-        Listener?.Send(UpdateQueueEvent, new
-        {
-            uuid,
-            status = "inQueue",
-            progress = 0,
-            downloaded = 0,
-            failed = 0,
-            error = default(string),
-            engine = firstStepEngine,
-            quality = firstStepQuality
-        });
-        DeezSpoTagSpeedTracker.Clear(uuid);
-        await EnsureQueueProcessorRunningAsync();
-
-        return true;
     }
 
     private static void ResetPayloadRetryState(JsonObject payloadObj, bool preserveAcquiredAudio)
@@ -703,6 +762,15 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj["ErrorMessage"] = string.Empty;
         payloadObj["errorMessage"] = string.Empty;
         payloadObj["error"] = string.Empty;
+        // The previous failure's resolution record must not survive a retry: a stale
+        // ResolutionError would be preferred over a fresh failure's message, and a stale
+        // ResolutionStatus misrepresents a re-queued row.
+        payloadObj["ResolutionStatus"] = string.Empty;
+        payloadObj.Remove("resolutionStatus");
+        payloadObj["ResolutionError"] = string.Empty;
+        payloadObj.Remove("resolutionError");
+        payloadObj["ResolvedAtUtc"] = null;
+        payloadObj.Remove("resolvedAtUtc");
         if (!preserveAcquiredAudio)
         {
             payloadObj["Files"] = new JsonArray();

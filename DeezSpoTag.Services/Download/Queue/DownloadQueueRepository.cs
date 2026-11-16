@@ -20,6 +20,11 @@ public enum QueueRequeueOrigin
 {
     Manual = 0,
     AutoRetry = 1,
+    /// <summary>
+    /// Automatic re-check of items previously marked unavailable (ManualUnavailableRetryService).
+    /// Non-manual: an unavailable item that the user cancelled must stay cancelled.
+    /// </summary>
+    Monitoring = 2,
     QueueUpgradeRecovery = 3,
     FallbackAdvance = 4,
     Unknown = 99
@@ -145,15 +150,19 @@ SELECT CASE
     public async Task<bool> RequeueAsync(
         string queueUuid,
         QueueRequeueOrigin origin,
-        CancellationToken cancellationToken = default)
-        => await RequeueAsync(queueUuid, origin, requeueToFront: false, newestFirst: false, cancellationToken);
+        CancellationToken cancellationToken = default,
+        string? payloadJson = null,
+        string? engine = null)
+        => await RequeueAsync(queueUuid, origin, requeueToFront: false, newestFirst: false, cancellationToken, payloadJson, engine);
 
     public async Task<bool> RequeueAsync(
         string queueUuid,
         QueueRequeueOrigin origin,
         bool requeueToFront,
         bool newestFirst,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? payloadJson = null,
+        string? engine = null)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -180,6 +189,10 @@ SET status = 'queued',
     progress = 0,
     downloaded = 0,
     failed = 0,
+    -- The prepared retry state is applied by the same statement that flips the status, so a
+    -- processor waking on the queued signal can never observe the pre-retry payload/engine.
+    payload = COALESCE(@payloadJson, payload),
+    engine = COALESCE(@engine, engine),
     move_status = CASE
         WHEN destination_folder_id IS NOT NULL THEN '" + MoveStatusPending + @"'
         ELSE NULL
@@ -194,10 +207,16 @@ SET status = 'queued',
     retry_engine = NULL,
     activities_cleared_at = NULL,
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+WHERE queue_uuid = @queueUuid
+  -- Re-checked in the mutation itself: a cancellation landing after the SELECT above
+  -- must not be overwritten by a non-manual requeue.
+  AND (@originManual = 1 OR lower(status) NOT IN ('canceled', 'cancelled'));";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("queueOrder", queueOrder);
+        command.Parameters.AddWithValue("originManual", origin == QueueRequeueOrigin.Manual ? 1 : 0);
+        command.Parameters.AddWithValue("payloadJson", string.IsNullOrWhiteSpace(payloadJson) ? DBNull.Value : payloadJson);
+        command.Parameters.AddWithValue("engine", string.IsNullOrWhiteSpace(engine) ? DBNull.Value : engine);
         var affected = await command.ExecuteNonQueryAsync(cancellationToken);
         if (affected > 0)
         {
@@ -1008,7 +1027,7 @@ LIMIT 1;";
         return result is not null && result is not DBNull;
     }
 
-    public async Task UpdateStatusAsync(string queueUuid, string status, string? error = null, int? downloaded = null, int? failed = null, double? progress = null, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateStatusAsync(string queueUuid, string status, string? error = null, int? downloaded = null, int? failed = null, double? progress = null, CancellationToken cancellationToken = default)
     {
         var completed = string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, "complete", StringComparison.OrdinalIgnoreCase);
@@ -1062,7 +1081,10 @@ SET status = @status,
         ELSE enrichment_status
     END,
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+WHERE queue_uuid = @queueUuid
+  -- Durable cancellation: a cancelled row may only be touched by a cancelled target,
+  -- so late failed/completed/progress callbacks cannot resurrect it.
+  AND (lower(status) NOT IN ('canceled', 'cancelled') OR lower(@status) IN ('canceled', 'cancelled'));";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
         command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
@@ -1076,6 +1098,8 @@ WHERE queue_uuid = @queueUuid;";
             await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, status, cancellationToken);
             PublishQueueStateChanged(queueUuid, status);
         }
+
+        return updated > 0;
     }
 
     private async Task TryCleanupStagingForTerminalStatusAsync(
@@ -1525,7 +1549,9 @@ SET payload = @payload,
     END,
     " + BuildPublicApiRetryEligibilityAssignment("engine", "@payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+-- A cancelled row keeps its payload: late retry preparation must not rewrite it.
+WHERE queue_uuid = @queueUuid
+  AND lower(status) NOT IN ('canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
@@ -1781,7 +1807,9 @@ SET engine = @engine,
     END,
     " + BuildPublicApiRetryEligibilityAssignment("@engine", "@payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+-- A cancelled row keeps its engine/payload: late retry preparation must not rewrite it.
+WHERE queue_uuid = @queueUuid
+  AND lower(status) NOT IN ('canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("engine", engine);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
@@ -2186,7 +2214,9 @@ UPDATE download_task
 SET engine = @engine,
     " + BuildPublicApiRetryEligibilityAssignment("@engine", "payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+-- A cancelled row keeps its engine: late retry preparation must not rewrite it.
+WHERE queue_uuid = @queueUuid
+  AND lower(status) NOT IN ('canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("engine", engine);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
@@ -2214,7 +2244,9 @@ SET final_destinations_json = NULL,
         ELSE '" + EnrichmentStatusNotRequired + @"'
     END,
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+-- A cancelled row keeps its download artifacts until a manual requeue accepts it.
+WHERE queue_uuid = @queueUuid
+  AND lower(status) NOT IN ('canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);

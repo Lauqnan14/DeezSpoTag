@@ -9,6 +9,9 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Models.Qobuz;
+using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared;
@@ -26,6 +29,95 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DownloadIntentFallbackParityTest
 {
+    [Fact]
+    public async Task SavedPlanReusesRejectedMatrixAndEmptyLinksCannotEraseTheProviderTimeout()
+    {
+        var root = Path.Join(Path.GetTempPath(), "identity-rejection-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var resolver = new CountingRejectingIdentityResolver();
+            var service = CreateService(resolver);
+            var plan = new List<FallbackPlanStep> {
+                new("step-0", "amazon", "ULTRA_HD_FLAC", [], "mapped_url"),
+                new("step-1", "amazon", "HD_FLAC", [], "mapped_url") };
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), CreateUnresolvedIntent(), new JsonObject(), plan, CancellationToken.None])!;
+            Assert.Contains("amazon-timeout", result.Error);
+            Assert.Equal(1, resolver.CallCount);
+            Assert.Null(result.SourceUrl);
+            Assert.All(result.FallbackHistory!, attempt => Assert.Equal("provider_timeout", attempt.ErrorClass));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class CountingRejectingIdentityResolver : ITrackIdentityResolver
+    {
+        public int CallCount { get; private set; }
+        public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken token)
+        {
+            CallCount++;
+            return Task.FromResult(TrackIdentityResolution.Empty(request) with {
+                Candidates = [new PlatformIdentityCandidate("amazon", null, null, "amazon-native", false, "amazon-timeout")] });
+        }
+    }
+
+    [Fact]
+    public async Task SavedPlanDoesNotRepeatTheSameFailedIdentityMatrixForEveryQuality()
+    {
+        var root = Path.Join(Path.GetTempPath(), "identity-attempt-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var resolver = new CountingFailingIdentityResolver();
+            var service = CreateService(resolver);
+            var plan = new List<FallbackPlanStep> {
+                new("step-0", "amazon", "ULTRA_HD_FLAC", [], "mapped_url"),
+                new("step-1", "amazon", "HD_FLAC", [], "mapped_url") };
+            for (var pass = 1; pass <= 2; pass++)
+            {
+                var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                    [CreateQueueItem(), CreateUnresolvedIntent(), new JsonObject(), plan, CancellationToken.None])!;
+                Assert.NotNull(result.Error);
+                Assert.Equal(2, result.FallbackHistory!.Count);
+                Assert.All(result.FallbackHistory, attempt => Assert.Contains("Provider unavailable", attempt.Detail));
+                Assert.Equal(pass, resolver.CallCount); // Retry is fresh; qualities reuse this attempt's matrix.
+                Assert.Null(result.SourceUrl);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task SavedPlanLastDisabledStepCannotEraseEarlierProviderFailure()
+    {
+        var root = Path.Join(Path.GetTempPath(), "identity-root-error-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var service = CreateService(new CountingFailingIdentityResolver());
+            var plan = new List<FallbackPlanStep> {
+                new("step-0", "amazon", "HD_FLAC", [], "mapped_url"),
+                new("step-1", "deezer", "1", [], "direct_url") };
+            var settings = new DeezSpoTagSettings();
+            settings.DownloadEngineOrder!.Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "amazon").Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "deezer").Enabled = false;
+            var payload = new JsonObject { ["SourceSettingsSnapshot"] =
+                System.Text.Json.JsonSerializer.SerializeToNode(QueueSourceSettingsSnapshot.Capture(settings)) };
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), CreateUnresolvedIntent(), payload, plan, CancellationToken.None])!;
+            Assert.Contains("Provider unavailable", result.Error);
+            Assert.Equal(2, result.FallbackHistory!.Count);
+            Assert.Equal("source_disabled", result.FallbackHistory[1].ErrorClass);
+            Assert.Null(result.SourceUrl);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task VisibleYouTubePreparationDoesNotMatchBeforeQueueInsertion()
     {
@@ -134,7 +226,7 @@ public sealed class DownloadIntentFallbackParityTest
             var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
                 [CreateQueueItem(), CreateUnresolvedIntent(), payload, plan, CancellationToken.None])!;
 
-            Assert.Equal(engineEnabled && qualityEnabled ? 2 : 1, resolver.CallCount);
+            Assert.Equal(1, resolver.CallCount); // All enabled quality steps share one recording lookup.
             Assert.Equal(plan, result.FallbackPlan);
             Assert.Equal(2, result.FallbackHistory!.Count);
             if (!engineEnabled || !qualityEnabled)
@@ -192,7 +284,7 @@ public sealed class DownloadIntentFallbackParityTest
             var result = await task;
 
             Assert.NotNull(result.Error);
-            Assert.Equal(2, resolver.CallCount);
+            Assert.Equal(1, resolver.CallCount);
             Assert.Equal(2, result.FallbackHistory!.Count);
             Assert.All(result.FallbackHistory, attempt => Assert.Contains("Provider unavailable", attempt.Detail));
             var persisted = new JsonObject();
@@ -297,6 +389,41 @@ public sealed class DownloadIntentFallbackParityTest
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task ResolverError_ClassifiesFromSavedEvidenceInsteadOfStampingUnavailable()
+    {
+        // A queued item whose saved-plan resolution failed with a mapping timeout is a
+        // recoverable failure, not a confirmed catalogue miss: the resolver must leave
+        // the row failed (the shared evidence rule decides "unavailable"), so the
+        // scheduler keeps retrying it.
+        var root = Path.Join(Path.GetTempPath(), "resolver-evidence-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var service = CreateService(new RejectingIdentityResolver("tidal-timeout"));
+            var resolver = new DownloadIntentQueuedPayloadResolver(service);
+            var item = CreateQueueItem() with
+            {
+                Engine = "tidal",
+                PayloadJson = """
+                    {
+                      "FallbackPlan": [
+                        {"StepId": "step-0", "Engine": "tidal", "Quality": "LOSSLESS", "RequiredInputs": [], "ResolutionStrategy": "mapped_url"}
+                      ]
+                    }
+                    """
+            };
+
+            var resolution = await resolver.ResolveAsync(item, CancellationToken.None);
+
+            Assert.Equal("failed", resolution.Item.Status);
+            Assert.NotNull(resolution.Error);
+            Assert.Contains("tidal-timeout", resolution.Error, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private sealed class RejectingIdentityResolver(string reason) : ITrackIdentityResolver
     {
         public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken ct)
@@ -317,6 +444,204 @@ public sealed class DownloadIntentFallbackParityTest
 
     private static MethodInfo GetSavedPlanMethod()
         => typeof(DownloadIntentService).GetMethod("ResolveQueuedPayloadFromSavedPlanAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    [Fact]
+    public async Task SavedPlan_MixedProviderOutcomesStayRecoverableAndKeepEveryCause()
+    {
+        // Replays the NAS row's six saved outcomes (catalogue 403 / mapping timeout /
+        // missing approved URL, two qualities each) through the real saved-plan resolver.
+        // None of these classes proves recording absence, so the row must stay recoverable
+        // and the joined error must retain every cause instead of the last one only.
+        var root = Path.Join(Path.GetTempPath(), "nas-six-outcome-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var resolver = new MixedProviderRejectionIdentityResolver();
+            var service = CreateService(resolver);
+            var settings = new DeezSpoTagSettings();
+            settings.DownloadEngineOrder.Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "qobuz").Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "tidal").Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "amazon").Enabled = true;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "apple").Enabled = false;
+            settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "deezer").Enabled = false;
+            var payload = new JsonObject
+            {
+                ["AutoIndex"] = 0,
+                ["Quality"] = "7",
+                ["SourceSettingsSnapshot"] = System.Text.Json.JsonSerializer.SerializeToNode(QueueSourceSettingsSnapshot.Capture(settings))
+            };
+            var plan = new List<FallbackPlanStep>
+            {
+                new("step-0", "qobuz", "7", [], "isrc"),
+                new("step-1", "tidal", "HI_RES", [], "isrc"),
+                new("step-2", "amazon", "ULTRA_HD_FLAC", [], "mapped_url"),
+                new("step-3", "qobuz", "6", [], "isrc"),
+                new("step-4", "tidal", "LOSSLESS", [], "isrc"),
+                new("step-5", "amazon", "HD_FLAC", [], "mapped_url")
+            };
+
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem() with { Engine = "qobuz" }, CreateUnresolvedIntent(), payload, plan, CancellationToken.None])!;
+
+            Assert.Equal(
+                new[]
+                {
+                    "catalog_lookup_failed", "provider_timeout", "identity_unresolved",
+                    "catalog_lookup_failed", "provider_timeout", "identity_unresolved"
+                },
+                result.FallbackHistory.Select(attempt => attempt.ErrorClass).ToArray());
+            Assert.Equal(6, result.FallbackHistory!.Count);
+            // A rejected anonymous catalogue request must never be recorded as a
+            // signed-session/authentication verdict for the step.
+            Assert.DoesNotContain(result.FallbackHistory, attempt => attempt.ErrorClass == "authentication_required");
+            // No cause is masked by the last failure (NAS showed only missing_url).
+            Assert.Contains("catalog lookup failed", result.Error, StringComparison.Ordinal);
+            Assert.Contains("tidal provider timed out", result.Error, StringComparison.Ordinal);
+            Assert.Contains("amazon", result.Error, StringComparison.Ordinal);
+            // One shared recording lookup for the whole attempt (the identity matrix is
+            // recording-level work, independent of the quality steps).
+            Assert.Equal(1, resolver.CallCount);
+            Assert.Null(result.SourceUrl);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task SavedPlan_Catalogue403FailureKeepsRetryEligibilityAndRecovery()
+    {
+        var root = Path.Join(Path.GetTempPath(), "nas-catalog-403-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var service = CreateService(new ThrowingCatalogue403IdentityResolver());
+            var plan = new List<FallbackPlanStep>
+            {
+                new("step-0", "qobuz", "7", [], "isrc"),
+                new("step-1", "qobuz", "6", [], "isrc")
+            };
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), CreateUnresolvedIntent(), new JsonObject { ["AutoIndex"] = 0 }, plan, CancellationToken.None])!;
+
+            // The anonymous catalogue 403 aggregate classifies as an operational catalogue
+            // failure, not as authentication_required, and every step records the cause.
+            Assert.Equal(2, result.FallbackHistory!.Count);
+            Assert.All(result.FallbackHistory, attempt =>
+            {
+                Assert.Equal("catalog_lookup_failed", attempt.ErrorClass);
+                Assert.Contains("Qobuz catalog lookup failed", attempt.Detail, StringComparison.Ordinal);
+                Assert.Contains("403", attempt.Detail, StringComparison.Ordinal);
+            });
+
+            // The whole shape stays retry-eligible: the reconstructed failure history is a
+            // temporary provider failure, so recovery continues beyond the ordinary attempt
+            // budget, and the mixed outcomes do not prove whole-plan unavailability.
+            var payload = new JsonObject();
+            QueuePreResolutionPayload.ApplyHistory(payload, result);
+            var persistedItem = CreateQueueItem() with
+            {
+                PayloadJson = payload.ToJsonString(),
+                Error = result.FallbackHistory[0].Detail
+            };
+            var retryFailure = (AggregateException)typeof(DeezSpoTagApp)
+                .GetMethod("ResolveRetryFailure", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, [persistedItem])!;
+            Assert.True(FallbackFailureClassifier.IsTemporaryProviderFailure(retryFailure));
+            Assert.False(FallbackFailureClassifier.IsPlanUnavailable(plan, result.FallbackHistory));
+
+            // A subsequent attempt whose catalogue lookup succeeds resolves the same
+            // saved plan without bypassing the identity safeguards.
+            var recoveredService = CreateService(new AcceptingQobuzIdentityResolver());
+            SetPrivateField(recoveredService, "_qobuzTrackResolver", CreateValidatedQobuzResolver());
+            SetPrivateField(recoveredService, "_activityLog", new NullActivityLogWriter());
+            var recovered = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(recoveredService,
+                [CreateQueueItem() with { Engine = "qobuz" }, CreateUnresolvedIntent(), new JsonObject { ["AutoIndex"] = 0 }, plan, CancellationToken.None])!;
+            Assert.Null(recovered.Error);
+            Assert.Equal("qobuz", recovered.Engine);
+            Assert.Equal("7", recovered.Quality);
+            Assert.Equal(0, recovered.AutoIndex);
+            Assert.False(string.IsNullOrWhiteSpace(recovered.SourceUrl));
+            Assert.False(string.IsNullOrWhiteSpace(recovered.QobuzId));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static QobuzTrackResolver CreateValidatedQobuzResolver()
+    {
+        var track = new DeezSpoTag.Core.Models.Qobuz.QobuzTrack
+        {
+            Id = 74444082, Title = "Track", ISRC = "USAAA1234567", Duration = 180,
+            Performer = new DeezSpoTag.Core.Models.Qobuz.QobuzArtist { Name = "Artist" },
+            Album = new DeezSpoTag.Core.Models.Qobuz.QobuzAlbum { Title = "Album" }
+        };
+        return new QobuzTrackResolver(new ValidatedQobuzMetadataService(track),
+            Microsoft.Extensions.Options.Options.Create(new QobuzApiConfig
+            {
+                DefaultStore = "us-en",
+                PreferredStores = new List<string> { "us-en" }
+            }),
+            NullLogger<QobuzTrackResolver>.Instance);
+    }
+
+    private sealed class ValidatedQobuzMetadataService(DeezSpoTag.Core.Models.Qobuz.QobuzTrack track) : IQobuzMetadataService
+    {
+        public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct) => Task.FromResult<QobuzTrack?>(track);
+        public Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct) => Task.FromResult<QobuzAlbum?>(null);
+        public Task<QobuzArtist?> FindArtistByName(string name, CancellationToken ct) => Task.FromResult<QobuzArtist?>(null);
+        public Task<List<QobuzTrack>> SearchTracks(string query, CancellationToken ct) => Task.FromResult(new List<QobuzTrack> { track });
+        public Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct) => Task.FromResult(new List<QobuzTrack>());
+        public Task<List<QobuzTrack>> SearchTracksAutosuggest(string query, string? store, CancellationToken ct) => Task.FromResult(new List<QobuzTrack>());
+        public Task<List<QobuzAlbum>> SearchAlbums(string query, CancellationToken ct) => Task.FromResult(new List<QobuzAlbum>());
+        public Task<List<QobuzArtist>> SearchArtists(string query, CancellationToken ct) => Task.FromResult(new List<QobuzArtist>());
+        public Task<QobuzArtist?> GetArtistDiscography(int artistId, string store, CancellationToken ct) => Task.FromResult<QobuzArtist?>(null);
+        public Task<List<QobuzAlbum>> GetArtistAlbums(int artistId, string store, CancellationToken ct) => Task.FromResult(new List<QobuzAlbum>());
+        public Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct) => Task.FromResult<QobuzTrack?>(track);
+        public Task<List<QobuzTrack>> GetAlbumPageTracks(string url, CancellationToken ct) => Task.FromResult(new List<QobuzTrack>());
+    }
+
+    private sealed class MixedProviderRejectionIdentityResolver : ITrackIdentityResolver
+    {
+        public int CallCount { get; private set; }
+
+        public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken token)
+        {
+            CallCount++;
+            return Task.FromResult(TrackIdentityResolution.Empty(request) with
+            {
+                Candidates =
+                [
+                    new PlatformIdentityCandidate("qobuz", null, null, "qobuz-native", false, "qobuz-error"),
+                    new PlatformIdentityCandidate("tidal", null, null, "tidal-native", false, "tidal-timeout"),
+                    new PlatformIdentityCandidate("amazon", null, null, "amazon-native", false, "amazon-unresolved")
+                ]
+            });
+        }
+    }
+
+    private sealed class ThrowingCatalogue403IdentityResolver : ITrackIdentityResolver
+    {
+        public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken token)
+            => Task.FromException<TrackIdentityResolution>(new AggregateException(
+                "Qobuz catalog lookup failed",
+                new HttpRequestException("Response status code does not indicate success: 403 (Forbidden).",
+                    null, System.Net.HttpStatusCode.Forbidden)));
+    }
+
+    private sealed class AcceptingQobuzIdentityResolver : ITrackIdentityResolver
+    {
+        public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken token)
+            => Task.FromResult(TrackIdentityResolution.Empty(request) with
+            {
+                Isrc = request.Isrc,
+                QobuzUrl = "https://play.qobuz.com/track/74444082",
+                Candidates =
+                [
+                    new PlatformIdentityCandidate("qobuz", "74444082", "https://play.qobuz.com/track/74444082", "qobuz-native", true, null)
+                ]
+            });
+    }
 
     private static DownloadIntent CreateUnresolvedIntent() => new()
     {

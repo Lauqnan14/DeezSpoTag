@@ -23,6 +23,42 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RequiredDownloadIdentityLookupUsesTheMandatoryCatalogDeadline(bool required)
+    {
+        using var handler = new SlowVerifiedCatalogHandler();
+        var tidal = CreateRegionalService(handler, "US");
+        var resolver = new DeezSpoTag.Web.Services.TrackIdentityResolver(
+            null!, null!, tidal, null!, null!, null!, null!, null!, null,
+            NullLogger<DeezSpoTag.Web.Services.TrackIdentityResolver>.Instance);
+        var request = new DeezSpoTag.Services.Download.Identity.TrackIdentityResolutionRequest(
+            "shazam", null, "Song", "Artist", "Album", "USGZ20930467", 178000,
+            TargetPlatforms: ["tidal"], RequiredPlatforms: required ? ["tidal"] : null);
+        var result = await resolver.ResolveAsync(request, CancellationToken.None);
+        if (required)
+        {
+            Assert.Equal("812345678902", result.TidalId);
+            Assert.Contains(result.Candidates, candidate => candidate.Accepted && candidate.Platform == "tidal");
+        }
+        else
+        {
+            Assert.Null(result.TidalId);
+            Assert.Contains(result.Candidates, candidate => candidate.Reason == "tidal-timeout");
+        }
+    }
+
+    private sealed class SlowVerifiedCatalogHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(4), token);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                """{"items":[{"id":812345678902,"title":"Song","isrc":"USGZ20930467","duration":178,"artist":{"name":"Artist"},"artists":[{"name":"Artist"}],"album":{"title":"Album"}}]}""") };
+        }
+    }
+
     [Fact]
     public async Task NativeTidalAlbumNumbersReachDownloadTaggingMetadata()
     {

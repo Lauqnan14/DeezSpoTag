@@ -20,7 +20,8 @@ public sealed record TrackIdentityResolutionRequest(
     string? Storefront = null,
     string? Language = null,
     string? MediaUserToken = null,
-    string? PreferredReleaseType = null);
+    string? PreferredReleaseType = null,
+    IReadOnlyCollection<string>? RequiredPlatforms = null);
 
 public sealed record PlatformIdentityCandidate(
     string Platform,

@@ -588,10 +588,8 @@ public sealed class EngineFallbackCoordinator
 
         if (payload.FallbackPlan.Count > 0)
         {
-            var settings = payload.SourceSettingsSnapshot?.ApplyTo(
-                new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings());
-            var enabledSteps = payload.FallbackPlan.Where(step => settings is null
-                || DownloadSourceOrder.IsSourceQualityEnabled(settings, step.Engine, step.Quality)).ToList();
+            var enabledSteps = FallbackFailureClassifier.EnabledSavedPlanSteps(
+                payload.FallbackPlan, payload.SourceSettingsSnapshot).ToList();
             var outcomes = enabledSteps.Select(step => new
                 {
                     Step = step,
@@ -681,7 +679,9 @@ public sealed class EngineFallbackCoordinator
                 "rate-limited the request.",
             FallbackFailureClassifier.ProviderVerificationRequired =>
                 "download API session needs verification.",
-            FallbackFailureClassifier.Unresolved or FallbackFailureClassifier.Unavailable =>
+            FallbackFailureClassifier.Unresolved =>
+                "could not confirm a download source.",
+            FallbackFailureClassifier.Unavailable =>
                 "had no copy of this track.",
             FallbackFailureClassifier.NotConfigured =>
                 "is not set up.",

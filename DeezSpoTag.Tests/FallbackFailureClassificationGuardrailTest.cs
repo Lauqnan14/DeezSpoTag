@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Shared;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -44,11 +48,13 @@ public sealed class FallbackFailureClassificationGuardrailTest
     [InlineData("identity_unresolved")]
     [InlineData("unresolved")]
     [InlineData("catalog_lookup_failed")]
-    [InlineData("catalog_quality_below_requested")]
     [InlineData("authentication_required")]
     [InlineData("provider_timeout")]
     [InlineData("provider_rate_limited")]
     public void LookupOrOperationalFailureDoesNotConfirmSelectionAbsence(string errorClass)
+        // catalog_quality_below_requested is a confirmed quality absence now
+        // (QualityOnlyAbsence_CatalogQualityBelowRequested_IsConclusive), so it is no
+        // longer pinned as inconclusive here.
         => Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
             [new("step-0", "tidal", "LOSSLESS", [], "isrc")], [new("step-0", "failed", errorClass, "No delivery confirmation")]));
 
@@ -256,4 +262,204 @@ public sealed class FallbackFailureClassificationGuardrailTest
 
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
+
+    // ---- Task 2: one evidence rule for unavailable and monitor eligibility ----
+    // The evidence rule reads the item's SAVED selection: a disabled plan step's
+    // inconclusive outcome must not cast doubt on the enabled steps' absence evidence,
+    // and only confirmed absence classes (the catalogue cannot offer the recording or
+    // the requested quality) count as conclusive.
+
+    private static QueueSourceSettingsSnapshot SnapshotWith(params (string Engine, string[] Qualities)[] engines)
+        => new()
+        {
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines = engines.Select(pair => new DownloadEngineOrderItem
+                {
+                    Engine = pair.Engine,
+                    Qualities = pair.Qualities.Select(quality => new DownloadEngineQualityItem
+                    {
+                        Quality = quality
+                    }).ToList()
+                }).ToList()
+            }
+        };
+
+    [Fact]
+    public void QualityOnlyAbsence_CatalogQualityBelowRequested_IsConclusive()
+    {
+        var plan = new List<FallbackPlanStep> { new("step-0", "tidal", "HI_RES", [], "isrc") };
+        var history = new List<FallbackAttempt>
+        {
+            new("step-0", "failed", "catalog_quality_below_requested", "Catalog tops out at LOSSLESS")
+        };
+
+        Assert.True(FallbackFailureClassifier.IsPlanUnavailable(plan, history));
+        Assert.True(FallbackFailureClassifier.IsPlanUnavailable(plan, history, null));
+    }
+
+    [Fact]
+    public void SavedPlan_DisabledStepInconclusiveOutcome_DoesNotHideAbsenceOfEnabledSteps()
+    {
+        // Saved selection: qobuz 27 + tidal HI_RES enabled; deezer 9 was disabled after
+        // enqueue. The disabled step's last outcome is a timeout; the snapshot-less rule
+        // would count that inconclusive outcome against the whole plan and keep a
+        // conclusively absent recording "recoverable" forever.
+        var snapshot = SnapshotWith(("qobuz", ["27"]), ("tidal", ["HI_RES"]));
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "27", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "deezer", "9", [], "mapped_url")
+        };
+        var history = new List<FallbackAttempt>
+        {
+            new("step-0", "skipped", "unavailable", "Confirmed missing recording"),
+            new("step-1", "skipped", "unavailable", "Confirmed missing recording"),
+            new("step-2", "skipped", "provider_timeout", "deezer provider timed out")
+        };
+
+        Assert.True(FallbackFailureClassifier.IsPlanUnavailable(plan, history, snapshot));
+        Assert.Equal(["step-0", "step-1"],
+            FallbackFailureClassifier.EnabledSavedPlanSteps(plan, snapshot).Select(step => step.StepId));
+        Assert.Equal(plan, FallbackFailureClassifier.EnabledSavedPlanSteps(plan, null));
+    }
+
+    [Fact]
+    public void SavedPlan_MixedProviderOutcomes_StayRecoverable()
+    {
+        var snapshot = SnapshotWith(("qobuz", ["7"]), ("tidal", ["HI_RES"]), ("amazon", ["HD_FLAC"]));
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "amazon", "HD_FLAC", [], "mapped_url")
+        };
+        var history = new List<FallbackAttempt>
+        {
+            new("step-0", "skipped", "unavailable", "Confirmed missing recording"),
+            new("step-1", "skipped", "provider_timeout", "tidal provider timed out"),
+            new("step-2", "skipped", "identity_unresolved", "missing_url")
+        };
+
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(plan, history, snapshot));
+    }
+
+    [Fact]
+    public void MissingOutcomeForAnEnabledStep_IsNotConfirmationOfAbsence()
+    {
+        var snapshot = SnapshotWith(("qobuz", ["7"]), ("tidal", ["HI_RES"]));
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc")
+        };
+        var history = new List<FallbackAttempt>
+        {
+            new("step-0", "skipped", "unavailable", "Confirmed missing recording")
+        };
+
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(plan, history, snapshot));
+    }
+
+    [Fact]
+    public void LaterCompletedOutcome_BeatsEarlierAbsenceEvidence()
+    {
+        var plan = new List<FallbackPlanStep> { new("step-0", "tidal", "HI_RES", [], "isrc") };
+        var history = new List<FallbackAttempt>
+        {
+            new("step-0", "failed", "unavailable", "Confirmed missing recording"),
+            new("step-0", "completed", "unavailable", "Delivered after a later retry")
+        };
+
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(plan, history, null));
+    }
+
+    [Theory]
+    [InlineData("provider_timeout")]
+    [InlineData("identity_unresolved")]
+    [InlineData("provider_quality_unknown")]
+    [InlineData("unresolved")]
+    [InlineData("provider_transient")]
+    [InlineData("authentication_required")]
+    [InlineData("catalog_lookup_failed")]
+    [InlineData("")]
+    public void InconclusiveOutcomeClassesAreNeverAbsenceEvidence(string errorClass)
+        => Assert.False(FallbackFailureClassifier.IsConclusiveAbsenceClass(errorClass));
+
+    [Theory]
+    [InlineData("unavailable")]
+    [InlineData("quality_below_requested")]
+    [InlineData("catalog_quality_below_requested")]
+    public void ConfirmedAbsenceClassesAreConclusive(string errorClass)
+        => Assert.True(FallbackFailureClassifier.IsConclusiveAbsenceClass(errorClass));
+
+    [Fact]
+    public void EnabledSavedPlanSteps_SeparatesStereoFromAtmosSelection()
+    {
+        // An enabled engine carries its default quality ladder; a step is disabled when
+        // the saved selection explicitly disables that quality (atmos off).
+        var snapshot = SnapshotWith(("tidal", ["HI_RES"]));
+        snapshot.DownloadEngineOrder!.Engines[0].Qualities.Add(
+            new DownloadEngineQualityItem { Quality = "DOLBY_ATMOS", Enabled = false });
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "tidal", "HI_RES", [], "isrc"),
+            new("step-1", "tidal", "DOLBY_ATMOS", [], "isrc")
+        };
+
+        Assert.Equal(["step-0"],
+            FallbackFailureClassifier.EnabledSavedPlanSteps(plan, snapshot).Select(step => step.StepId));
+    }
+
+    [Fact]
+    public void EnabledSavedPlanSteps_KeepsEveryStepWhenSelectionOverrideIsOff()
+    {
+        var snapshot = new QueueSourceSettingsSnapshot
+        {
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = false,
+                Engines = [new DownloadEngineOrderItem { Engine = "qobuz", Qualities = [] }]
+            }
+        };
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc")
+        };
+
+        Assert.Equal(2, FallbackFailureClassifier.EnabledSavedPlanSteps(plan, snapshot).Count);
+    }
+
+    [Fact]
+    public void SnapshotSelectionOutsideTheSavedProviders_DisablesTheStep()
+    {
+        var snapshot = SnapshotWith(("deezer", ["9"]));
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "deezer", "9", [], "mapped_url"),
+            new("step-1", "soundcloud", "GENERIC", [], "stream")
+        };
+
+        Assert.Equal(["step-0"],
+            FallbackFailureClassifier.EnabledSavedPlanSteps(plan, snapshot).Select(step => step.StepId));
+    }
+
+    [Fact]
+    public void EmptyOrMalformedSavedHistoryIsNeverConfirmation()
+    {
+        var plan = new List<FallbackPlanStep> { new("step-0", "tidal", "HI_RES", [], "isrc") };
+
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(plan, [], null));
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable([null!], [null!], null));
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
+            [new("", "tidal", "HI_RES", [], "isrc")], [new("", "failed", "unavailable", "")], null));
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
+            [new("step-0", "tidal", "HI_RES", [], "isrc"), new("step-0", "qobuz", "7", [], "isrc")],
+            [new("step-0", "failed", "unavailable", "")], null));
+        Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
+            [], [new("step-0", "failed", "unavailable", "")], null));
+    }
 }

@@ -120,6 +120,58 @@ public sealed class DownloadQueueRecoveryServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task RecoverStaleRunningTasksAsync_LeavesCancelledRowsUntouchedAfterRestart()
+    {
+        // Restart scenario: the registry is empty, but a row the user cancelled keeps
+        // its cancelled status and any stale retry artifacts; neither the stale-running
+        // recovery nor the due retry sweep may resurrect it.
+        const string queueUuid = "recovery-cancelled-untouched";
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            SourceService = "qobuz",
+            SourceUrl = "https://play.qobuz.com/track/301435615",
+            Title = "Nairobi",
+            Artist = "Marioo",
+            Isrc = "ZA56E2420399",
+            Quality = "27",
+            AutoIndex = 0,
+            FallbackPlan = [new("step-0", "qobuz", "27", QobuzSourceUrlInput, "direct_url")]
+        };
+        await EnqueueRunningItemAsync(queueUuid, payload);
+        await AgeQueueItemAsync(queueUuid, DownloadQueueRecoveryPolicy.RunningStallThreshold + TimeSpan.FromMinutes(1));
+        await _queueRepository.UpdateStatusAsync(queueUuid, "canceled", cancellationToken: CancellationToken.None);
+        await using (var connection = new SqliteConnection($"Data Source={_queueDbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            // Simulates a crash between the durable cancel write and the schedule clear.
+            command.CommandText = @"
+UPDATE download_task
+SET retry_next_at = '2000-01-01T00:00:00Z', retry_attempt_count = 1
+WHERE queue_uuid = $queueUuid;";
+            command.Parameters.AddWithValue("$queueUuid", queueUuid);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await _recoveryService.RecoverStaleRunningTasksAsync(CancellationToken.None);
+        var retryScheduler = new DownloadRetryScheduler(
+            _queueRepository,
+            _settingsService,
+            new NullActivityLogWriter(),
+            new DeezSpoTagListener(),
+            NullLogger<DownloadRetryScheduler>.Instance,
+            _cancellationRegistry);
+        Assert.False(await retryScheduler.RunRetrySweepAsync(CancellationToken.None));
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("canceled", recovered!.Status, ignoreCase: true);
+        Assert.False(await _queueRepository.HasScheduledRetriesAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task RecoverStaleRunningTasksAsync_RetriesPersistedEngineWithoutCrossEngineResolution()
     {
         var queueUuid = "recovery-qobuz-to-deezer";

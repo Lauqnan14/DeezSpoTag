@@ -355,7 +355,10 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         var activitiesSource = ReadSource("DeezSpoTag.Web/Controllers/ActivitiesController.cs");
 
         Assert.Contains("private const string UnavailableStatus = \"unavailable\";", resolverSource, StringComparison.Ordinal);
-        Assert.Contains("Status = UnavailableStatus", resolverSource, StringComparison.Ordinal);
+        // The resolver stamps unavailable only when the saved plan proves absence (shared
+        // evidence rule); a timeout or mixed outcome stays failed and retry-eligible.
+        Assert.Contains("private const string FailedStatus = \"failed\";", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("Status = ResolveResolutionFailureStatus(payload, error)", resolverSource, StringComparison.Ordinal);
         Assert.Contains("EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(resolution.Error)", appSource, StringComparison.Ordinal);
         Assert.Contains("terminalStatus", appSource, StringComparison.Ordinal);
         Assert.Contains("if (string.Equals(effectiveItem.Status, UnavailableStatus", appSource, StringComparison.Ordinal);
@@ -997,6 +1000,21 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.Equal(
             3,
             engine.Split("await ReconcileLedgerOwnershipWithLiveQueueAsync(cancellationToken);").Length - 1);
+    }
+
+    [Fact]
+    public void ManualUnavailableRecheck_RequeuesWithTheNonManualMonitoringOrigin()
+    {
+        var retryServiceSource = ReadSource("DeezSpoTag.Web/Services/ManualUnavailableRetryService.cs");
+
+        // The unavailable re-check is automatic, not a user action: it must pass the
+        // Monitoring origin so the requeue SQL refuses to revive a row the user cancelled
+        // (a manual origin would clear the cancellation if a cancel lands between the
+        // status check and the retry).
+        Assert.Contains(
+            "app.RetryDownloadAsync(track.QueueUuid, cancellationToken, origin: QueueRequeueOrigin.Monitoring)",
+            retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("IsCanceledStatus(existing.Status)", retryServiceSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

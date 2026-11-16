@@ -42,7 +42,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private const string DefaultStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly TimeSpan ProviderResolveTimeout = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan YouTubeCatalogResolveTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan RequiredCatalogResolveTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmazonResolveTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan AppleResolveTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AppleIsrcResolveTimeout = TimeSpan.FromSeconds(3);
@@ -121,12 +121,12 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         if (ShouldResolve(targets, Qobuz) && string.IsNullOrWhiteSpace(state.QobuzId))
         {
-            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveQobuzAsync(localState, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveQobuzAsync(localState, local, token, request.RequiredPlatforms?.Contains(Qobuz, StringComparer.OrdinalIgnoreCase) == true), cancellationToken));
         }
 
         if (!state.IsYouTubeSource && ShouldResolve(targets, Tidal) && string.IsNullOrWhiteSpace(state.TidalId))
         {
-            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveTidalAsync(localState, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveTidalAsync(localState, local, token, request.RequiredPlatforms?.Contains(Tidal, StringComparer.OrdinalIgnoreCase) == true), cancellationToken));
         }
 
         if (!state.IsYouTubeSource && ShouldResolve(targets, Amazon) && string.IsNullOrWhiteSpace(state.AmazonId))
@@ -148,7 +148,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             if (recordingIds.Length == 1)
             {
                 state.Isrc = recordingIds[0];
-                if (ShouldResolve(targets, Tidal)) await ResolveTidalAsync(state, candidates, cancellationToken);
+                if (ShouldResolve(targets, Tidal)) await ResolveTidalAsync(state, candidates, cancellationToken,
+                    request.RequiredPlatforms?.Contains(Tidal, StringComparer.OrdinalIgnoreCase) == true);
                 if (ShouldResolve(targets, Amazon)) await ResolveAmazonAsync(state, candidates, cancellationToken);
             }
             else
@@ -1127,7 +1128,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private async Task ResolveQobuzAsync(
         IdentityState state,
         List<PlatformIdentityCandidate> candidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool required = false)
     {
         if (!HasSearchSignal(state))
         {
@@ -1138,9 +1140,9 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            // YouTube needs a verified catalog recording before it can be queued;
-            // this is mandatory work rather than optional identity enrichment.
-            providerTimeout.CancelAfter(state.IsYouTubeSource ? YouTubeCatalogResolveTimeout : ProviderResolveTimeout);
+            // Required download matching shares the existing mandatory catalog budget;
+            // optional identity enrichment retains its shorter budget.
+            providerTimeout.CancelAfter(state.IsYouTubeSource || required ? RequiredCatalogResolveTimeout : ProviderResolveTimeout);
             var providerToken = providerTimeout.Token;
             resolved = await _qobuzTrackResolver.ResolveTrackAsync(
                 state.Isrc,
@@ -1189,7 +1191,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private async Task ResolveTidalAsync(
         IdentityState state,
         List<PlatformIdentityCandidate> candidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool required = false)
     {
         if (string.IsNullOrWhiteSpace(state.Title) || string.IsNullOrWhiteSpace(state.Artist))
         {
@@ -1203,7 +1206,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            providerTimeout.CancelAfter(ProviderResolveTimeout);
+            providerTimeout.CancelAfter(required ? RequiredCatalogResolveTimeout : ProviderResolveTimeout);
             var providerToken = providerTimeout.Token;
             tidalUrl = await _tidalDownloadService.ResolveTrackUrlAsync(
                 state.Title,
