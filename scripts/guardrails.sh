@@ -244,6 +244,8 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(VibeAnalyzerWorker|VibeAnalyzerGenreEvidence|SonicEmbeddingModelContract|SonicEmbeddingPooling)Test$' ;;
       DeezSpoTag.Web/Controllers/ActivitiesController.cs)
         add_tests_matching '^(ActivitiesControllerContract|QueueItemErrorLine)Test$' ;;
+      DeezSpoTag.Web/Services/ManualUnavailableRetryService.cs)
+        add_tests_matching '^ManualUnavailableRetryLifecycleTest$' ;;
       DeezSpoTag.Web/Views/Activities/Index.cshtml)
         add_tests_matching '^(ActivitiesControllerContract|SonicAnalysisSettingsAndPanel|ArtistMetadataAutomationResilience)Test$' ;;
       *ArtistAlias*) add_tests_matching '(ArtistAlias|AliasGroup|ArtistMetadataAlias)' ;;
