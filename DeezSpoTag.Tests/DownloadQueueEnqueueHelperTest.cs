@@ -168,13 +168,30 @@ public sealed class DownloadQueueEnqueueHelperTest
                 return;
             }
 
-            var row = context.QueueRepository.GetByUuidAsync(payload.Id).GetAwaiter().GetResult();
-            if (row is null || !string.Equals(row.Status, "queued", StringComparison.OrdinalIgnoreCase))
+            // Read the row through a synchronous connection: blocking on an async call inside
+            // this event handler is banned by the source guardrails.
+            string? status = null;
+            string? payloadJson = null;
+            string? engine = null;
+            using var db = new SqliteConnection($"Data Source={Path.Join(context.TempRoot, "queue.db")}");
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = "SELECT status, payload, engine FROM download_task WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                status = reader.GetString(0);
+                payloadJson = reader.IsDBNull(1) ? null : reader.GetString(1);
+                engine = reader.IsDBNull(2) ? null : reader.GetString(2);
+            }
+
+            if (payloadJson is null || !string.Equals(status, "queued", StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
 
-            var wakePayload = JsonSerializer.Deserialize<QobuzQueueItem>(row.PayloadJson!)!;
+            var wakePayload = JsonSerializer.Deserialize<QobuzQueueItem>(payloadJson)!;
             if (wakePayload.AutoIndex != 0
                 || wakePayload.FallbackHistory.Count != 0
                 || !string.IsNullOrWhiteSpace(wakePayload.ResolutionError))
@@ -182,9 +199,9 @@ public sealed class DownloadQueueEnqueueHelperTest
                 observedStale.Add($"payload (autoIndex={wakePayload.AutoIndex}, history={wakePayload.FallbackHistory.Count}, resolutionError={wakePayload.ResolutionError})");
             }
 
-            if (!string.Equals(row.Engine, "qobuz", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(engine, "qobuz", StringComparison.OrdinalIgnoreCase))
             {
-                observedStale.Add($"engine ({row.Engine})");
+                observedStale.Add($"engine ({engine})");
             }
         }
 
@@ -227,16 +244,30 @@ public sealed class DownloadQueueEnqueueHelperTest
             }
 
             // Simulate a processor that wakes on the signal, runs, fails and schedules a new
-            // retry before the retry method continues past the requeue.
-            var wokenScheduler = new DownloadRetryScheduler(
-                context.QueueRepository,
-                context.SettingsService,
-                new NullActivityLogWriter(),
-                new DeezSpoTagListener(),
-                NullLogger<DownloadRetryScheduler>.Instance,
-                new DownloadCancellationRegistry());
-            wokenScheduler.ScheduleRetryAsync(payload.Id, "qobuz", "fresh failure after the wake")
-                .GetAwaiter().GetResult();
+            // retry before the retry method continues past the requeue. Mirroring the
+            // scheduler's UPDATE through a synchronous connection keeps the event handler
+            // free of blocking waits (banned by the source guardrails).
+            using var db = new SqliteConnection($"Data Source={Path.Join(context.TempRoot, "queue.db")}");
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = """
+                UPDATE download_task
+                SET status = 'retry_waiting',
+                    progress = 0,
+                    downloaded = 0,
+                    failed = 0,
+                    retry_next_at = $retryNextAt,
+                    retry_reason = $reason,
+                    retry_engine = $engine,
+                    error = $reason,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE queue_uuid = $uuid;
+                """;
+            command.Parameters.AddWithValue("$retryNextAt", DateTime.UtcNow.AddMinutes(30).ToString("O"));
+            command.Parameters.AddWithValue("$reason", "fresh failure after the wake");
+            command.Parameters.AddWithValue("$engine", "qobuz");
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            Assert.Equal(1, command.ExecuteNonQuery());
         }
 
         DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
